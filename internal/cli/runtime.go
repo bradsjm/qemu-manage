@@ -73,7 +73,7 @@ func (a *App) runRuntimeCommand(ctx context.Context, command string, args []stri
 	case "start":
 		return a.runStart(ctx, args)
 	case "stop":
-		return a.runStop(ctx, args)
+		return a.runStop(ctx, args, stderr)
 	case "console":
 		return a.runConsole(ctx, args, stdin, stdout)
 	case "doctor":
@@ -130,7 +130,7 @@ func (a *App) runStart(ctx context.Context, args []string) error {
 	return nil
 }
 
-func (a *App) runStop(ctx context.Context, args []string) error {
+func (a *App) runStop(ctx context.Context, args []string, stderr io.Writer) error {
 	name, rest, err := nameBeforeFlags("stop", args)
 	if err != nil {
 		return err
@@ -147,6 +147,12 @@ func (a *App) runStop(ctx context.Context, args []string) error {
 	}
 	if a.Lifecycle == nil {
 		return errors.New("runtime: lifecycle service is unavailable")
+	}
+	if *force {
+		fmt.Fprintf(
+			stderr,
+			"warning: --force kills QEMU without guest cooperation; guest filesystem or data corruption is possible\n",
+		)
 	}
 	return a.Lifecycle.Stop(ctx, config, *timeout, *force)
 }

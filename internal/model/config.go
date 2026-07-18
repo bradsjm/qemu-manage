@@ -181,7 +181,7 @@ func (c *Config) Validate() error {
 		return configError("invalid name %q", c.Name)
 	}
 	if c.Backend != BackendQEMU && c.Backend != BackendVZ {
-		return configError("invalid backend %q", c.Backend)
+		return configError("invalid backend %q; valid values: qemu, vz", c.Backend)
 	}
 	if c.Architecture != "aarch64" {
 		return configError("architecture must be %q", "aarch64")
@@ -196,7 +196,7 @@ func (c *Config) Validate() error {
 		return configError("memory_mib must be at least 256")
 	}
 	if c.RestartPolicy != RestartNever && c.RestartPolicy != RestartOnFailure {
-		return configError("invalid restart_policy %q", c.RestartPolicy)
+		return configError("invalid restart_policy %q; valid values: never, on-failure", c.RestartPolicy)
 	}
 	if c.ShutdownTimeoutSeconds < 1 || c.ShutdownTimeoutSeconds > 3600 {
 		return configError("shutdown_timeout_seconds must be between 1 and 3600")
@@ -213,7 +213,7 @@ func (c *Config) Validate() error {
 		}
 	}
 	if c.Autostart.Scope != AutostartNone && c.Autostart.Scope != AutostartBoot && c.Autostart.Scope != AutostartLogin {
-		return configError("invalid autostart scope %q", c.Autostart.Scope)
+		return configError("invalid autostart scope %q; valid values: none, boot, login", c.Autostart.Scope)
 	}
 	if err := validateStorage(c); err != nil {
 		return err
@@ -252,7 +252,7 @@ func validateStorage(c *Config) error {
 			return configError("disk %d path is required", i)
 		}
 		if disk.Format != "qcow2" && disk.Format != "raw" {
-			return configError("disk %d has invalid format %q", i, disk.Format)
+			return configError("disk %d has invalid format %q; valid values: qcow2, raw", i, disk.Format)
 		}
 		if disk.BootIndex < 0 {
 			return configError("disk %d boot_index must be nonnegative", i)
@@ -296,13 +296,13 @@ func validateNetwork(network NetworkConfig) error {
 			return configError("socket_vmnet client_path and socket_path must be absolute and interface must be nonempty")
 		}
 	default:
-		return configError("invalid network mode %q", network.Mode)
+		return configError("invalid network mode %q; valid values: user, socket_vmnet", network.Mode)
 	}
 
 	tuples := make(map[string]struct{}, len(network.Forwards))
 	for i, forward := range network.Forwards {
 		if forward.Protocol != "tcp" && forward.Protocol != "udp" {
-			return configError("forward %d has invalid protocol %q", i, forward.Protocol)
+			return configError("forward %d has invalid protocol %q; valid values: tcp, udp", i, forward.Protocol)
 		}
 		address := net.ParseIP(forward.HostAddress)
 		if address == nil || address.To4() == nil || strings.Contains(forward.HostAddress, ":") {

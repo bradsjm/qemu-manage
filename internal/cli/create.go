@@ -27,9 +27,13 @@ const (
 func (a *App) runCreate(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
 	_ = stdout
+	_ = stderr
+	defaultFirmwareCode, defaultFirmwareVars := "", ""
+	if a.DiscoverFirmware != nil {
+		defaultFirmwareCode, defaultFirmwareVars = a.DiscoverFirmware()
+	}
 
-	flags := flag.NewFlagSet("create", flag.ContinueOnError)
-	flags.SetOutput(stderr)
+	flags := quietFlagSet("create")
 	cpus := flags.Int("cpus", 2, "number of virtual CPUs")
 	memory := flags.String("memory", "2GiB", "guest memory (whole MiB or GiB)")
 	diskSize := flags.String("disk-size", "32GiB", "primary disk size (whole MiB or GiB)")
@@ -37,18 +41,33 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	iso := flags.String("iso", "", "installer ISO")
 	qemu := flags.String("qemu", "qemu-system-aarch64", "QEMU executable")
 	qemuImg := flags.String("qemu-img", "qemu-img", "qemu-img executable")
-	firmwareCode := flags.String("firmware-code", "", "UEFI code image")
-	firmwareVars := flags.String("firmware-vars", "", "UEFI variables template")
+	firmwareCode := flags.String("firmware-code", defaultFirmwareCode, "AArch64 UEFI code image (auto-detected)")
+	firmwareVars := flags.String("firmware-vars", defaultFirmwareVars, "AArch64 UEFI variables template (auto-detected)")
 	restartPolicy := flags.String("restart-policy", string(model.RestartNever), "restart policy")
 	shutdownTimeout := flags.String("shutdown-timeout", "180s", "shutdown timeout")
 	if err := flags.Parse(args); err != nil {
 		return usageErrorf("create: %v", err)
 	}
+	firmwareCodeExplicit, firmwareVarsExplicit := false, false
+	flags.Visit(func(option *flag.Flag) {
+		switch option.Name {
+		case "firmware-code":
+			firmwareCodeExplicit = true
+		case "firmware-vars":
+			firmwareVarsExplicit = true
+		}
+	})
+	if firmwareCodeExplicit != firmwareVarsExplicit {
+		return usageErrorf("create: --firmware-code and --firmware-vars must be provided together")
+	}
 	if flags.NArg() != 0 {
 		return usageErrorf("create: unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
-	if *firmwareCode == "" || *firmwareVars == "" {
-		return usageErrorf("create: --firmware-code and --firmware-vars are required")
+	if *restartPolicy != string(model.RestartNever) && *restartPolicy != string(model.RestartOnFailure) {
+		return usageErrorf(
+			"create: --restart-policy %q is invalid; valid values: never, on-failure",
+			*restartPolicy,
+		)
 	}
 
 	memoryMiB, err := parseMiB(*memory)
@@ -62,6 +81,15 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	timeoutSeconds, err := parseCreateWholeSeconds(*shutdownTimeout)
 	if err != nil {
 		return usageErrorf("create: --shutdown-timeout: %v", err)
+	}
+	if *firmwareCode == "" || *firmwareVars == "" {
+		return usageErrorf(
+			"create: --firmware-code and --firmware-vars are required when they cannot be auto-detected; install QEMU with `brew install qemu` or provide both paths",
+		)
+	}
+	imageSource, err := parseImageSource(*image)
+	if err != nil {
+		return usageErrorf("create: --image: %v", err)
 	}
 	qemuPath, err := resolveExecutable(*qemu)
 	if err != nil {
@@ -135,11 +163,22 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			}
 			return nil
 		}
-		if err := requireRegularSource(*image); err != nil {
-			return fmt.Errorf("source image: %w", err)
-		}
-		if err := a.RunExternal(ctx, qemuImgPath, []string{"convert", "-O", "qcow2", *image, diskPath}); err != nil {
+		sourcePath, temporarySource, err := a.materializeImage(ctx, imageSource, paths.VMDir, stderr)
+		if err != nil {
 			return err
+		}
+		convertErr := a.RunExternal(ctx, qemuImgPath, []string{"convert", "-O", "qcow2", sourcePath, diskPath})
+		if temporarySource {
+			removeErr := os.Remove(sourcePath)
+			if convertErr != nil {
+				return errors.Join(convertErr, removeErr)
+			}
+			if removeErr != nil {
+				return fmt.Errorf("remove downloaded image: %w", removeErr)
+			}
+		}
+		if convertErr != nil {
+			return convertErr
 		}
 		if err := os.Chmod(diskPath, 0o600); err != nil {
 			return fmt.Errorf("set disk mode: %w", err)

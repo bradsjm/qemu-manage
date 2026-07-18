@@ -197,6 +197,11 @@ func writeRows(rows []StatusRow, jsonOutput bool, stdout io.Writer) error {
 	return nil
 }
 
+func terminalReader(input io.Reader) bool {
+	file, ok := input.(*os.File)
+	return ok && term.IsTerminal(int(file.Fd()))
+}
+
 func (a *App) runDelete(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		return usageErrorf("usage: qemu-manage delete NAME [--force]")
@@ -221,21 +226,25 @@ func (a *App) runDelete(ctx context.Context, args []string, stdin io.Reader, std
 		return fmt.Errorf("launchd: VM %q has autostart scope %q; run `qemu-manage autostart disable %s` first", name, config.Autostart.Scope, name)
 	}
 	if !*force {
-		file, terminalInput := stdin.(*os.File)
-		if !terminalInput || !term.IsTerminal(int(file.Fd())) {
-			return fmt.Errorf("config: deleting %q noninteractively requires --force", name)
+		if a.IsTerminal == nil || !a.IsTerminal(stdin) {
+			return fmt.Errorf("config: deleting %q noninteractively requires --force; this permanently removes its managed disks, firmware, and configuration", name)
 		}
-		if _, err := fmt.Fprintf(stdout, "Type %s to confirm deletion: ", name); err != nil {
+		if _, err := fmt.Fprintf(
+			stdout,
+			"WARNING: Permanently delete VM %q, including its managed disks, firmware, and configuration? [y/N] ",
+			name,
+		); err != nil {
 			return err
 		}
 		answer, readErr := bufio.NewReader(stdin).ReadString('\n')
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return fmt.Errorf("config: read deletion confirmation: %w", readErr)
 		}
-		answer = strings.TrimSuffix(answer, "\n")
-		answer = strings.TrimSuffix(answer, "\r")
-		if answer != name {
-			return fmt.Errorf("config: deletion confirmation did not match %q", name)
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "y", "yes":
+		default:
+			_, err := fmt.Fprintln(stdout, "Deletion cancelled.")
+			return err
 		}
 	}
 	return a.Store.Delete(name, func(lockedConfig *model.Config, _ store.Paths) error {

@@ -26,9 +26,6 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 	if err != nil {
 		return err
 	}
-	if a.Launchd == nil {
-		return fmt.Errorf("launchd: manager is unavailable")
-	}
 
 	switch subcommand {
 	case "enable":
@@ -39,7 +36,13 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 		}
 		scope := model.AutostartScope(*scopeValue)
 		if scope != model.AutostartBoot && scope != model.AutostartLogin {
-			return usageErrorf("autostart enable: --scope must be boot or login")
+			return usageErrorf(
+				"autostart enable: --scope %q is invalid; valid values: boot, login",
+				*scopeValue,
+			)
+		}
+		if a.Launchd == nil {
+			return fmt.Errorf("launchd: manager is unavailable")
 		}
 		err := a.Launchd.Enable(ctx, name, scope, func(ctx context.Context, config *model.Config) error {
 			paths := a.Store.Paths(config)
@@ -54,10 +57,16 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 		if len(remaining) != 0 {
 			return usageErrorf("autostart disable: unexpected arguments")
 		}
+		if a.Launchd == nil {
+			return fmt.Errorf("launchd: manager is unavailable")
+		}
 		return withLaunchdPrefix(a.Launchd.Disable(ctx, name))
 	case "status":
 		if len(remaining) != 0 {
 			return usageErrorf("autostart status: unexpected arguments")
+		}
+		if a.Launchd == nil {
+			return fmt.Errorf("launchd: manager is unavailable")
 		}
 		report, err := a.Launchd.Status(ctx, name)
 		if err != nil {

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
@@ -43,16 +44,20 @@ type RuntimeService interface {
 }
 
 type App struct {
-	Store          *store.Store
-	Backends       *backend.Registry
-	Lifecycle      *lifecycle.Service
-	Supervisor     *supervisor.Service
-	Launchd        *launchd.Manager
-	Geteuid        func() int
-	ExecutablePath string
-	User           PlatformUser
-	RunExternal    func(context.Context, string, []string) error
-	Runtime        RuntimeService
+	Store               *store.Store
+	Backends            *backend.Registry
+	Lifecycle           *lifecycle.Service
+	Supervisor          *supervisor.Service
+	Launchd             *launchd.Manager
+	Geteuid             func() int
+	ExecutablePath      string
+	User                PlatformUser
+	RunExternal         func(context.Context, string, []string) error
+	HTTPClient          *http.Client
+	Runtime             RuntimeService
+	IsTerminal          func(io.Reader) bool
+	DiscoverFirmware    func() (string, string)
+	DiscoverSocketVMNet func() *model.SocketVMNetConfig
 
 	initializationError error
 }
@@ -63,8 +68,11 @@ func NewApp() *App {
 	}
 
 	a := &App{
-		Backends: backend.NewRegistry(),
-		Geteuid:  os.Geteuid,
+		Backends:         backend.NewRegistry(),
+		Geteuid:          os.Geteuid,
+		IsTerminal:       terminalReader,
+		DiscoverFirmware: qemu.DiscoverFirmware,
+		HTTPClient:       newImageHTTPClient(),
 		RunExternal: func(ctx context.Context, path string, args []string) error {
 			return exec.CommandContext(ctx, path, args...).Run()
 		},
@@ -117,6 +125,24 @@ func usageErrorf(format string, args ...any) error {
 }
 
 func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		if err := writeHelp(stderr, ""); err != nil {
+			fmt.Fprintf(stderr, "write help: %v\n", err)
+			return 1
+		}
+		return 2
+	}
+	if topic, requested, err := requestedHelp(args); requested {
+		if err != nil {
+			writeUsageFailure(stderr, err, args)
+			return 2
+		}
+		if err := writeHelp(stdout, topic); err != nil {
+			fmt.Fprintf(stderr, "write help: %v\n", err)
+			return 1
+		}
+		return 0
+	}
 	if a.Geteuid == nil || a.Geteuid() == 0 {
 		fmt.Fprintln(stderr, "runtime: qemu-manage must not run as root")
 		return 1
@@ -124,10 +150,6 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	if a.initializationError != nil {
 		fmt.Fprintf(stderr, "config: initialize store: %v\n", a.initializationError)
 		return 1
-	}
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: qemu-manage COMMAND")
-		return 2
 	}
 
 	var err error
@@ -160,12 +182,20 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	if err == nil {
 		return 0
 	}
-	fmt.Fprintln(stderr, err)
 	var usage *usageError
 	if errors.As(err, &usage) {
+		writeUsageFailure(stderr, err, args)
 		return 2
 	}
+	fmt.Fprintln(stderr, err)
 	return 1
+}
+
+func writeUsageFailure(stderr io.Writer, err error, args []string) {
+	fmt.Fprintf(stderr, "error: %v\n\n", err)
+	if helpErr := writeHelp(stderr, inferHelpTopic(args)); helpErr != nil {
+		fmt.Fprintf(stderr, "write help: %v\n", helpErr)
+	}
 }
 
 func (a *App) dispatchConfig(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {

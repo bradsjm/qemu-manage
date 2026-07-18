@@ -57,6 +57,12 @@ var (
 	}
 )
 
+const (
+	qemuInstallInstruction          = "install with: `brew install qemu`"
+	socketVMNetInstallInstruction   = "install with: `brew install socket_vmnet`; start the shared service with: `sudo \"$(brew --prefix)/bin/brew\" services start socket_vmnet`"
+	socketVMNetRootOwnedInstruction = "create a root-owned client copy with: `sudo install -d -o root -g wheel -m 0755 /opt/socket_vmnet/bin && sudo install -o root -g wheel -m 0755 $(brew --prefix socket_vmnet)/bin/socket_vmnet_client /opt/socket_vmnet/bin/socket_vmnet_client` (repeat the second command after Homebrew upgrades)"
+)
+
 // Doctor checks the configured QEMU installation and VM artifacts. Relative
 // configured paths belong to paths.VMDir. When VMDir is empty, executable names
 // are resolved through PATH instead.
@@ -83,15 +89,14 @@ func Doctor(ctx context.Context, cfg model.Config, paths backend.RuntimePaths) [
 		imageToolCheck.Status = CheckWarn
 	}
 	checks = append(checks, imageToolCheck)
-	if paths.VMDir == "" && cfg.Firmware.Code == "" {
-		checks = append(checks, discoveredFirmwareCheck("firmware_code", firmwareCodeCandidates))
+	if paths.VMDir == "" && cfg.Firmware.Code == "" && cfg.Firmware.Variables == "" {
+		firmwareCodeCheck, firmwareVarsCheck := discoveredFirmwareChecks(firmwareInstallations)
+		checks = append(checks, firmwareCodeCheck, firmwareVarsCheck)
 	} else {
-		checks = append(checks, artifactCheck("firmware_code", configuredPath(paths.VMDir, cfg.Firmware.Code), cfg.Firmware.Code, false))
-	}
-	if paths.VMDir == "" && cfg.Firmware.Variables == "" {
-		checks = append(checks, discoveredFirmwareCheck("firmware_vars", firmwareVarsCandidates))
-	} else {
-		checks = append(checks, artifactCheck("firmware_vars", configuredPath(paths.VMDir, cfg.Firmware.Variables), cfg.Firmware.Variables, false))
+		checks = append(checks,
+			artifactCheck("firmware_code", configuredPath(paths.VMDir, cfg.Firmware.Code), cfg.Firmware.Code, false),
+			artifactCheck("firmware_vars", configuredPath(paths.VMDir, cfg.Firmware.Variables), cfg.Firmware.Variables, false),
+		)
 	}
 	for index, disk := range cfg.Disks {
 		checks = append(checks, artifactCheck(
@@ -113,8 +118,8 @@ func Doctor(ctx context.Context, cfg model.Config, paths backend.RuntimePaths) [
 	if cfg.Network.Mode == model.NetworkSocketVMNet {
 		if cfg.Network.SocketVMNet == nil {
 			checks = append(checks,
-				Check{Name: "socket_vmnet_client", Status: CheckFail, Evidence: "socket_vmnet configuration is missing"},
-				Check{Name: "socket_vmnet_socket", Status: CheckFail, Evidence: "socket_vmnet configuration is missing"},
+				Check{Name: "socket_vmnet_client", Status: CheckFail, Evidence: "socket_vmnet configuration is missing; " + socketVMNetInstallInstruction},
+				Check{Name: "socket_vmnet_socket", Status: CheckFail, Evidence: "socket_vmnet configuration is missing; " + socketVMNetInstallInstruction},
 			)
 		} else {
 			client := configuredPath(paths.VMDir, cfg.Network.SocketVMNet.ClientPath)
@@ -181,7 +186,11 @@ func executableError(path string) error {
 
 func executableCheck(name, path string, err error) Check {
 	if err != nil {
-		return Check{Name: name, Status: CheckFail, Evidence: fmt.Sprintf("%s: %v", path, err)}
+		evidence := fmt.Sprintf("%s: %v", path, err)
+		if name == "qemu_binary" || name == "qemu_img" {
+			evidence += "; " + qemuInstallInstruction
+		}
+		return Check{Name: name, Status: CheckFail, Evidence: evidence}
 	}
 	return Check{Name: name, Status: CheckPass, Evidence: path}
 }
@@ -197,7 +206,7 @@ func checkVersion(ctx context.Context, binary string) Check {
 	}
 	version := strings.Join(match[1:4], ".")
 	if version == "11.0.0" {
-		return Check{Name: "qemu_version", Status: CheckFail, Evidence: "QEMU 11.0.0 has a known macOS AArch64 HVF regression; install QEMU 11.0.1 or newer"}
+		return Check{Name: "qemu_version", Status: CheckFail, Evidence: "QEMU 11.0.0 has a known macOS AArch64 HVF regression; upgrade with: `brew upgrade qemu` (11.0.1 fixes this regression)"}
 	}
 	return Check{Name: "qemu_version", Status: CheckPass, Evidence: "QEMU " + version}
 }
@@ -256,15 +265,20 @@ func configuredPath(vmDir, configured string) string {
 	return backend.ResolvePath(vmDir, configured)
 }
 
-func discoveredFirmwareCheck(name string, candidates []string) Check {
-	evidence := "checked candidates: " + strings.Join(candidates, ", ")
-	for _, candidate := range candidates {
-		info, err := os.Stat(candidate)
-		if err == nil && info.Mode().IsRegular() {
-			return Check{Name: name, Status: CheckPass, Evidence: candidate + "; " + evidence}
-		}
+func discoveredFirmwareChecks(installations []firmwareInstallation) (Check, Check) {
+	code, variables := discoverFirmware(installations)
+	checked := make([]string, 0, len(installations))
+	for _, installation := range installations {
+		checked = append(checked, installation.codePath+" + "+strings.Join(installation.variablesPath, "|"))
 	}
-	return Check{Name: name, Status: CheckFail, Evidence: "no regular firmware file found; " + evidence}
+	evidence := "checked coherent pairs: " + strings.Join(checked, ", ")
+	if code == "" || variables == "" {
+		failure := "no readable firmware code and variables pair found in one QEMU installation; " + evidence + "; " + qemuInstallInstruction
+		return Check{Name: "firmware_code", Status: CheckFail, Evidence: failure},
+			Check{Name: "firmware_vars", Status: CheckFail, Evidence: failure}
+	}
+	return Check{Name: "firmware_code", Status: CheckPass, Evidence: code + "; paired with " + variables},
+		Check{Name: "firmware_vars", Status: CheckPass, Evidence: variables + "; paired with " + code}
 }
 
 func artifactCheck(name, path, configured string, executable bool) Check {
@@ -277,6 +291,11 @@ func artifactCheck(name, path, configured string, executable bool) Check {
 	}
 	if !info.Mode().IsRegular() {
 		return Check{Name: name, Status: CheckFail, Evidence: path + ": not a regular file"}
+	}
+	if !executable {
+		if err := unix.Access(path, unix.R_OK); err != nil {
+			return Check{Name: name, Status: CheckFail, Evidence: fmt.Sprintf("%s: not readable for current credentials: %v", path, err)}
+		}
 	}
 	if executable {
 		if info.Mode().Perm()&0111 == 0 {
@@ -292,30 +311,45 @@ func artifactCheck(name, path, configured string, executable bool) Check {
 func socketVMNetClientCheck(path, configured string) Check {
 	check := artifactCheck("socket_vmnet_client", path, configured, true)
 	if check.Status != CheckPass {
+		check.Evidence += "; " + socketVMNetInstallInstruction + "; " + socketVMNetRootOwnedInstruction
 		return check
 	}
-	if isHomebrewPath(path) || userWritable(path) {
-		return Check{Name: "socket_vmnet_client", Status: CheckWarn, Evidence: path + " is in a Homebrew prefix or user-writable; prefer the root-owned /opt/socket_vmnet/bin/socket_vmnet_client installation"}
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return Check{Name: "socket_vmnet_client", Status: CheckFail, Evidence: fmt.Sprintf("%s: resolve symlinks: %v", path, err)}
+	}
+	if isHomebrewPath(path) || isHomebrewPath(resolvedPath) || userWritable(path) || userWritable(resolvedPath) {
+		location := path
+		if resolvedPath != path {
+			location += " (resolves to " + resolvedPath + ")"
+		}
+		return Check{
+			Name:   "socket_vmnet_client",
+			Status: CheckWarn,
+			Evidence: location + " is in a Homebrew prefix or user-writable; " +
+				socketVMNetRootOwnedInstruction,
+		}
 	}
 	return check
 }
 
 func socketVMNetSocketCheck(ctx context.Context, path, configured string) Check {
+	serviceHint := "; start the configured socket_vmnet service; for Homebrew shared networking run: `sudo \"$(brew --prefix)/bin/brew\" services start socket_vmnet`"
 	if configured == "" {
-		return Check{Name: "socket_vmnet_socket", Status: CheckFail, Evidence: "path is not configured"}
+		return Check{Name: "socket_vmnet_socket", Status: CheckFail, Evidence: "path is not configured" + serviceHint}
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return Check{Name: "socket_vmnet_socket", Status: CheckFail, Evidence: fmt.Sprintf("%s: %v", path, err)}
+		return Check{Name: "socket_vmnet_socket", Status: CheckFail, Evidence: fmt.Sprintf("%s: %v%s", path, err, serviceHint)}
 	}
 	if info.Mode()&os.ModeSocket == 0 {
-		return Check{Name: "socket_vmnet_socket", Status: CheckFail, Evidence: path + ": not a Unix socket"}
+		return Check{Name: "socket_vmnet_socket", Status: CheckFail, Evidence: path + ": not a Unix socket" + serviceHint}
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	conn, err := (&net.Dialer{}).DialContext(dialCtx, "unix", path)
 	if err != nil {
-		return Check{Name: "socket_vmnet_socket", Status: CheckFail, Evidence: fmt.Sprintf("%s is not connectable: %v", path, err)}
+		return Check{Name: "socket_vmnet_socket", Status: CheckFail, Evidence: fmt.Sprintf("%s is not connectable: %v%s", path, err, serviceHint)}
 	}
 	_ = conn.Close()
 	return Check{Name: "socket_vmnet_socket", Status: CheckPass, Evidence: path + " is connectable"}

@@ -71,7 +71,7 @@ func TestUsageAndNameBeforeFlags(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{}, "usage:"},
+		{[]string{}, "Usage:"},
 		{[]string{"wat"}, "unknown command"},
 		{[]string{"create", "--cpus", "2", "vm"}, "missing NAME"},
 		{[]string{"set", "--cpus", "2", "vm"}, "missing NAME"},

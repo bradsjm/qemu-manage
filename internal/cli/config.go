@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -49,7 +48,7 @@ func (v *forwardValues) Set(raw string) error {
 	}
 	protocol := strings.ToLower(parts[0])
 	if protocol != "tcp" && protocol != "udp" {
-		return fmt.Errorf("protocol must be tcp or udp")
+		return fmt.Errorf("invalid protocol %q; valid values: tcp, udp", parts[0])
 	}
 	address := net.ParseIP(parts[1])
 	if address == nil || address.To4() == nil || strings.Contains(parts[1], ":") {
@@ -89,7 +88,7 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 	restart.parse = func(raw string) (model.RestartPolicy, error) {
 		value := model.RestartPolicy(raw)
 		if value != model.RestartNever && value != model.RestartOnFailure {
-			return "", fmt.Errorf("must be never or on-failure")
+			return "", fmt.Errorf("valid values: never, on-failure")
 		}
 		return value, nil
 	}
@@ -103,14 +102,14 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 		case "off":
 			return false, nil
 		default:
-			return false, fmt.Errorf("must be on or off")
+			return false, fmt.Errorf("valid values: on, off")
 		}
 	}
 	var networkMode optionalValue[model.NetworkMode]
 	networkMode.parse = func(raw string) (model.NetworkMode, error) {
 		value := model.NetworkMode(raw)
 		if value != model.NetworkUser && value != model.NetworkSocketVMNet {
-			return "", fmt.Errorf("must be user or socket_vmnet")
+			return "", fmt.Errorf("valid values: user, socket_vmnet")
 		}
 		return value, nil
 	}
@@ -121,8 +120,7 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 	var forwards forwardValues
 	var clearForwards bool
 
-	flags := flag.NewFlagSet("set", flag.ContinueOnError)
-	flags.SetOutput(stderr)
+	flags := quietFlagSet("set")
 	flags.Var(&cpus, "cpus", "virtual CPU count")
 	flags.Var(&memory, "memory", "memory as whole MiB or GiB")
 	flags.Var(&restart, "restart-policy", "never or on-failure")
@@ -139,6 +137,9 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 	}
 	if flags.NArg() != 0 {
 		return usageErrorf("set %s: unexpected argument %q", name, flags.Arg(0))
+	}
+	if flags.NFlag() == 0 {
+		return usageErrorf("set %s: no changes requested; provide at least one option", name)
 	}
 
 	lock, err := a.Store.LockName(name)
@@ -189,6 +190,13 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 		}
 	case model.NetworkSocketVMNet:
 		settings := config.Network.SocketVMNet
+		customSocketVMNet := clientPath.set || socketPath.set || interfaceName.set
+		if settings == nil && !customSocketVMNet && a.DiscoverSocketVMNet != nil {
+			if discovered := a.DiscoverSocketVMNet(); discovered != nil {
+				copy := *discovered
+				settings = &copy
+			}
+		}
 		if settings == nil {
 			settings = &model.SocketVMNetConfig{}
 		}
@@ -202,7 +210,10 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 			settings.Interface = interfaceName.value
 		}
 		if !filepath.IsAbs(settings.ClientPath) || !filepath.IsAbs(settings.SocketPath) || settings.Interface == "" {
-			return fmt.Errorf("config: switching to socket_vmnet requires absolute nonempty client and socket paths and a nonempty interface")
+			return usageErrorf(
+				"set %s: socket_vmnet requires --socket-vmnet-client, --socket-vmnet-socket, and --socket-vmnet-interface when defaults cannot be discovered; install with `brew install socket_vmnet`",
+				name,
+			)
 		}
 		config.Network.Mode = model.NetworkSocketVMNet
 		config.Network.SocketVMNet = settings
