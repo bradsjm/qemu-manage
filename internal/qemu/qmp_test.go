@@ -1,0 +1,265 @@
+package qemu
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"qemu-manage/internal/model"
+)
+
+type qmpTestServer struct {
+	path string
+	done chan error
+}
+
+func startQMPServer(t *testing.T, serve func(net.Conn) error) qmpTestServer {
+	t.Helper()
+	root, err := os.MkdirTemp(os.TempDir(), "qm-p-")
+	if err != nil {
+		t.Fatalf("create QMP socket root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(root)
+	})
+	path := filepath.Join(root, "qmp.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			err = serve(conn)
+			if conn != nil {
+				_ = conn.Close()
+			}
+		}
+		_ = listener.Close()
+		done <- err
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		if err := <-done; err != nil {
+			t.Errorf("QMP server: %v", err)
+		}
+	})
+	return qmpTestServer{path: path, done: done}
+}
+
+func readQMPCommand(reader *bufio.Reader) (qmpCommand, error) {
+	var command qmpCommand
+	err := json.NewDecoder(reader).Decode(&command)
+	return command, err
+}
+
+func qmpGreetingJSON() string {
+	return `{"QMP":{"version":{"qemu":{"major":11,"minor":0,"micro":1},"package":"test"},"capabilities":[]}}` + "\n"
+}
+
+func initializeQMP(conn net.Conn, reader *bufio.Reader) error {
+	if _, err := conn.Write([]byte(qmpGreetingJSON())); err != nil {
+		return err
+	}
+	command, err := readQMPCommand(reader)
+	if err != nil {
+		return err
+	}
+	if command.Execute != "qmp_capabilities" || command.ID != 1 {
+		return fmt.Errorf("capabilities command = %#v", command)
+	}
+	_, err = fmt.Fprintf(conn, `{"return":{},"id":%d}`+"\n", command.ID)
+	return err
+}
+
+func TestQMPFramingEventsIDsAndStatusMapping(t *testing.T) {
+	statuses := []string{"running", "paused", "shutdown"}
+	server := startQMPServer(t, func(conn net.Conn) error {
+		reader := bufio.NewReader(conn)
+		greeting := qmpGreetingJSON()
+		if _, err := conn.Write([]byte(greeting[:13])); err != nil {
+			return err
+		}
+		if _, err := conn.Write([]byte(greeting[13:])); err != nil {
+			return err
+		}
+		command, err := readQMPCommand(reader)
+		if err != nil {
+			return err
+		}
+		if _, err = fmt.Fprintf(conn, `{"event":"RESET","data":{}}`+"\n"+`{"return":{},"id":999}`+"\n"+`{"return":{},"id":%d}`+"\n", command.ID); err != nil {
+			return err
+		}
+		for _, status := range statuses {
+			command, err = readQMPCommand(reader)
+			if err != nil {
+				return err
+			}
+			if command.Execute != "query-status" {
+				return fmt.Errorf("execute = %q", command.Execute)
+			}
+			if _, err = fmt.Fprintf(conn, `{"event":"STOP"}`+"\n"+`{"return":{"status":%q},"id":0}`+"\n"+`{"return":{"status":%q},"id":%d}`+"\n", status, status, command.ID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	client, err := NewQMPClient(server.path)
+	if err != nil {
+		t.Fatalf("NewQMPClient: %v", err)
+	}
+	defer client.Close()
+	for _, tc := range []struct {
+		want       model.RunState
+		unexpected string
+	}{{model.RunStateRunning, ""}, {model.RunStatePaused, ""}, {model.RunStateFailed, "shutdown"}} {
+		got, err := client.Status(context.Background())
+		if tc.unexpected == "" {
+			if err != nil || got != tc.want {
+				t.Errorf("Status = %q, %v; want %q, nil", got, err, tc.want)
+			}
+		} else {
+			var statusErr *UnexpectedStatusError
+			if got != model.RunStateFailed || !errors.As(err, &statusErr) || statusErr.Status != tc.unexpected {
+				t.Errorf("unexpected status = %q, %v", got, err)
+			}
+		}
+	}
+}
+
+func TestQMPGreetingAndCapabilityFailures(t *testing.T) {
+	cases := []struct{ name, greeting, response string }{
+		{"missing version", `{"QMP":{"capabilities":[]}}` + "\n", ""},
+		{"malformed greeting", "not-json\n", ""},
+		{"capability error", qmpGreetingJSON(), `{"error":{"class":"CommandNotFound","desc":"disabled"},"id":1}` + "\n"},
+		{"invalid capability result", qmpGreetingJSON(), `{"return":null,"id":1}` + "\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := startQMPServer(t, func(conn net.Conn) error {
+				if _, err := conn.Write([]byte(tc.greeting)); err != nil {
+					return err
+				}
+				if tc.response != "" {
+					if _, err := readQMPCommand(bufio.NewReader(conn)); err != nil {
+						return err
+					}
+					_, err := conn.Write([]byte(tc.response))
+					return err
+				}
+				return nil
+			})
+			client, err := NewQMPClient(server.path)
+			if client != nil {
+				_ = client.Close()
+			}
+			if err == nil {
+				t.Fatal("NewQMPClient unexpectedly succeeded")
+			}
+		})
+	}
+}
+
+func TestQMPStructuredErrorPreserved(t *testing.T) {
+	server := startQMPServer(t, func(conn net.Conn) error {
+		reader := bufio.NewReader(conn)
+		if err := initializeQMP(conn, reader); err != nil {
+			return err
+		}
+		command, err := readQMPCommand(reader)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(conn, `{"error":{"class":"GenericError","desc":"power denied","extra":7},"id":%d}`+"\n", command.ID)
+		return err
+	})
+	client, err := NewQMPClient(server.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	err = client.SystemPowerdown(context.Background())
+	var qmpErr *QMPError
+	if !errors.As(err, &qmpErr) || qmpErr.Class != "GenericError" || qmpErr.Description != "power denied" || !json.Valid(qmpErr.Data) {
+		t.Fatalf("error = %#v", err)
+	}
+	if !jsonContainsKey(qmpErr.Data, "extra") {
+		t.Fatalf("structured error data lost: %s", qmpErr.Data)
+	}
+}
+
+func TestQMPCancelledQueuedCommandDoesNotConsumeStream(t *testing.T) {
+	firstSeen := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var mu sync.Mutex
+	var ids []int64
+	server := startQMPServer(t, func(conn net.Conn) error {
+		reader := bufio.NewReader(conn)
+		if err := initializeQMP(conn, reader); err != nil {
+			return err
+		}
+		first, err := readQMPCommand(reader)
+		if err != nil {
+			return err
+		}
+		mu.Lock()
+		ids = append(ids, first.ID)
+		mu.Unlock()
+		close(firstSeen)
+		<-releaseFirst
+		if _, err = fmt.Fprintf(conn, `{"return":{},"id":%d}`+"\n", first.ID); err != nil {
+			return err
+		}
+		third, err := readQMPCommand(reader)
+		if err != nil {
+			return err
+		}
+		mu.Lock()
+		ids = append(ids, third.ID)
+		mu.Unlock()
+		_, err = fmt.Fprintf(conn, `{"return":{},"id":%d}`+"\n", third.ID)
+		return err
+	})
+	client, err := NewQMPClient(server.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- client.SystemPowerdown(context.Background()) }()
+	<-firstSeen
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := client.Quit(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("queued cancellation = %v", err)
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first command: %v", err)
+	}
+	deadline, cancelDeadline := context.WithDeadline(context.Background(), time.Now().Add(time.Second))
+	defer cancelDeadline()
+	if err := client.Quit(deadline); err != nil {
+		t.Fatalf("command after cancellation: %v", err)
+	}
+	mu.Lock()
+	got := append([]int64(nil), ids...)
+	mu.Unlock()
+	if fmt.Sprint(got) != "[2 3]" {
+		t.Fatalf("wire IDs = %v; canceled waiter consumed an ID", got)
+	}
+}
+
+func jsonContainsKey(data []byte, key string) bool {
+	var object map[string]json.RawMessage
+	return json.Unmarshal(data, &object) == nil && object[key] != nil
+}

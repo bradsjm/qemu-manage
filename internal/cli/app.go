@@ -1,0 +1,204 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"os/user"
+	"strconv"
+
+	"qemu-manage/internal/backend"
+	"qemu-manage/internal/launchd"
+	"qemu-manage/internal/lifecycle"
+	"qemu-manage/internal/model"
+	"qemu-manage/internal/qemu"
+	"qemu-manage/internal/store"
+	"qemu-manage/internal/supervisor"
+)
+
+type PlatformUser struct {
+	Name string
+	Home string
+	UID  int
+}
+
+type StatusRow struct {
+	Name                string         `json:"name"`
+	State               model.RunState `json:"state"`
+	RestartRequired     bool           `json:"restart_required"`
+	PID                 *int           `json:"pid,omitempty"`
+	Backend             string         `json:"backend,omitempty"`
+	CurrentConfigSHA256 string         `json:"current_config_sha256,omitempty"`
+	RunningConfigSHA256 string         `json:"running_config_sha256,omitempty"`
+	Error               string         `json:"error,omitempty"`
+}
+
+type RuntimeService interface {
+	Status(context.Context, *model.Config) (StatusRow, error)
+	DeleteAllowed(context.Context, *model.Config) (bool, error)
+}
+
+type App struct {
+	Store          *store.Store
+	Backends       *backend.Registry
+	Lifecycle      *lifecycle.Service
+	Supervisor     *supervisor.Service
+	Launchd        *launchd.Manager
+	Geteuid        func() int
+	ExecutablePath string
+	User           PlatformUser
+	RunExternal    func(context.Context, string, []string) error
+	Runtime        RuntimeService
+
+	initializationError error
+}
+
+func NewApp() *App {
+	if os.Geteuid() == 0 {
+		return &App{Geteuid: os.Geteuid}
+	}
+
+	a := &App{
+		Backends: backend.NewRegistry(),
+		Geteuid:  os.Geteuid,
+		RunExternal: func(ctx context.Context, path string, args []string) error {
+			return exec.CommandContext(ctx, path, args...).Run()
+		},
+	}
+
+	var storeErr error
+	a.Store, storeErr = store.Default()
+
+	path, executableErr := os.Executable()
+	if executableErr == nil {
+		a.ExecutablePath = path
+	}
+
+	var uidErr error
+	current, currentUserErr := user.Current()
+	if currentUserErr == nil {
+		a.User.Name = current.Username
+		a.User.Home = current.HomeDir
+		a.User.UID, uidErr = strconv.Atoi(current.Uid)
+	}
+
+	registerErr := a.Backends.RegisterInstance(string(model.BackendQEMU), qemu.NewBackend())
+	a.initializationError = errors.Join(storeErr, executableErr, currentUserErr, uidErr, registerErr)
+
+	a.Lifecycle = lifecycle.NewService(a.Store)
+	a.Supervisor = supervisor.NewService(a.Store, a.Backends)
+	a.Supervisor.Preflight = func(ctx context.Context, config *model.Config, paths store.Paths) error {
+		if _, err := a.Backends.Lookup(string(config.Backend)); err != nil {
+			return err
+		}
+		return qemu.RequiredPassed(qemu.Doctor(ctx, *config, backendPaths(paths)))
+	}
+	a.Launchd = launchd.NewManager(a.Store, a.ExecutablePath, a.User.Name, a.User.Home, a.User.UID)
+	a.Runtime = newRuntimeAdapter(a.Lifecycle)
+	a.Launchd.Stopped = a.Lifecycle.DeleteAllowed
+	a.Launchd.Stop = func(ctx context.Context, cfg *model.Config) error {
+		return a.Lifecycle.Stop(ctx, cfg, 0, false)
+	}
+	return a
+}
+
+type usageError struct {
+	message string
+}
+
+func (e *usageError) Error() string { return e.message }
+
+func usageErrorf(format string, args ...any) error {
+	return &usageError{message: fmt.Sprintf(format, args...)}
+}
+
+func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if a.Geteuid == nil || a.Geteuid() == 0 {
+		fmt.Fprintln(stderr, "runtime: qemu-manage must not run as root")
+		return 1
+	}
+	if a.initializationError != nil {
+		fmt.Fprintf(stderr, "config: initialize store: %v\n", a.initializationError)
+		return 1
+	}
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: qemu-manage COMMAND")
+		return 2
+	}
+
+	var err error
+	switch args[0] {
+	case "create":
+		name, rest, parseErr := nameBeforeFlags("create", args[1:])
+		if parseErr != nil {
+			err = parseErr
+		} else {
+			err = a.runCreate(ctx, name, rest, stdin, stdout, stderr)
+		}
+	case "set":
+		name, rest, parseErr := nameBeforeFlags("set", args[1:])
+		if parseErr != nil {
+			err = parseErr
+		} else {
+			err = a.runSet(ctx, name, rest, stdin, stdout, stderr)
+		}
+	case "config":
+		err = a.dispatchConfig(ctx, args[1:], stdin, stdout, stderr)
+	case "showcmd", "status", "list", "delete":
+		err = a.runInfoCommand(ctx, args[0], args[1:], stdin, stdout, stderr)
+	case "start", "stop", "console", "doctor", "supervise":
+		err = a.runRuntimeCommand(ctx, args[0], args[1:], stdin, stdout, stderr)
+	case "autostart":
+		err = a.runAutostart(ctx, args[1:], stdout, stderr)
+	default:
+		err = usageErrorf("unknown command %q", args[0])
+	}
+	if err == nil {
+		return 0
+	}
+	fmt.Fprintln(stderr, err)
+	var usage *usageError
+	if errors.As(err, &usage) {
+		return 2
+	}
+	return 1
+}
+
+func (a *App) dispatchConfig(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
+		return usageErrorf("config: missing subcommand")
+	}
+	switch args[0] {
+	case "show", "validate", "apply":
+		return a.runConfig(ctx, args[0], args[1:], stdin, stdout, stderr)
+	default:
+		return usageErrorf("config: unknown subcommand %q", args[0])
+	}
+}
+
+func nameBeforeFlags(command string, args []string) (string, []string, error) {
+	if len(args) == 0 || args[0] == "" || args[0][0] == '-' {
+		return "", nil, usageErrorf("%s: missing NAME", command)
+	}
+	return args[0], args[1:], nil
+}
+
+func quietFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	return fs
+}
+
+func parseNoPositionals(fs *flag.FlagSet, command string, args []string) error {
+	if err := fs.Parse(args); err != nil {
+		return usageErrorf("%s: %v", command, err)
+	}
+	if fs.NArg() != 0 {
+		return usageErrorf("%s: unexpected arguments", command)
+	}
+	return nil
+}
