@@ -1,0 +1,23 @@
+# Built executables and package outputs
+/qemu-manage
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Coverage, profiling, and diagnostics
+coverage.*
+*.prof
+*.trace
+
+# Local Go workspaces
+/go.work
+/go.work.sum
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
