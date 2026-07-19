@@ -60,6 +60,8 @@ Defaults:
 Source and storage:
   --image SOURCE           Local path or HTTP(S) URL to qcow2/raw image
   --iso PATH               Copy an installer ISO (default: none)
+  --cloud-init-user-data PATH
+                           Copy one user-data file into a managed NoCloud seed
   --disk-size SIZE         Primary disk size (default: 32GiB)
 
 Resources and lifecycle:
@@ -115,6 +117,12 @@ Relative drive files become absolute external references and must stay readable
 and in place. Double each literal comma in a value as ",,". Omitted format is
 detected; omitted if means virtio; host and QEMU support still govern aio=native.
 
+--cloud-init-user-data copies one user-data file into a managed read-only
+NoCloud ISO labelled CIDATA and generates meta-data using the VM UUID as the
+instance-id. The guest image must support the NoCloud datasource. The seed
+remains attached across boots; cloud-init normally applies per-instance
+configuration only on the first boot.
+
 --share PATH exports one host directory through QEMU's built-in user-network SMB
 server. It is create-only, user-network-only, and accepts a single folder: QEMU
 exposes exactly one fixed share at //10.0.2.4/qemu. Relative paths are normalized
@@ -135,6 +143,11 @@ Examples:
     --network user --forward tcp:127.0.0.1:2222:22 \
     --guest-agent on --rtc-base utc \
     --restart-policy on-failure
+
+  # Provision a local AArch64 cloud image with NoCloud user-data.
+  qemu-manage create cloud-vm \
+    --image "$HOME/Images/cloud-aarch64.qcow2" \
+    --cloud-init-user-data "$HOME/Images/user-data"
 
   # Create a blank disk and boot an installer ISO with VNC and a UK keyboard.
   qemu-manage create linux \

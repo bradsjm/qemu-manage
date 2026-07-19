@@ -88,6 +88,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	diskSize := flags.String("disk-size", "32GiB", "primary disk size (whole MiB or GiB)")
 	image := flags.String("image", "", "source disk image")
 	iso := flags.String("iso", "", "installer ISO")
+	cloudInitUserData := flags.String("cloud-init-user-data", "", "cloud-init NoCloud user-data file")
 	qemu := flags.String("qemu", "qemu-system-aarch64", "QEMU executable")
 	qemuImg := flags.String("qemu-img", "qemu-img", "qemu-img executable")
 	firmwareCode := flags.String("firmware-code", defaultFirmwareCode, "AArch64 UEFI code image (auto-detected)")
@@ -117,6 +118,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		return usageErrorf("create: %v", err)
 	}
 	firmwareCodeExplicit, firmwareVarsExplicit := false, false
+	cloudInitUserDataExplicit := false
 	vncDetailExplicit := false
 	keyboardLayoutExplicit := false
 	flags.Visit(func(option *flag.Flag) {
@@ -125,6 +127,8 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			firmwareCodeExplicit = true
 		case "firmware-vars":
 			firmwareVarsExplicit = true
+		case "cloud-init-user-data":
+			cloudInitUserDataExplicit = true
 		case "vnc-password", "vnc-bind", "vnc-port", "vnc-port-to":
 			vncDetailExplicit = true
 		case "keyboard-layout":
@@ -132,6 +136,9 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			keyboardLayoutExplicit = true
 		}
 	})
+	if cloudInitUserDataExplicit && *cloudInitUserData == "" {
+		return usageErrorf("create: --cloud-init-user-data must not be empty")
+	}
 	if firmwareCodeExplicit != firmwareVarsExplicit {
 		return usageErrorf("create: --firmware-code and --firmware-vars must be provided together")
 	}
@@ -192,6 +199,11 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	imageSource, err := parseImageSource(*image)
 	if err != nil {
 		return usageErrorf("create: --image: %v", err)
+	}
+	if *cloudInitUserData != "" {
+		if err := requireRegularSource(*cloudInitUserData); err != nil {
+			return fmt.Errorf("create: --cloud-init-user-data %q: %w", *cloudInitUserData, err)
+		}
 	}
 	var vnc *model.VNCConfig
 	if *vncEnabled {
@@ -319,6 +331,15 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			AIO:       drive.AIO,
 		})
 	}
+	if *cloudInitUserData != "" {
+		disks = append(disks, model.DiskConfig{
+			Path:      cloudInitSeedFilename,
+			Format:    "raw",
+			Serial:    "cloud-init-" + id[:16],
+			BootIndex: primaryBootIndex + len(drives) + 1,
+			ReadOnly:  true,
+		})
+	}
 	config := &model.Config{
 		SchemaVersion:          model.SchemaVersion,
 		ID:                     id,
@@ -354,6 +375,18 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		if installer != nil {
 			if err := copyRegularFile(*iso, filepath.Join(paths.VMDir, installer.Path), 0o400, stderr, true, a.progressInteractive(stderr), "Copying installer ISO"); err != nil {
 				return fmt.Errorf("copy installer: %w", err)
+			}
+		}
+		if *cloudInitUserData != "" {
+			if err := a.createCloudInitSeed(
+				ctx,
+				*cloudInitUserData,
+				filepath.Join(paths.VMDir, cloudInitSeedFilename),
+				config.UUID,
+				stderr,
+				a.progressInteractive(stderr),
+			); err != nil {
+				return err
 			}
 		}
 		diskPath := filepath.Join(paths.VMDir, config.Disks[0].Path)

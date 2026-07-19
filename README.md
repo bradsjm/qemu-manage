@@ -172,6 +172,39 @@ qemu-manage create appliance \
   --disk-size 32GiB
 ```
 
+### Provision a cloud image with cloud-init
+
+Create a user-data file for a cloud-init-compatible AArch64 image:
+
+```yaml
+#cloud-config
+users:
+  - name: operator
+    groups: [adm, sudo]
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+```
+
+Supply it when creating the VM:
+
+```sh
+qemu-manage create cloud-vm \
+  --image "$HOME/Downloads/cloud-aarch64.qcow2" \
+  --cloud-init-user-data "$HOME/Downloads/user-data" \
+  --cpus 2 \
+  --memory 4GiB
+```
+
+The guest image must support cloud-init's NoCloud datasource. qemu-manage uses
+the supported macOS host's built-in `/usr/bin/hdiutil` to copy `user-data` into
+a managed read-only ISO labelled `CIDATA` and generates `meta-data` with the VM
+UUID as its `instance-id`. The source file need not remain after creation. The
+seed stays attached across boots and is deleted with the VM; cloud-init normally
+applies per-instance configuration only on the first boot.
+
+User-data may contain secrets. Guest root can read those secrets from the
+attached seed, so protect the source and provisioned guest accordingly.
+
 ### Install from an ARM64 ISO
 
 Pass a local ISO to `--iso`. The tool creates the qcow2 disk, copies the ISO
