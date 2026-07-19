@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bradsjm/qemu-manage/internal/backend"
+	"github.com/bradsjm/qemu-manage/internal/model"
 	"golang.org/x/sys/unix"
-	"qemu-manage/internal/backend"
-	"qemu-manage/internal/model"
 )
 
 // CheckStatus is the result of one doctor check.

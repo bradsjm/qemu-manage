@@ -14,8 +14,8 @@ import (
 
 	"golang.org/x/term"
 
-	"qemu-manage/internal/model"
-	"qemu-manage/internal/store"
+	"github.com/bradsjm/qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/store"
 )
 
 func (a *App) runInfoCommand(ctx context.Context, command string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {

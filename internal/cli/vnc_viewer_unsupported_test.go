@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"qemu-manage/internal/backend"
+	"github.com/bradsjm/qemu-manage/internal/backend"
 )
 
 func TestOpenVNCUnsupportedPlatform(t *testing.T) {

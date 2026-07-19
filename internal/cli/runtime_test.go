@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"qemu-manage/internal/backend"
-	"qemu-manage/internal/launchd"
-	"qemu-manage/internal/lifecycle"
-	"qemu-manage/internal/model"
-	"qemu-manage/internal/store"
-	"qemu-manage/internal/supervisor"
+	"github.com/bradsjm/qemu-manage/internal/backend"
+	"github.com/bradsjm/qemu-manage/internal/launchd"
+	"github.com/bradsjm/qemu-manage/internal/lifecycle"
+	"github.com/bradsjm/qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/store"
+	"github.com/bradsjm/qemu-manage/internal/supervisor"
 )
 
 type fakeRuntime struct {

@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"qemu-manage/internal/store"
+	"github.com/bradsjm/qemu-manage/internal/store"
 )
 
 const (

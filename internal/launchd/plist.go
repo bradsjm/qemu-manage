@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"text/template"
 
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 const launchdPath = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"

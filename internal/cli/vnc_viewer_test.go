@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"qemu-manage/internal/backend"
+	"github.com/bradsjm/qemu-manage/internal/backend"
 )
 
 type recordedVNCCommand struct {

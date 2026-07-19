@@ -1,4 +1,4 @@
-module qemu-manage
+module github.com/bradsjm/qemu-manage
 
 go 1.25.0
 

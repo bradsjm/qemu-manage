@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 type qmpTestServer struct {

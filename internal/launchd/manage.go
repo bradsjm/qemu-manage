@@ -14,8 +14,8 @@ import (
 	"strings"
 	"syscall"
 
-	"qemu-manage/internal/model"
-	"qemu-manage/internal/store"
+	"github.com/bradsjm/qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/store"
 )
 
 const launchctlPath = "/bin/launchctl"

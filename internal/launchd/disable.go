@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 type disabledDomain struct {

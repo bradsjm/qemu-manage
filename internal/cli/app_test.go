@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"qemu-manage/internal/model"
-	"qemu-manage/internal/store"
+	"github.com/bradsjm/qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/store"
 )
 
 func testApp(t *testing.T) *App {

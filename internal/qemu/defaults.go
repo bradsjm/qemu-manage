@@ -3,7 +3,7 @@ package qemu
 import (
 	"os"
 
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 type firmwareInstallation struct {

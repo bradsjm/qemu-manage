@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 func assertBlocked(t *testing.T, done <-chan error) {

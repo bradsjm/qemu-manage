@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"qemu-manage/internal/store"
+	"github.com/bradsjm/qemu-manage/internal/store"
 )
 
 const defaultReadyTimeout = 15 * time.Second

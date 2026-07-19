@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"qemu-manage/internal/backend"
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/backend"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 const defaultStartTimeout = 15 * time.Second
@@ -17,6 +17,7 @@ const defaultStartTimeout = 15 * time.Second
 // Backend implements the QEMU backend.
 type Backend struct {
 	StartTimeout time.Duration
+	removeFile   func(string) error
 }
 
 func NewBackend() *Backend {

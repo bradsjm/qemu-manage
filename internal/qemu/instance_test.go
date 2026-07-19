@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"qemu-manage/internal/backend"
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/backend"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 const (
@@ -23,7 +23,6 @@ const (
 	helperEnvQMPPath      = "QEMU_MANAGE_TEST_QEMU_QMP"
 	helperEnvSecretPath   = "QEMU_MANAGE_TEST_QEMU_SECRET"
 	helperEnvObservePath  = "QEMU_MANAGE_TEST_QEMU_OBSERVE"
-	helperEnvRuntimeDir   = "QEMU_MANAGE_TEST_QEMU_RUNTIME_DIR"
 	helperEnvQuitMarker   = "QEMU_MANAGE_TEST_QEMU_QUIT_MARKER"
 	helperScenarioSuccess = "success"
 )
@@ -49,7 +48,6 @@ func runQEMUHelperProcess() error {
 	qmpPath := os.Getenv(helperEnvQMPPath)
 	secretPath := os.Getenv(helperEnvSecretPath)
 	observePath := os.Getenv(helperEnvObservePath)
-	runtimeDir := os.Getenv(helperEnvRuntimeDir)
 	quitMarker := os.Getenv(helperEnvQuitMarker)
 
 	if observePath != "" {
@@ -102,20 +100,10 @@ func runQEMUHelperProcess() error {
 				return fmt.Errorf("write query-status response: %w", err)
 			}
 		case "query-vnc":
-			if scenario == "cleanup-remove-fail" {
-				if err := os.Chmod(runtimeDir, 0o500); err != nil {
-					return fmt.Errorf("chmod runtime dir: %w", err)
-				}
-			}
 			if _, err := fmt.Fprintf(conn, `{"return":%s,"id":%d}`+"\n", helperVNCResponse(scenario), command.ID); err != nil {
 				return fmt.Errorf("write query-vnc response: %w", err)
 			}
 		case "quit":
-			if scenario == "cleanup-remove-fail" {
-				if err := os.Chmod(runtimeDir, 0o700); err != nil {
-					return fmt.Errorf("restore runtime dir: %w", err)
-				}
-			}
 			if quitMarker != "" {
 				if err := os.WriteFile(quitMarker, []byte("quit"), 0o600); err != nil {
 					return fmt.Errorf("write quit marker: %w", err)
@@ -223,17 +211,24 @@ func TestStartForcesStopOnVNCVerificationOrCleanupFailure(t *testing.T) {
 		scenario        string
 		wantErrorSubstr string
 		wantSecretGone  bool
+		removeFile      func(string) error
 	}{
 		{scenario: "disabled", wantErrorSubstr: "VNC is disabled", wantSecretGone: true},
 		{scenario: "wrong-family", wantErrorSubstr: `family "ipv6"`, wantSecretGone: true},
 		{scenario: "wrong-auth", wantErrorSubstr: `auth "sasl"`, wantSecretGone: true},
 		{scenario: "out-of-range", wantErrorSubstr: "outside 5900-5909", wantSecretGone: true},
-		{scenario: "cleanup-remove-fail", wantErrorSubstr: "remove VNC secret", wantSecretGone: false},
+		{
+			scenario:        "cleanup-remove-fail",
+			wantErrorSubstr: "remove VNC secret",
+			removeFile: func(string) error {
+				return errors.New("injected removal failure")
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.scenario, func(t *testing.T) {
 			config, paths, command, _, quitMarker := startVNCInstanceFixture(t, tc.scenario)
-			_, err := (&Backend{StartTimeout: time.Second}).Start(context.Background(), config, paths, command)
+			_, err := (&Backend{StartTimeout: time.Second, removeFile: tc.removeFile}).Start(context.Background(), config, paths, command)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErrorSubstr) {
 				t.Fatalf("Start error = %v, want substring %q", err, tc.wantErrorSubstr)
 			}
@@ -265,7 +260,6 @@ func startVNCInstanceFixture(t *testing.T, scenario string) (*model.Config, back
 	t.Setenv(helperEnvQMPPath, qmpPath)
 	t.Setenv(helperEnvSecretPath, secretPath)
 	t.Setenv(helperEnvObservePath, observationPath)
-	t.Setenv(helperEnvRuntimeDir, root)
 	t.Setenv(helperEnvQuitMarker, quitMarker)
 	config := &model.Config{
 		GuestAgent: model.GuestAgentConfig{Enabled: false},

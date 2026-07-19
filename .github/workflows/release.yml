@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Test
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Build release archive
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::release tags must match vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/package
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o dist/package/qemu-manage ./cmd/qemu-manage
+          cp LICENSE README.md dist/package/
+          tar -C dist/package -czf "dist/qemu-manage_${version}_darwin_arm64.tar.gz" qemu-manage LICENSE README.md
+          rm -rf dist/package
+          (cd dist && sha256sum "qemu-manage_${version}_darwin_arm64.tar.gz" > checksums.txt)
+      - name: Publish GitHub release
+        if: ${{ !env.ACT }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/qemu-manage_*.tar.gz dist/checksums.txt --verify-tag --generate-notes

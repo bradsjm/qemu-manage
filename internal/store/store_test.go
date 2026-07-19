@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"testing"
 
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 func testStore(t *testing.T) *Store {

@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 
-	"qemu-manage/internal/backend"
+	"github.com/bradsjm/qemu-manage/internal/backend"
 )
 
 func openVNC(_ context.Context, _ backend.VNCEndpoint, _ string) error {

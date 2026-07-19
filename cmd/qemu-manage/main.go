@@ -8,7 +8,7 @@ import (
 	"strings"
 	"syscall"
 
-	"qemu-manage/internal/cli"
+	"github.com/bradsjm/qemu-manage/internal/cli"
 )
 
 func main() { os.Exit(run()) }

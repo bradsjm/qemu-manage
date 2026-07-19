@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"qemu-manage/internal/backend"
+	"github.com/bradsjm/qemu-manage/internal/backend"
 )
 
 type vncCommandRunner func(context.Context, string, []string, io.Reader) error

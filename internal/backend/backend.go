@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 // RuntimePaths contains the durable VM directory and the ephemeral or log paths

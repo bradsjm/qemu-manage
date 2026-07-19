@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 // Enable installs and loads the launchd job for name. The name mutation lock is

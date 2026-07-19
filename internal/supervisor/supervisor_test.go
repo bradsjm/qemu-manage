@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"qemu-manage/internal/backend"
-	"qemu-manage/internal/model"
-	"qemu-manage/internal/store"
+	"github.com/bradsjm/qemu-manage/internal/backend"
+	"github.com/bradsjm/qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/store"
 )
 
 type fakeInstance struct {

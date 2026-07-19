@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"qemu-manage/internal/store"
+	"github.com/bradsjm/qemu-manage/internal/store"
 )
 
 func privateRuntimeDir(t *testing.T) string {

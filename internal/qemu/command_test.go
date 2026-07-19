@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"qemu-manage/internal/backend"
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/backend"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 func renderFixture() (*model.Config, backend.RuntimePaths) {

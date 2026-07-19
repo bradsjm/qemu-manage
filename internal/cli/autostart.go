@@ -6,9 +6,9 @@ import (
 	"io"
 	"strings"
 
-	"qemu-manage/internal/launchd"
-	"qemu-manage/internal/model"
-	"qemu-manage/internal/qemu"
+	"github.com/bradsjm/qemu-manage/internal/launchd"
+	"github.com/bradsjm/qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/qemu"
 )
 
 func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io.Writer) error {

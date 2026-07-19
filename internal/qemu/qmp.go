@@ -10,7 +10,7 @@ import (
 	"net"
 	"time"
 
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 const qmpOperationTimeout = 15 * time.Second

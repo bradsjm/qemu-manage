@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"qemu-manage/internal/backend"
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/backend"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 const testProtocolID = "0123456789abcdef0123456789abcdef"

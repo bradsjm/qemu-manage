@@ -7,7 +7,7 @@ import (
 	"io"
 	"os/exec"
 
-	"qemu-manage/internal/backend"
+	"github.com/bradsjm/qemu-manage/internal/backend"
 )
 
 func openVNC(ctx context.Context, endpoint backend.VNCEndpoint, password string) error {

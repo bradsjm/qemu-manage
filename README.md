@@ -5,7 +5,7 @@
 ## Requirements
 
 - Apple Silicon Mac running macOS 13 or newer
-- Go 1.25 or newer to build from source
+- Go 1.25 or newer to build from source or install with `go install`
 - QEMU for AArch64 guests:
 
   ```sh
@@ -16,7 +16,43 @@
 
 The first release supports native AArch64 guests using QEMU's HVF accelerator. It does not silently fall back to cross-architecture emulation.
 
-## Build
+## Installation
+
+### GitHub release
+
+Download the latest archive from [GitHub Releases](https://github.com/bradsjm/qemu-manage/releases/latest). Release archives are unsigned and target Apple Silicon macOS only. macOS may require you to approve the specific `qemu-manage` binary in Privacy & Security before running it.
+
+Replace `0.1.0` with the release version you want to install:
+
+```sh
+VERSION=0.1.0
+curl -fLO "https://github.com/bradsjm/qemu-manage/releases/download/v${VERSION}/qemu-manage_${VERSION}_darwin_arm64.tar.gz"
+curl -fLO "https://github.com/bradsjm/qemu-manage/releases/download/v${VERSION}/checksums.txt"
+shasum -a 256 -c checksums.txt
+tar -xzf "qemu-manage_${VERSION}_darwin_arm64.tar.gz"
+mkdir -p "$HOME/.local/bin"
+install -m 0755 qemu-manage "$HOME/.local/bin/qemu-manage"
+```
+
+Ensure `$HOME/.local/bin` is on your `PATH`.
+
+### Install with Go
+
+Install the latest release:
+
+```sh
+go install github.com/bradsjm/qemu-manage/cmd/qemu-manage@latest
+```
+
+Or install a specific version:
+
+```sh
+go install github.com/bradsjm/qemu-manage/cmd/qemu-manage@v0.1.0
+```
+
+This method requires Go 1.25 or newer and builds `qemu-manage` locally instead of installing the unsigned release archive.
+
+### Build from source
 
 ```sh
 go build -o qemu-manage ./cmd/qemu-manage

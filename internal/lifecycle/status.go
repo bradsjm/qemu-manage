@@ -9,10 +9,10 @@ import (
 	"net"
 	"time"
 
-	"qemu-manage/internal/backend"
-	"qemu-manage/internal/model"
-	"qemu-manage/internal/store"
-	"qemu-manage/internal/supervisor"
+	"github.com/bradsjm/qemu-manage/internal/backend"
+	"github.com/bradsjm/qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/store"
+	"github.com/bradsjm/qemu-manage/internal/supervisor"
 )
 
 const startupObservationWindow = 15 * time.Second

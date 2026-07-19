@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"qemu-manage/internal/backend"
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/backend"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 const (
@@ -64,7 +64,7 @@ func (b *Backend) Start(ctx context.Context, config *model.Config, paths backend
 	secretPrepared := false
 	cleanupPreparedSecret := func(primary error) error {
 		if secretPrepared {
-			primary = errors.Join(primary, removeVNCSecret(paths.VNCSecret))
+			primary = errors.Join(primary, b.removeVNCSecret(paths.VNCSecret))
 		}
 		return primary
 	}
@@ -158,7 +158,7 @@ func (b *Backend) Start(ctx context.Context, config *model.Config, paths backend
 		i.hasVNC = true
 	}
 	if secretPrepared {
-		if err := removeVNCSecret(paths.VNCSecret); err != nil {
+		if err := b.removeVNCSecret(paths.VNCSecret); err != nil {
 			return nil, errors.Join(err, i.ForceStop(context.Background()))
 		}
 		secretPrepared = false
@@ -245,11 +245,15 @@ func writeVNCSecret(path, password string) error {
 	return nil
 }
 
-func removeVNCSecret(path string) error {
+func (b *Backend) removeVNCSecret(path string) error {
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("qemu: VNC secret path must be absolute")
 	}
-	if err := os.Remove(path); err != nil {
+	removeFile := os.Remove
+	if b.removeFile != nil {
+		removeFile = b.removeFile
+	}
+	if err := removeFile(path); err != nil {
 		return fmt.Errorf("qemu: remove VNC secret: %w", err)
 	}
 	if err := syncDirectory(filepath.Dir(path)); err != nil {

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 func TestRenderPlistScopesPoliciesAndEscaping(t *testing.T) {

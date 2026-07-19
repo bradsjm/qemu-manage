@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"qemu-manage/internal/model"
-	"qemu-manage/internal/supervisor"
+	"github.com/bradsjm/qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/supervisor"
 )
 
 // InvalidStopTimeoutError reports a stop timeout that cannot be represented by

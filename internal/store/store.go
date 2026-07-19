@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 const (

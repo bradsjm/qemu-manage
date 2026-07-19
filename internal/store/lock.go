@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
 var ErrLocked = errors.New("lock is held")
