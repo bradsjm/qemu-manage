@@ -4,6 +4,8 @@
 [![Coding Harness](https://img.shields.io/badge/coding_harness-oh--my--pi/gpt--5.6-orange)](https://opencode.ai/)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/bradsjm/qemu-manage)
 
+![qemu-manage logo](./artifacts/banner.png)
+
 **A single-binary CLI for managing headless AArch64 QEMU virtual machines on Apple Silicon.** No persistent daemon, no database, no shell execution — just declarative JSON configs, per-VM supervisors, and authenticated control sockets.
 
 ## Features
