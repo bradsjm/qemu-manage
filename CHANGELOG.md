@@ -2,6 +2,22 @@
 
 All notable changes to qemu-manage are documented in this file.
 
+
+## [0.4.0] - 2026-07-19
+
+### Added
+
+- Cloud-init NoCloud seed ISO provisioning via `--cloud-init-user-data` on the `create` command.
+- `--mac` flag for optional MAC address override with validation on the `create` command.
+- `$schema` annotation in canonical JSON config output with editor-side JSON Schema validation.
+- Formatted CLI output with go-pretty tables for `autostart`, `info`, `list`, and `--version`.
+- Progress bar integration for image download, file copy, and VM stop operations.
+- `ConnectWithSetup` console API for setup callback before terminal streaming.
+- `OnReady` callback to supervisor `StartOptions` and `Debug` flag to `SuperviseOptions`.
+
+### Changed
+
+- Auto-generate MAC via `crypto/rand` when `--mac` is omitted during VM creation.
 ## [0.3.0] - 2026-07-19
 
 ### Added
@@ -38,6 +54,8 @@ All notable changes to qemu-manage are documented in this file.
 ## [0.1.0] - 2026-07-18
 
 - Initial release.
+
+[0.4.0]: https://github.com/bradsjm/qemu-manage/compare/v0.3.0...v0.4.0
 
 [0.3.0]: https://github.com/bradsjm/qemu-manage/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/bradsjm/qemu-manage/compare/v0.1.0...v0.2.0
