@@ -32,7 +32,6 @@ type Manager struct {
 	Home                   string
 	UID                    int
 	Stopped                func(context.Context, *model.Config) error
-	Stop                   func(context.Context, *model.Config) error
 	LoginDir               string
 	SystemDir              string
 	SocketVMNetInstallRoot string

@@ -439,16 +439,17 @@ Usage:
   qemu-manage autostart SUBCOMMAND NAME [OPTIONS]
 
 Subcommands:
-  enable NAME [--scope VALUE]  Install and load an autostart job
-  disable NAME                 Stop the VM and remove its autostart job
+  enable NAME [--scope VALUE]  Install an autostart job without starting the VM
+  disable NAME                 Remove an autostart job for a stopped VM
   status NAME                  Compare configured and installed launchd state
 
 Valid scopes:
   login  Start when this user logs in
   boot   Start at system boot as the configured non-root user
 
-Enabling uses RunAtLoad and starts the VM immediately. The VM must be stopped first.
-System-boot changes require sudo, but qemu-manage itself must run as a normal user.
+Enabling installs the launchd job without starting the VM. Boot-scope changes
+require sudo for the system LaunchDaemon install, but qemu-manage itself still
+runs as a normal user.
 
 Examples:
   qemu-manage autostart enable home-assistant --scope login
@@ -456,7 +457,7 @@ Examples:
 
 Run 'qemu-manage autostart SUBCOMMAND --help' for details.
 `},
-	"autostart enable": {text: `Check prerequisites, install a launchd job, and start the VM immediately.
+	"autostart enable": {text: `Check prerequisites, install a launchd job, and leave the VM stopped.
 
 Usage:
   qemu-manage autostart enable NAME [--scope VALUE]
@@ -468,10 +469,10 @@ Examples:
   qemu-manage autostart enable home-assistant --scope login
   qemu-manage autostart enable home-assistant --scope boot
 
-The VM must be stopped. Boot scope requires sudo for system launchd changes, while
-QEMU itself continues to run as the configured non-root user.
+Boot scope installs a system LaunchDaemon with sudo. QEMU itself continues to
+run as the configured non-root user.
 `},
-	"autostart disable": {text: `Gracefully stop a VM and transactionally remove its launchd job.
+	"autostart disable": {text: `Remove a launchd job for a stopped VM.
 
 Usage:
   qemu-manage autostart disable NAME

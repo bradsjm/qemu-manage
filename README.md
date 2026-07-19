@@ -397,20 +397,23 @@ Stdout is only the compact JSON `return` value, so this command is safe to pipe.
 
 ## Autostart
 
-Autostart renders per-VM launchd jobs. Manual starts and autostart use the same supervisor path:
+Autostart renders per-VM launchd jobs. When the job later starts, it uses the
+same supervisor path as manual starts:
 
 ```sh
-# Start after this user logs in.
+# Install a job that starts after this user logs in.
 qemu-manage autostart enable home-assistant --scope login
 
-# Or start at system boot under the VM owner's account.
+# Or install a system LaunchDaemon for system boot under the VM owner's account.
 qemu-manage autostart enable home-assistant --scope boot
 
 qemu-manage autostart status home-assistant
 qemu-manage autostart disable home-assistant
 ```
 
-Boot-scope changes require `sudo` for the narrow LaunchDaemon installation and `launchctl` operations. QEMU itself still runs as the non-root VM owner.
+Boot-scope installation requires `sudo` for the narrow LaunchDaemon install.
+QEMU itself still runs as the non-root VM owner, and enabling autostart does
+not start the VM immediately.
 
 ## Storage & security
 

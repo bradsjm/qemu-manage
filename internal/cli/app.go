@@ -137,10 +137,6 @@ func NewApp() *App {
 	a.Launchd = launchd.NewManager(a.Store, a.ExecutablePath, a.User.Name, a.User.Home, a.User.UID)
 	a.ProvisionSocketVMNetBridge = a.Launchd.ProvisionSocketVMNetBridge
 	a.Runtime = newRuntimeAdapter(a.Lifecycle)
-	a.Launchd.Stopped = a.Lifecycle.DeleteAllowed
-	a.Launchd.Stop = func(ctx context.Context, cfg *model.Config) error {
-		return a.Lifecycle.Stop(ctx, cfg, 0, false)
-	}
 	return a
 }
 

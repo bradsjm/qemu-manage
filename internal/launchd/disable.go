@@ -19,8 +19,25 @@ type disabledDomain struct {
 	bootedOut  bool
 }
 
-// Disable stops the VM and transactionally removes its jobs from both launchd
-// domains before recording that autostart is disabled.
+// ErrVMRunning is returned by Disable when the VM must be stopped before
+// autostart can be safely disabled. Disable makes no configuration or launchd
+// changes in this case; the caller should surface an explicit stop instruction.
+//
+// Detect this condition in callers with errors.Is(err, ErrVMRunning).
+var ErrVMRunning = errors.New("launchd: VM is running")
+
+// Disable transactionally removes the VM's autostart job from both launchd
+// domains and records scope none. It does NOT stop the VM.
+//
+// If a job is currently loaded, Disable assumes the VM may be running under it
+// and refuses without making any changes, returning a wrapped ErrVMRunning.
+// Unloading a loaded job would terminate the foreground supervisor and QEMU,
+// and a KeepAlive job could restart the VM; both outcomes are destructive
+// surprises the user must perform explicitly via stop.
+//
+// When no job is loaded, Disable removes the on-disk plists and updates the
+// durable scope to none. The name mutation lock is held for the whole
+// transaction and rollback restores a removed plist if a later step fails.
 func (m *Manager) Disable(ctx context.Context, name string) error {
 	if m == nil || m.Store == nil {
 		return errors.New("launchd: manager has no store")
@@ -35,6 +52,7 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
+
 	login, system, err := m.inspectBoth(cfg.ID)
 	if err != nil {
 		return err
@@ -64,11 +82,17 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 		}
 	}
 
-	if m.Stop == nil {
-		return errors.New("launchd: authenticated stop callback is not configured")
+	// Safety gate: a loaded job means launchd may be running the VM, and
+	// booting it out would terminate that VM. Refuse without any mutation.
+	for _, s := range states {
+		if s.loaded {
+			return fmt.Errorf("launchd: VM %q is running; stop it before disabling autostart: %w", name, ErrVMRunning)
+		}
 	}
-	if err := m.Stop(ctx, cfg); err != nil {
-		return fmt.Errorf("launchd: stop %q: %w", name, err)
+
+	// Idempotent fast path: nothing loaded, nothing to remove, scope none.
+	if cfg.Autostart.Scope == model.AutostartNone && !login.Present && !system.Present {
+		return nil
 	}
 
 	rollback := func(primary error, restoreConfig bool) error {
@@ -134,6 +158,10 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 		}
 	}
 
+	if cfg.Autostart.Scope == model.AutostartNone {
+		// Scope was already none and we only reconciled stray orphan files.
+		return nil
+	}
 	updated := *cfg
 	updated.Autostart.Scope = model.AutostartNone
 	if err := nameLock.Save(&updated); err != nil {

@@ -13,60 +13,85 @@ import (
 	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
-// Enable installs and loads the launchd job for name. The name mutation lock is
-// held for the entire transaction, including rollback.
-func (m *Manager) Enable(ctx context.Context, name string, scope model.AutostartScope, doctor func(context.Context, *model.Config) error) error {
+// EnableResult reports what Enable observed and did.
+type EnableResult struct {
+	// Scope is the autostart scope now configured for the VM. It is set
+	// whether Enable installed a new job or returned early because the
+	// scope was already configured.
+	Scope model.AutostartScope
+	// AlreadyEnabled is true when the VM already had the requested scope
+	// configured and Enable made no changes.
+	AlreadyEnabled bool
+	// Loaded is true when a launchd job for the VM was already loaded in
+	// either domain when Enable was called. Enable never loads a job; this
+	// flag lets the caller advise the user that the VM is already managed
+	// by launchd (for example because a previous version bootstrapped it).
+	Loaded bool
+}
+
+// Enable installs a launchd autostart job for name without loading it, so the
+// VM is not started by this operation. The name mutation lock is held for the
+// entire transaction, including rollback. The caller is responsible for any
+// start or stop; Enable records the configured scope and writes the plist only.
+//
+// Enable does not require the VM to be stopped, because it never bootstraps the
+// job. A job that is already loaded (for example from a prior version that
+// bootstrapped on enable, or from a prior boot/login activation) is left
+// loaded; only its on-disk plist is reconciled. The VM's current power state is
+// never changed.
+func (m *Manager) Enable(ctx context.Context, name string, scope model.AutostartScope, doctor func(context.Context, *model.Config) error) (EnableResult, error) {
 	if m == nil || m.Store == nil {
-		return errors.New("launchd: manager has no store")
+		return EnableResult{}, errors.New("launchd: manager has no store")
 	}
 	if scope != model.AutostartBoot && scope != model.AutostartLogin {
-		return fmt.Errorf("launchd: invalid autostart scope %q", scope)
+		return EnableResult{}, fmt.Errorf("launchd: invalid autostart scope %q", scope)
 	}
 	if doctor == nil {
-		return errors.New("launchd: runtime doctor is required")
+		return EnableResult{}, errors.New("launchd: runtime doctor is required")
 	}
 
 	nameLock, err := m.Store.LockName(name)
 	if err != nil {
-		return err
+		return EnableResult{}, err
 	}
 	defer nameLock.Close()
 
 	cfg, err := nameLock.Load()
 	if err != nil {
-		return err
-	}
-	if cfg.Autostart.Scope != model.AutostartNone {
-		return fmt.Errorf("launchd: VM %q already has autostart scope %q; disable it before enabling", name, cfg.Autostart.Scope)
+		return EnableResult{}, err
 	}
 	if err := cfg.Validate(); err != nil {
-		return err
+		return EnableResult{}, err
 	}
 
-	// Holding the lifetime lock proves that no supervisor can be starting,
-	// running, paused, or stopping while the static launchd job is generated.
-	if m.Stopped == nil {
-		return errors.New("launchd: stopped-state check is required")
-	}
-	if err := m.Stopped(ctx, cfg); err != nil {
-		return fmt.Errorf("launchd: VM %q must be stopped: %w", name, err)
-	}
-
-	lifetime, stopped, err := nameLock.TryLockLifetime(cfg)
+	login, system, err := m.inspectBoth(cfg.ID)
 	if err != nil {
-		return fmt.Errorf("launchd: check VM state: %w", err)
+		return EnableResult{}, err
 	}
-	if !stopped {
-		return fmt.Errorf("launchd: VM %q must be stopped before enabling autostart", name)
+	loginLoaded, err := m.printLoaded(ctx, domainLogin, cfg.ID)
+	if err != nil {
+		return EnableResult{}, err
 	}
-	defer lifetime.Close()
+	systemLoaded, err := m.printLoaded(ctx, domainSystem, cfg.ID)
+	if err != nil {
+		return EnableResult{}, err
+	}
+	loaded := loginLoaded || systemLoaded
+
+	// Idempotent: enabling the already-configured scope is a successful no-op.
+	if cfg.Autostart.Scope == scope {
+		return EnableResult{Scope: scope, AlreadyEnabled: true, Loaded: loaded}, nil
+	}
+	if cfg.Autostart.Scope != model.AutostartNone {
+		return EnableResult{}, fmt.Errorf("launchd: VM %q already has autostart scope %q; disable it before enabling a different scope", name, cfg.Autostart.Scope)
+	}
 
 	if err := doctor(ctx, cfg); err != nil {
-		return fmt.Errorf("launchd: runtime doctor: %w", err)
+		return EnableResult{}, fmt.Errorf("launchd: runtime doctor: %w", err)
 	}
 	executable, err := stableExecutable(m.Executable)
 	if err != nil {
-		return err
+		return EnableResult{}, err
 	}
 
 	configured := *cfg
@@ -74,36 +99,25 @@ func (m *Manager) Enable(ctx context.Context, name string, scope model.Autostart
 	paths := m.Store.Paths(cfg)
 	rendered, err := Render(&configured, executable, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home, m.Store.DataRoot, m.Store.RuntimeRoot, m.Store.LogRoot)
 	if err != nil {
-		return err
+		return EnableResult{}, err
 	}
 
-	login, system, err := m.inspectBoth(cfg.ID)
-	if err != nil {
-		return err
-	}
-	// A matching file with a none scope is an orphan. Remove its loaded job
-	// first, then its immutable-ID path, in both domains.
+	// A matching file with a none scope is an orphan. A loaded orphan is not
+	// bootout-ed here: doing so would terminate a running VM whose job is
+	// still loaded. Remove only the stale on-disk path; loading is left to
+	// boot/login or to an explicit `qemu-manage start`.
 	for _, item := range []struct {
 		d domain
 		p pathInspection
 	}{{domainLogin, login}, {domainSystem, system}} {
-		loaded, printErr := m.printLoaded(ctx, item.d, cfg.ID)
-		if printErr != nil {
-			return printErr
-		}
-		if loaded {
-			if err := m.bootout(ctx, item.d, cfg.ID); err != nil {
-				return err
-			}
-		}
 		if item.p.Present {
-			// print/bootout are external calls. Reopen with O_NOFOLLOW and
+			// print/inspect are external calls. Reopen with O_NOFOLLOW and
 			// require the exact inspected orphan before deleting its path.
 			if err := m.verifyInstalled(item.d, item.p.Path, item.p.Bytes); err != nil {
-				return fmt.Errorf("launchd: orphan changed before removal: %w", err)
+				return EnableResult{}, fmt.Errorf("launchd: orphan changed before removal: %w", err)
 			}
 			if err := m.removePlist(ctx, item.d, item.p.Path); err != nil {
-				return err
+				return EnableResult{}, err
 			}
 		}
 	}
@@ -115,14 +129,14 @@ func (m *Manager) Enable(ctx context.Context, name string, scope model.Autostart
 	destination := m.plistPath(d, cfg.ID)
 	candidate, err := writeCandidate(rendered)
 	if err != nil {
-		return err
+		return EnableResult{}, err
 	}
 	defer os.Remove(candidate)
 	if err := m.lint(ctx, candidate); err != nil {
-		return err
+		return EnableResult{}, err
 	}
 	if err := m.installCandidate(ctx, d, candidate, destination); err != nil {
-		return errors.Join(err, m.removeInstalledIfExact(ctx, d, cfg.ID, rendered))
+		return EnableResult{}, errors.Join(err, m.removeInstalledIfExact(ctx, d, cfg.ID, rendered))
 	}
 	installed := true
 	cleanupInstalled := func() error {
@@ -139,52 +153,19 @@ func (m *Manager) Enable(ctx context.Context, name string, scope model.Autostart
 		// The just-installed candidate failed the mandatory ownership, mode,
 		// or byte check. It has never been loaded and must be removed.
 		installed = false
-		return errors.Join(err, m.removePlist(ctx, d, destination))
+		return EnableResult{}, errors.Join(err, m.removePlist(ctx, d, destination))
 	}
 
-	configured.Autostart.Scope = scope
+	// Commit the durable scope. Enable never loads the job, so there is no
+	// bootstrap step and no stopped-state precondition. If Save fails after
+	// the file was written, roll back the file so the durable state and the
+	// on-disk job stay consistent.
 	if err := nameLock.Save(&configured); err != nil {
 		// Atomic save can report a directory-sync/close error after rename.
-		// Restore the original none-scope config even when Save returned an
-		// error, rather than assuming no durable mutation occurred.
-		return errors.Join(err, cleanupInstalled(), nameLock.Save(cfg))
+		return EnableResult{}, errors.Join(err, cleanupInstalled(), nameLock.Save(cfg))
 	}
-	saved := true
-	loaded := false
-	rollback := func(primary error) error {
-		var cleanup []error
-		if loaded {
-			cleanup = append(cleanup, m.bootout(ctx, d, cfg.ID))
-		}
-		cleanup = append(cleanup, cleanupInstalled())
-		if saved {
-			restored := configured
-			restored.Autostart.Scope = model.AutostartNone
-			cleanup = append(cleanup, nameLock.Save(&restored))
-		}
-		return errors.Join(append([]error{primary}, cleanup...)...)
-	}
-	if err := m.enableJob(ctx, d, cfg.ID); err != nil {
-		return rollback(err)
-	}
-	// RunAtLoad may start the supervisor before bootstrap returns. Release the
-	// lifetime exclusion only after the durable scope and job enablement are
-	// committed, but before bootstrap makes the job runnable.
-	if err := lifetime.Close(); err != nil {
-		return rollback(fmt.Errorf("launchd: release stopped-state lock: %w", err))
-	}
-	if err := m.verifyInstalled(d, destination, rendered); err != nil {
-		return rollback(fmt.Errorf("launchd: installed plist changed before bootstrap: %w", err))
-	}
-	if err := m.bootstrap(ctx, d, destination); err != nil {
-		// bootstrap may have loaded the job even when launchctl returned an error;
-		// attempt bootout during rollback without relying on command output text.
-		loaded = true
-		return rollback(err)
-	}
-	loaded = true
-	installed = false
-	return nil
+
+	return EnableResult{Scope: scope, Loaded: loaded}, nil
 }
 
 func stableExecutable(path string) (string, error) {
