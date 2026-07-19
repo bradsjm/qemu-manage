@@ -320,6 +320,19 @@ func supervisorFixture(t *testing.T, instance *fakeInstance) (*Service, *model.C
 	return service, cfg, st.Paths(cfg)
 }
 
+func TestBackendPathsIncludePrivateMonitorSockets(t *testing.T) {
+	paths := store.Paths{
+		VMDir: "/vm", QMP: "/run/qmp.sock", QMPCommand: "/run/qmp-command.sock", QGA: "/run/qga.sock",
+		Console: "/run/console.sock", Monitor: "/run/monitor.sock", QEMULog: "/logs/qemu.log", SerialLog: "/logs/serial.log",
+	}
+	got := backendPaths(paths)
+	if got.VMDir != paths.VMDir || got.QMP != paths.QMP || got.QMPCommand != paths.QMPCommand ||
+		got.QGA != paths.QGA || got.Console != paths.Console || got.Monitor != paths.Monitor ||
+		got.QEMULog != paths.QEMULog || got.SerialLog != paths.SerialLog {
+		t.Fatalf("backend paths = %#v", got)
+	}
+}
+
 func TestSuperviseReadinessClearsFailureAndPersistsNormalExit(t *testing.T) {
 	instance := newFakeInstance()
 	service, cfg, paths := supervisorFixture(t, instance)

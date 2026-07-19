@@ -58,24 +58,25 @@ const (
 )
 
 type Config struct {
-	SchemaVersion          int              `json:"schema_version"`
-	ID                     string           `json:"id"`
-	Name                   string           `json:"name"`
-	Backend                Backend          `json:"backend"`
-	Architecture           string           `json:"architecture"`
-	UUID                   string           `json:"uuid"`
-	CPUs                   int              `json:"cpus"`
-	MemoryMiB              int              `json:"memory_mib"`
-	RestartPolicy          RestartPolicy    `json:"restart_policy"`
-	ShutdownTimeoutSeconds int              `json:"shutdown_timeout_seconds"`
-	Firmware               FirmwareConfig   `json:"firmware"`
-	Installer              *InstallerConfig `json:"installer,omitempty"`
-	Disks                  []DiskConfig     `json:"disks"`
-	Network                NetworkConfig    `json:"network"`
-	GuestAgent             GuestAgentConfig `json:"guest_agent"`
-	VNC                    *VNCConfig       `json:"vnc,omitempty"`
-	QEMU                   QEMUConfig       `json:"qemu"`
-	Autostart              AutostartConfig  `json:"autostart"`
+	SchemaVersion          int               `json:"schema_version"`
+	ID                     string            `json:"id"`
+	Name                   string            `json:"name"`
+	Backend                Backend           `json:"backend"`
+	Architecture           string            `json:"architecture"`
+	UUID                   string            `json:"uuid"`
+	CPUs                   int               `json:"cpus"`
+	MemoryMiB              int               `json:"memory_mib"`
+	RestartPolicy          RestartPolicy     `json:"restart_policy"`
+	ShutdownTimeoutSeconds int               `json:"shutdown_timeout_seconds"`
+	Firmware               FirmwareConfig    `json:"firmware"`
+	Installer              *InstallerConfig  `json:"installer,omitempty"`
+	Disks                  []DiskConfig      `json:"disks"`
+	Network                NetworkConfig     `json:"network"`
+	GuestAgent             GuestAgentConfig  `json:"guest_agent"`
+	VNC                    *VNCConfig        `json:"vnc,omitempty"`
+	USB                    []USBDeviceConfig `json:"usb,omitempty"`
+	QEMU                   QEMUConfig        `json:"qemu"`
+	Autostart              AutostartConfig   `json:"autostart"`
 }
 
 type FirmwareConfig struct {
@@ -94,6 +95,15 @@ type DiskConfig struct {
 	Serial    string `json:"serial"`
 	BootIndex int    `json:"boot_index"`
 	ReadOnly  bool   `json:"read_only"`
+	Cache     string `json:"cache,omitempty"`
+	AIO       string `json:"aio,omitempty"`
+}
+
+type USBDeviceConfig struct {
+	VendorID    string `json:"vendor_id,omitempty"`
+	ProductID   string `json:"product_id,omitempty"`
+	HostBus     int    `json:"host_bus,omitempty"`
+	HostAddress int    `json:"host_address,omitempty"`
 }
 
 type NetworkConfig struct {
@@ -143,6 +153,7 @@ var (
 	namePattern   = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
 	serialPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 	macPattern    = regexp.MustCompile(`^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$`)
+	usbIDPattern  = regexp.MustCompile(`^[0-9a-f]{4}$`)
 )
 
 func validateRawJSONUnicode(data []byte) error {
@@ -322,6 +333,9 @@ func (c *Config) Validate() error {
 	if err := validateVNC(c.VNC); err != nil {
 		return err
 	}
+	if err := validateUSB(c); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -344,6 +358,20 @@ func validateStorage(c *Config) error {
 		if disk.Format != "qcow2" && disk.Format != "raw" {
 			return configError("disk %d has invalid format %q; valid values: qcow2, raw", i, disk.Format)
 		}
+		switch disk.Cache {
+		case "", "none", "writeback", "writethrough", "directsync", "unsafe":
+		default:
+			return configError(
+				"disk %d has invalid cache %q; valid values: none, writeback, writethrough, directsync, unsafe",
+				i,
+				disk.Cache,
+			)
+		}
+		switch disk.AIO {
+		case "", "threads", "native":
+		default:
+			return configError("disk %d has invalid aio %q; valid values: threads, native", i, disk.AIO)
+		}
 		if disk.BootIndex < 0 {
 			return configError("disk %d boot_index must be nonnegative", i)
 		}
@@ -358,6 +386,55 @@ func validateStorage(c *Config) error {
 			return configError("disk serial %q is duplicated", disk.Serial)
 		}
 		serials[disk.Serial] = struct{}{}
+	}
+	return nil
+}
+
+func validateUSB(c *Config) error {
+	limit := 4
+	if c.VNC != nil {
+		limit = 2
+	}
+	if len(c.USB) > limit {
+		return configError("usb supports at most %d devices with current VNC settings", limit)
+	}
+	selectors := make(map[string]struct{}, len(c.USB))
+	for i, usb := range c.USB {
+		vendorSet := usb.VendorID != "" || usb.ProductID != ""
+		busSet := usb.HostBus != 0 || usb.HostAddress != 0
+		var selector string
+		switch {
+		case vendorSet && busSet:
+			return configError("usb %d must use either vendor/product or bus/address, not both", i)
+		case vendorSet:
+			if usb.VendorID == "" || usb.ProductID == "" {
+				return configError("usb %d vendor/product selector requires both fields", i)
+			}
+			if !usbIDPattern.MatchString(usb.VendorID) || usb.VendorID == "0000" {
+				return configError("usb %d vendor_id must be a lowercase four-digit hexadecimal value between 0001 and ffff", i)
+			}
+			if !usbIDPattern.MatchString(usb.ProductID) || usb.ProductID == "0000" {
+				return configError("usb %d product_id must be a lowercase four-digit hexadecimal value between 0001 and ffff", i)
+			}
+			selector = "vp:" + usb.VendorID + ":" + usb.ProductID
+		case busSet:
+			if usb.HostBus < 1 || usb.HostBus > 255 {
+				return configError("usb %d host_bus must be between 1 and 255", i)
+			}
+			if usb.HostAddress < 1 || usb.HostAddress > 127 {
+				return configError("usb %d host_address must be between 1 and 127", i)
+			}
+			if usb.VendorID != "" || usb.ProductID != "" {
+				return configError("usb %d bus/address selector must not include vendor/product", i)
+			}
+			selector = fmt.Sprintf("ba:%d:%d", usb.HostBus, usb.HostAddress)
+		default:
+			return configError("usb %d selector is required", i)
+		}
+		if _, exists := selectors[selector]; exists {
+			return configError("usb %d duplicates an earlier selector", i)
+		}
+		selectors[selector] = struct{}{}
 	}
 	return nil
 }
@@ -437,7 +514,7 @@ func validateVNC(vnc *VNCConfig) error {
 }
 
 var managerOwnedQEMUOptions = map[string]struct{}{
-	"qmp": {}, "monitor": {}, "chardev": {}, "serial": {}, "daemonize": {}, "pidfile": {}, "run-with": {},
+	"qmp": {}, "monitor": {}, "mon": {}, "chardev": {}, "serial": {}, "daemonize": {}, "pidfile": {}, "run-with": {},
 	"accel": {}, "machine": {}, "M": {}, "cpu": {}, "smp": {}, "m": {}, "drive": {}, "blockdev": {},
 	"device": {}, "hda": {}, "hdb": {}, "hdc": {}, "hdd": {}, "fda": {}, "fdb": {}, "cdrom": {},
 	"netdev": {}, "nic": {}, "net": {}, "display": {}, "nographic": {}, "vga": {}, "nodefaults": {},

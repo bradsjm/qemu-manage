@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -77,6 +79,10 @@ func (a *App) runRuntimeCommand(ctx context.Context, command string, args []stri
 		return a.runStop(ctx, args, stderr)
 	case "console":
 		return a.runConsole(ctx, args, stdin, stdout)
+	case "monitor":
+		return a.runMonitor(ctx, args, stdin, stdout)
+	case "guest-agent":
+		return a.runGuestAgent(ctx, args, stdout)
 	case "vnc":
 		return a.runVNC(ctx, args, stdout)
 	case "doctor":
@@ -186,6 +192,105 @@ func (a *App) runConsole(ctx context.Context, args []string, stdin io.Reader, st
 		return err
 	}
 	return nil
+}
+
+func (a *App) runMonitor(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) (err error) {
+	name, rest, err := nameBeforeFlags("monitor", args)
+	if err != nil {
+		return err
+	}
+	if len(rest) > 1 {
+		return usageErrorf("monitor: expected at most one COMMAND")
+	}
+	if len(rest) == 1 && strings.TrimSpace(rest[0]) == "" {
+		return usageErrorf("monitor: COMMAND must not be empty")
+	}
+	config, err := a.loadQEMUConfig(name)
+	if err != nil {
+		return err
+	}
+	status, err := a.statusRow(ctx, config)
+	if err != nil {
+		return err
+	}
+	if status.State != model.RunStateRunning && status.State != model.RunStatePaused {
+		return fmt.Errorf("runtime: VM %q is %s; monitor requires running or paused", name, status.State)
+	}
+	paths := a.Store.Paths(config)
+	if len(rest) == 0 {
+		return console.ConnectMonitor(ctx, paths.Monitor, stdin, stdout)
+	}
+	if a.DialQMP == nil {
+		return errors.New("runtime: monitor is unavailable")
+	}
+	client, err := a.DialQMP(ctx, paths.QMPCommand)
+	if err != nil {
+		return fmt.Errorf("runtime: monitor: %w", err)
+	}
+	defer func() {
+		if closeErr := client.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("runtime: monitor: %w", closeErr)
+		}
+	}()
+	output, err := client.HumanMonitorCommand(ctx, rest[0])
+	if err != nil {
+		return fmt.Errorf("runtime: monitor: %w", err)
+	}
+	if _, err := io.WriteString(stdout, output); err != nil {
+		return err
+	}
+	if strings.HasSuffix(output, "\n") {
+		return nil
+	}
+	_, err = io.WriteString(stdout, "\n")
+	return err
+}
+
+func (a *App) runGuestAgent(ctx context.Context, args []string, stdout io.Writer) error {
+	name, rest, err := nameBeforeFlags("guest-agent", args)
+	if err != nil {
+		return err
+	}
+	if len(rest) == 0 {
+		return usageErrorf("guest-agent: missing REQUEST")
+	}
+	if len(rest) > 1 {
+		return usageErrorf("guest-agent: unexpected arguments")
+	}
+	request, err := qemu.DecodeGuestAgentRequest([]byte(rest[0]))
+	if err != nil {
+		return usageErrorf("guest-agent: %v", err)
+	}
+	config, err := a.loadQEMUConfig(name)
+	if err != nil {
+		return err
+	}
+	if !config.GuestAgent.Enabled {
+		return fmt.Errorf("runtime: VM %q does not have the guest agent enabled", name)
+	}
+	status, err := a.statusRow(ctx, config)
+	if err != nil {
+		return err
+	}
+	if status.State != model.RunStateRunning && status.State != model.RunStatePaused {
+		return fmt.Errorf("runtime: VM %q is %s; guest-agent requires running or paused", name, status.State)
+	}
+	if a.CallGuestAgent == nil {
+		return errors.New("runtime: guest-agent is unavailable")
+	}
+	payload, err := a.CallGuestAgent(ctx, a.Store.Paths(config).QGA, request)
+	if err != nil {
+		return fmt.Errorf("runtime: guest-agent: %w", err)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, payload); err != nil {
+		return fmt.Errorf("runtime: guest-agent: compact JSON return: %w", err)
+	}
+	if err := compact.WriteByte('\n'); err != nil {
+		return err
+	}
+	_, err = stdout.Write(compact.Bytes())
+	return err
 }
 func (a *App) runVNC(ctx context.Context, args []string, stdout io.Writer) error {
 	name, rest, err := nameBeforeFlags("vnc", args)
@@ -306,8 +411,14 @@ func (a *App) loadQEMUConfig(name string) (*model.Config, error) {
 
 func backendPaths(paths store.Paths) backend.RuntimePaths {
 	return backend.RuntimePaths{
-		VMDir: paths.VMDir, QMP: paths.QMP, QGA: paths.QGA, Console: paths.Console,
-		QEMULog: paths.QEMULog, SerialLog: paths.SerialLog,
+		VMDir:      paths.VMDir,
+		QMP:        paths.QMP,
+		QMPCommand: paths.QMPCommand,
+		QGA:        paths.QGA,
+		Console:    paths.Console,
+		Monitor:    paths.Monitor,
+		QEMULog:    paths.QEMULog,
+		SerialLog:  paths.SerialLog,
 	}
 }
 
@@ -319,9 +430,9 @@ func writeReadyFailure(ready io.Writer, id string, cause error) {
 func absoluteStorePaths(paths store.Paths) (store.Paths, error) {
 	values := []*string{
 		&paths.VMDir, &paths.Config, &paths.RuntimeDir, &paths.ControlSocket, &paths.LifetimeLock,
-		&paths.QMP, &paths.QGA, &paths.Console, &paths.VNCSecret, &paths.RuntimeMetadata,
-		&paths.LastExitMetadata, &paths.SupervisorStdout, &paths.SupervisorStderr, &paths.QEMULog,
-		&paths.SerialLog,
+		&paths.QMP, &paths.QMPCommand, &paths.QGA, &paths.Console, &paths.Monitor, &paths.VNCSecret,
+		&paths.RuntimeMetadata, &paths.LastExitMetadata, &paths.SupervisorStdout, &paths.SupervisorStderr,
+		&paths.QEMULog, &paths.SerialLog,
 	}
 	for _, value := range values {
 		absolute, err := filepath.Abs(*value)

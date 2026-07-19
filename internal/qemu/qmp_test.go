@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -315,6 +316,174 @@ func TestQMPStructuredErrorPreserved(t *testing.T) {
 	}
 	if !jsonContainsKey(qmpErr.Data, "extra") {
 		t.Fatalf("structured error data lost: %s", qmpErr.Data)
+	}
+}
+
+func TestQMPHumanMonitorCommand(t *testing.T) {
+	t.Run("success and filtering", func(t *testing.T) {
+		server := startQMPServer(t, func(conn net.Conn) error {
+			reader := bufio.NewReader(conn)
+			if err := initializeQMP(conn, reader); err != nil {
+				return err
+			}
+			command, err := readQMPCommand(reader)
+			if err != nil {
+				return err
+			}
+			if command.Execute != "human-monitor-command" || command.ID != 2 {
+				return fmt.Errorf("monitor command = %#v", command)
+			}
+			if len(command.Arguments) != 1 || command.Arguments["command-line"] != "  info status  " {
+				return fmt.Errorf("monitor arguments = %#v", command.Arguments)
+			}
+			_, err = fmt.Fprintf(conn, `{"event":"RESET"}`+"\n"+`{"return":"ignore","id":999}`+"\n"+`{"return":"status: running","id":%d}`+"\n", command.ID)
+			return err
+		})
+		client, err := NewQMPClient(server.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		output, err := client.HumanMonitorCommand(context.Background(), "  info status  ")
+		if err != nil {
+			t.Fatalf("HumanMonitorCommand: %v", err)
+		}
+		if output != "status: running" {
+			t.Fatalf("HumanMonitorCommand = %q", output)
+		}
+	})
+
+	t.Run("blank command rejected", func(t *testing.T) {
+		server := startQMPServer(t, func(conn net.Conn) error {
+			reader := bufio.NewReader(conn)
+			if err := initializeQMP(conn, reader); err != nil {
+				return err
+			}
+			_, err := conn.Read(make([]byte, 1))
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		})
+		client, err := NewQMPClient(server.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		if _, err := client.HumanMonitorCommand(context.Background(), " \t "); err == nil || !strings.Contains(err.Error(), "empty") {
+			t.Fatalf("blank HumanMonitorCommand error = %v", err)
+		}
+	})
+
+	t.Run("non-string response rejected", func(t *testing.T) {
+		server := startQMPServer(t, func(conn net.Conn) error {
+			reader := bufio.NewReader(conn)
+			if err := initializeQMP(conn, reader); err != nil {
+				return err
+			}
+			command, err := readQMPCommand(reader)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(conn, `{"return":1,"id":%d}`+"\n", command.ID)
+			return err
+		})
+		client, err := NewQMPClient(server.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		if _, err := client.HumanMonitorCommand(context.Background(), "info version"); err == nil || !strings.Contains(err.Error(), "decode human-monitor-command response") {
+			t.Fatalf("non-string HumanMonitorCommand error = %v", err)
+		}
+	})
+
+	t.Run("null response rejected", func(t *testing.T) {
+		server := startQMPServer(t, func(conn net.Conn) error {
+			reader := bufio.NewReader(conn)
+			if err := initializeQMP(conn, reader); err != nil {
+				return err
+			}
+			command, err := readQMPCommand(reader)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(conn, `{"return":null,"id":%d}`+"\n", command.ID)
+			return err
+		})
+		client, err := NewQMPClient(server.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		if _, err := client.HumanMonitorCommand(context.Background(), "info version"); err == nil || !strings.Contains(err.Error(), "return must be a JSON string") {
+			t.Fatalf("null HumanMonitorCommand error = %v", err)
+		}
+	})
+}
+
+func TestNewQMPClientContextCancellationDuringGreeting(t *testing.T) {
+	accepted := make(chan struct{})
+	server := startQMPServer(t, func(conn net.Conn) error {
+		close(accepted)
+		_, err := conn.Read(make([]byte, 1))
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		client, err := NewQMPClientContext(ctx, server.path)
+		if client != nil {
+			_ = client.Close()
+		}
+		errCh <- err
+	}()
+	<-accepted
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("NewQMPClientContext greeting cancellation = %v", err)
+	}
+}
+
+func TestNewQMPClientContextCancellationDuringCapabilityNegotiation(t *testing.T) {
+	capabilitiesSeen := make(chan struct{})
+	server := startQMPServer(t, func(conn net.Conn) error {
+		reader := bufio.NewReader(conn)
+		if _, err := conn.Write([]byte(qmpGreetingJSON())); err != nil {
+			return err
+		}
+		command, err := readQMPCommand(reader)
+		if err != nil {
+			return err
+		}
+		if command.Execute != "qmp_capabilities" || command.ID != 1 {
+			return fmt.Errorf("capabilities command = %#v", command)
+		}
+		close(capabilitiesSeen)
+		_, err = conn.Read(make([]byte, 1))
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		client, err := NewQMPClientContext(ctx, server.path)
+		if client != nil {
+			_ = client.Close()
+		}
+		errCh <- err
+	}()
+	<-capabilitiesSeen
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("NewQMPClientContext capability cancellation = %v", err)
 	}
 }
 

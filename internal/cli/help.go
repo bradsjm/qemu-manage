@@ -35,6 +35,8 @@ Commands:
   start        Start a VM in the background
   stop         Gracefully stop a VM, or explicitly force it
   console      Connect to a running VM's serial console
+  monitor      Connect to the QEMU human monitor or run one HMP command
+  guest-agent  Send one JSON request to the guest agent and print its return
   vnc          Copy the VNC password and open Screen Sharing (macOS)
   status       Show one VM or all VM runtime states
   list         List all managed VMs
@@ -54,11 +56,12 @@ Storage overrides:
 Examples:
   qemu-manage --help
   qemu-manage create --help
-  qemu-manage autostart enable --help
+  qemu-manage monitor --help
+  qemu-manage guest-agent --help
 
 Run 'qemu-manage COMMAND --help' for options, examples, and next steps.
 `},
-	"create": {text: `Create a managed AArch64 VM. Source images and firmware are copied; they are not modified.
+	"create": {text: `Create a managed AArch64 VM. Source images and firmware are copied; extra drive files are referenced in place and are not modified.
 
 Usage:
   qemu-manage create NAME [OPTIONS]
@@ -85,6 +88,20 @@ Options:
   --restart-policy VALUE   Valid values: never, on-failure (default: never)
   --shutdown-timeout D     Positive whole-second duration (default: 180s)
 
+Repeatable create options:
+  --usb vendor=VVVV,product=PPPP
+  --usb bus=N,address=N
+  --drive file=PATH[,if=virtio][,format=raw|qcow2][,cache=none|writeback|writethrough|directsync|unsafe][,aio=threads|native][,readonly=on|off]
+
+USB selectors attach in the order provided. Bus/address can change after a device
+is unplugged and replugged. Without VNC, up to four USB selections fit; with VNC,
+up to two fit because QEMU adds a USB keyboard and tablet.
+
+Extra drives are repeatable virtio disks appended after the managed primary disk.
+Relative drive files become absolute external references and must stay readable
+and in place. Double each literal comma in a value as ",,". Omitted format is
+detected; omitted if means virtio; host and QEMU support still govern aio=native.
+
 Examples:
   # Inspect automatically discovered QEMU and firmware paths first.
   qemu-manage doctor
@@ -97,6 +114,13 @@ Examples:
 
   # Create a blank disk and boot an installer ISO using detected firmware.
   qemu-manage create linux --iso "$HOME/Downloads/linux-arm64.iso"
+
+  # Add one external drive and two USB selectors.
+  qemu-manage create lab \
+    --image "$HOME/Images/lab.qcow2" \
+    --drive "file=disk.img,if=virtio,cache=none,aio=native" \
+    --usb vendor=1d6b,product=0002 \
+    --usb bus=1,address=2
 
 NAME must come before options. Next: qemu-manage doctor NAME, then qemu-manage start NAME.
 `},
@@ -238,6 +262,43 @@ Press Ctrl-] to disconnect without stopping the VM.
 
 Examples:
   qemu-manage console home-assistant
+`},
+	"monitor": {text: `Connect the terminal to a running or paused VM's QEMU human monitor.
+
+Usage:
+  qemu-manage monitor NAME
+  qemu-manage monitor NAME "COMMAND"
+
+Interactive mode forwards raw terminal I/O to QEMU's HMP socket. Press Ctrl-] to
+disconnect without stopping the VM.
+
+With COMMAND, qemu-manage sends one HMP command through QMP. Stdout is only the
+returned HMP text, so the one-shot form is safe to pipe.
+
+VMs already running when qemu-manage was upgraded must be restarted once before
+monitor can use the new monitor sockets.
+
+Examples:
+  qemu-manage monitor home-assistant
+  qemu-manage monitor home-assistant "info status"
+`},
+	"guest-agent": {text: `Send one strict JSON request to a running or paused VM's guest agent.
+
+Usage:
+  qemu-manage guest-agent NAME REQUEST
+
+REQUEST must be one JSON object with "execute" and optional "arguments". Enable
+the guest agent before starting the VM:
+  qemu-manage set NAME --guest-agent on
+
+Stdout is only the compact JSON return value, so this command is safe to pipe.
+
+A VM that was already running before qemu-manage was upgraded can still use
+guest-agent if it was started with the guest agent enabled.
+
+Examples:
+  qemu-manage guest-agent home-assistant '{"execute":"guest-info"}'
+  qemu-manage guest-agent home-assistant '{"execute":"guest-ping"}'
 `},
 	"vnc": {text: `Copy the configured VNC password and open the live endpoint in Screen Sharing.
 

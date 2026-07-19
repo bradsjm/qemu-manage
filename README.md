@@ -11,6 +11,7 @@
 - **VM lifecycle** — Create, start, stop, and inspect VMs with straightforward commands.
 - **Disk import** — Pull images from HTTP(S) URLs (auto-decompresses `.xz`/`.gz`), copy local qcow2/raw images, or boot installer ISOs.
 - **Serial console** — Connect to any guest with `Ctrl-]` disconnect handling.
+- **Monitor & guest agent** — Use the interactive QEMU human monitor, run one-shot HMP commands, and send strict JSON guest-agent requests with pipe-safe stdout.
 - **VNC passthrough** — Optional VNC with password auth; `qemu-manage vnc NAME` opens it in Screen Sharing with the password on your clipboard.
 - **Networking** — User-mode NAT out of the box; optional `socket_vmnet` for shared or bridged mode without running QEMU as root.
 - **Autostart** — Per-VM launchd jobs at login or boot scope; QEMU stays unprivileged.
@@ -144,6 +145,41 @@ VNC passwords must be 1–8 UTF-8 bytes; set `VNC_PASSWORD` in your environment 
 
 Omit both `--image` and `--iso` and you get a blank 32 GiB qcow2 disk by default.
 
+### Repeatable extra drives
+
+Repeat `--drive` to append extra virtio disks after the managed primary disk:
+
+```text
+--drive file=PATH[,if=virtio][,format=raw|qcow2][,cache=none|writeback|writethrough|directsync|unsafe][,aio=threads|native][,readonly=on|off]
+```
+
+Relative paths are resolved to absolute external references in the stored config. Double each literal comma in a value as `,,`. `qemu-manage` never copies, resizes, converts, chmods, or deletes those extra drive files, so they must remain readable and in place. Omitted `format` is detected from the file header; omitted `if` means `virtio`. `aio=native` still depends on host and QEMU support.
+
+```sh
+qemu-manage create lab \
+  --image "$HOME/Images/lab.qcow2" \
+  --drive "file=disk.img,if=virtio,cache=none,aio=native" \
+  --drive "file=archive.qcow2,format=qcow2,readonly=on"
+```
+
+### Repeatable USB passthrough
+
+Repeat `--usb` with either exact selector form:
+
+```text
+--usb vendor=VVVV,product=PPPP
+--usb bus=N,address=N
+```
+
+Vendor/product is usually the stable choice across replugging. Bus/address can change after the device is unplugged and replugged. Without VNC, up to four USB selections fit; with VNC, up to two fit because QEMU adds a USB keyboard and tablet.
+
+```sh
+qemu-manage create lab \
+  --image "$HOME/Images/lab.qcow2" \
+  --usb vendor=1d6b,product=0002 \
+  --usb bus=1,address=2
+```
+
 ### ISO installation with VNC
 
 After creating the VM, start it, check its status, and connect with VNC:
@@ -168,6 +204,47 @@ qemu-manage set home-assistant \
 ```
 
 `socket_vmnet` provides host/shared/bridged networking without running QEMU as root. It requires a separately installed and running helper service — see `qemu-manage set NAME --help` and `qemu-manage doctor NAME` for setup and validation.
+
+## Monitor and guest agent
+
+Use `qemu-manage monitor --help` and `qemu-manage guest-agent --help` for the complete command contracts.
+
+### Monitor
+
+Interactive monitor mode connects your terminal directly to QEMU's human monitor:
+
+```sh
+qemu-manage monitor home-assistant
+```
+
+Press `Ctrl-]` to disconnect without stopping the VM. `qemu-manage` does not add its own prompt; you interact with QEMU's HMP prompt directly.
+
+You can also run one HMP command through QMP:
+
+```sh
+qemu-manage monitor home-assistant "info status"
+```
+
+In that one-shot form, stdout is only the returned HMP text, so it is safe to pipe into other tools or scripts.
+
+VMs that were already running when `qemu-manage` was upgraded must be restarted once before either monitor mode can use the new monitor sockets.
+
+### Guest agent
+
+Enable the guest agent before starting the VM:
+
+```sh
+qemu-manage set home-assistant --guest-agent on
+```
+
+Then send one strict JSON request object:
+
+```sh
+qemu-manage guest-agent home-assistant '{"execute":"guest-info"}'
+qemu-manage guest-agent home-assistant '{"execute":"guest-ping"}'
+```
+
+Stdout is only the compact JSON `return` value, so this command is safe to pipe. A VM that was already running before `qemu-manage` was upgraded can still use `guest-agent` without a restart if that VM was started with the guest agent enabled.
 
 ## Autostart
 

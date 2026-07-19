@@ -103,7 +103,7 @@ func CleanupRuntime(paths store.Paths) error {
 	}
 	var cleanupErr error
 	for _, path := range []string{
-		paths.ControlSocket, paths.QMP, paths.QGA, paths.Console, paths.VNCSecret, paths.RuntimeMetadata,
+		paths.ControlSocket, paths.QMP, paths.QMPCommand, paths.QGA, paths.Console, paths.Monitor, paths.VNCSecret, paths.RuntimeMetadata,
 	} {
 		if filepath.Dir(path) != paths.RuntimeDir {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("runtime: refusing cleanup outside runtime directory: %q", path))

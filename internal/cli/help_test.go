@@ -46,7 +46,7 @@ func TestRootHelpBypassesRootAndInitialization(t *testing.T) {
 			a.initializationError = errors.New("initialization must be bypassed for help")
 
 			help := requireHelpSuccess(t, a, args...)
-			for _, section := range []string{"Options:", "Examples:"} {
+			for _, section := range []string{"Options:", "Examples:", "monitor", "guest-agent"} {
 				if !strings.Contains(help, section) {
 					t.Errorf("root help does not contain %q: %q", section, help)
 				}
@@ -65,8 +65,10 @@ func TestCommandAndNestedHelp(t *testing.T) {
 		args []string
 		want []string
 	}{
-		{name: "create before name", args: []string{"create", "--help"}, want: []string{"create NAME", "Options:", "Examples:"}},
-		{name: "create after name", args: []string{"create", "example", "--help"}, want: []string{"create NAME", "Options:", "Examples:"}},
+		{name: "create before name", args: []string{"create", "--help"}, want: []string{"create NAME", "Repeatable create options:", "--usb vendor=VVVV,product=PPPP", "--usb bus=N,address=N", "--drive file=PATH[,if=virtio][,format=raw|qcow2][,cache=none|writeback|writethrough|directsync|unsafe][,aio=threads|native][,readonly=on|off]", "Examples:"}},
+		{name: "create after name", args: []string{"create", "example", "--help"}, want: []string{"create NAME", "Relative drive files become absolute external references and must stay readable", "Bus/address can change after a device", "Examples:"}},
+		{name: "monitor", args: []string{"monitor", "--help"}, want: []string{"monitor NAME", "\"info status\"", "Stdout is only the", "Ctrl-]", "restarted once", "Examples:"}},
+		{name: "guest-agent", args: []string{"guest-agent", "--help"}, want: []string{"guest-agent NAME REQUEST", `{"execute":"guest-info"}`, "set NAME --guest-agent on", "compact JSON return value", "Examples:"}},
 		{name: "config", args: []string{"config", "--help"}, want: []string{"config", "show", "validate", "apply", "Examples:"}},
 		{name: "config show", args: []string{"config", "show", "--help"}, want: []string{"config show NAME", "Examples:"}},
 		{name: "autostart", args: []string{"autostart", "--help"}, want: []string{"autostart", "enable", "disable", "status", "Examples:"}},
@@ -95,6 +97,23 @@ func TestExplicitSuperviseHelpDoesNotExposeItInRootHelp(t *testing.T) {
 	supervise := requireHelpSuccess(t, a, "help", "supervise")
 	if !strings.Contains(supervise, "supervise NAME") {
 		t.Fatalf("explicit supervise help lacks contextual usage: %q", supervise)
+	}
+}
+
+func TestHelpAliasRoutesMonitorAndGuestAgentTopics(t *testing.T) {
+	a := testApp(t)
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"help", "monitor"}, want: `qemu-manage monitor NAME "COMMAND"`},
+		{args: []string{"help", "guest-agent"}, want: `qemu-manage guest-agent NAME REQUEST`},
+	}
+	for _, tc := range cases {
+		help := requireHelpSuccess(t, a, tc.args...)
+		if !strings.Contains(help, tc.want) {
+			t.Fatalf("args=%q: help does not contain %q: %q", tc.args, tc.want, help)
+		}
 	}
 }
 

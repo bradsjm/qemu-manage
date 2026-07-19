@@ -22,10 +22,19 @@ type copyResult struct {
 
 // Connect attaches stdin and stdout to a VM's private Unix console socket.
 func Connect(ctx context.Context, socketPath string, stdin io.Reader, stdout io.Writer) error {
+	return connect(ctx, "console", socketPath, stdin, stdout)
+}
+
+// ConnectMonitor attaches stdin and stdout to a VM's private human monitor socket.
+func ConnectMonitor(ctx context.Context, socketPath string, stdin io.Reader, stdout io.Writer) error {
+	return connect(ctx, "monitor", socketPath, stdin, stdout)
+}
+
+func connect(ctx context.Context, prefix, socketPath string, stdin io.Reader, stdout io.Writer) error {
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "unix", socketPath)
 	if err != nil {
-		return fmt.Errorf("console: connect: %w", err)
+		return fmt.Errorf("%s: connect: %w", prefix, err)
 	}
 
 	var restoreOnce sync.Once
@@ -35,7 +44,7 @@ func Connect(ctx context.Context, socketPath string, stdin io.Reader, stdout io.
 		state, rawErr := term.MakeRaw(int(file.Fd()))
 		if rawErr != nil {
 			_ = conn.Close()
-			return fmt.Errorf("console: make terminal raw: %w", rawErr)
+			return fmt.Errorf("%s: make terminal raw: %w", prefix, rawErr)
 		}
 		restore = func() error {
 			restoreOnce.Do(func() {
@@ -46,8 +55,8 @@ func Connect(ctx context.Context, socketPath string, stdin io.Reader, stdout io.
 	}
 
 	results := make(chan copyResult, 2)
-	go copyGuestOutput(conn, stdout, results)
-	go copyLocalInput(conn, stdin, results)
+	go copyGuestOutput(prefix, conn, stdout, results)
+	go copyLocalInput(prefix, conn, stdin, results)
 
 	var primaryErr error
 	completed := 0
@@ -74,35 +83,35 @@ func Connect(ctx context.Context, socketPath string, stdin io.Reader, stdout io.
 
 	var resetReadErr, resetWriteErr error
 	if readDeadlineSet {
-		resetReadErr = resetReadDeadline(stdin)
+		resetReadErr = resetReadDeadline(prefix, stdin)
 	}
 	if writeDeadlineSet {
-		resetWriteErr = resetWriteDeadline(stdout)
+		resetWriteErr = resetWriteDeadline(prefix, stdout)
 	}
 
 	if err := restore(); err != nil {
-		restoreErr = fmt.Errorf("console: restore terminal: %w", err)
+		restoreErr = fmt.Errorf("%s: restore terminal: %w", prefix, err)
 	}
 	if errors.Is(closeErr, net.ErrClosed) {
 		closeErr = nil
 	} else if closeErr != nil {
-		closeErr = fmt.Errorf("console: close: %w", closeErr)
+		closeErr = fmt.Errorf("%s: close: %w", prefix, closeErr)
 	}
 	return errors.Join(primaryErr, closeErr, restoreErr, resetReadErr, resetWriteErr)
 }
 
-func copyGuestOutput(conn net.Conn, stdout io.Writer, results chan<- copyResult) {
+func copyGuestOutput(prefix string, conn net.Conn, stdout io.Writer, results chan<- copyResult) {
 	_, err := io.Copy(stdout, conn)
 	if errors.Is(err, net.ErrClosed) {
 		err = nil
 	}
 	if err != nil {
-		err = fmt.Errorf("console: read guest output: %w", err)
+		err = fmt.Errorf("%s: read guest output: %w", prefix, err)
 	}
 	results <- copyResult{err: err}
 }
 
-func copyLocalInput(conn net.Conn, stdin io.Reader, results chan<- copyResult) {
+func copyLocalInput(prefix string, conn net.Conn, stdin io.Reader, results chan<- copyResult) {
 	buffer := make([]byte, 32*1024)
 	for {
 		n, readErr := stdin.Read(buffer)
@@ -110,14 +119,14 @@ func copyLocalInput(conn net.Conn, stdin io.Reader, results chan<- copyResult) {
 			input := buffer[:n]
 			if index := bytes.IndexByte(input, disconnectByte); index >= 0 {
 				if err := writeAll(conn, input[:index]); err != nil {
-					results <- copyResult{err: fmt.Errorf("console: write guest input: %w", err)}
+					results <- copyResult{err: fmt.Errorf("%s: write guest input: %w", prefix, err)}
 					return
 				}
 				results <- copyResult{}
 				return
 			}
 			if err := writeAll(conn, input); err != nil {
-				results <- copyResult{err: fmt.Errorf("console: write guest input: %w", err)}
+				results <- copyResult{err: fmt.Errorf("%s: write guest input: %w", prefix, err)}
 				return
 			}
 		}
@@ -125,12 +134,12 @@ func copyLocalInput(conn net.Conn, stdin io.Reader, results chan<- copyResult) {
 			if errors.Is(readErr, io.EOF) {
 				results <- copyResult{}
 			} else {
-				results <- copyResult{err: fmt.Errorf("console: read local input: %w", readErr)}
+				results <- copyResult{err: fmt.Errorf("%s: read local input: %w", prefix, readErr)}
 			}
 			return
 		}
 		if n == 0 {
-			results <- copyResult{err: fmt.Errorf("console: read local input: %w", io.ErrNoProgress)}
+			results <- copyResult{err: fmt.Errorf("%s: read local input: %w", prefix, io.ErrNoProgress)}
 			return
 		}
 	}
@@ -152,10 +161,10 @@ func setReadDeadline(reader io.Reader, deadline time.Time) bool {
 	return deadliner.SetReadDeadline(deadline) == nil
 }
 
-func resetReadDeadline(reader io.Reader) error {
+func resetReadDeadline(prefix string, reader io.Reader) error {
 	deadliner := reader.(readDeadliner)
 	if err := deadliner.SetReadDeadline(time.Time{}); err != nil {
-		return fmt.Errorf("console: reset local input deadline: %w", err)
+		return fmt.Errorf("%s: reset local input deadline: %w", prefix, err)
 	}
 	return nil
 }
@@ -168,10 +177,10 @@ func setWriteDeadline(writer io.Writer, deadline time.Time) bool {
 	return deadliner.SetWriteDeadline(deadline) == nil
 }
 
-func resetWriteDeadline(writer io.Writer) error {
+func resetWriteDeadline(prefix string, writer io.Writer) error {
 	deadliner := writer.(writeDeadliner)
 	if err := deadliner.SetWriteDeadline(time.Time{}); err != nil {
-		return fmt.Errorf("console: reset local output deadline: %w", err)
+		return fmt.Errorf("%s: reset local output deadline: %w", prefix, err)
 	}
 	return nil
 }

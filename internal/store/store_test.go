@@ -112,6 +112,12 @@ func TestDefaultFromEnv(t *testing.T) {
 	if got, want := paths.RuntimeDir, filepath.Join(overrides["QEMU_MANAGE_RUNTIME_ROOT"], "111111111111"); got != want {
 		t.Fatalf("runtime dir = %q, want %q", got, want)
 	}
+	if got, want := paths.QMPCommand, filepath.Join(paths.RuntimeDir, "qmp-command.sock"); got != want {
+		t.Fatalf("QMP command socket = %q, want %q", got, want)
+	}
+	if got, want := paths.Monitor, filepath.Join(paths.RuntimeDir, "monitor.sock"); got != want {
+		t.Fatalf("monitor socket = %q, want %q", got, want)
+	}
 	if got, want := paths.VNCSecret, filepath.Join(paths.RuntimeDir, "vnc-password"); got != want {
 		t.Fatalf("VNC secret = %q, want %q", got, want)
 	}

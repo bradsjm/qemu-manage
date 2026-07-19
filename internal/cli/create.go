@@ -27,6 +27,22 @@ const (
 	defaultVNCPortTo = 5999
 )
 
+type usbValues []model.USBDeviceConfig
+
+func (v *usbValues) String() string { return "" }
+
+type createDrive struct {
+	Source   string
+	Format   string
+	Cache    string
+	AIO      string
+	ReadOnly bool
+}
+
+type driveValues []createDrive
+
+func (v *driveValues) String() string { return "" }
+
 func (a *App) runCreate(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
 	_ = stdout
@@ -53,6 +69,10 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	vncBind := flags.String("vnc-bind", defaultVNCBind, "VNC bind IPv4 address")
 	vncPort := flags.String("vnc-port", strconv.Itoa(defaultVNCPort), "minimum VNC TCP port")
 	vncPortTo := flags.String("vnc-port-to", strconv.Itoa(defaultVNCPortTo), "maximum VNC TCP port")
+	var usbs usbValues
+	flags.Var(&usbs, "usb", "USB passthrough selector")
+	var drives driveValues
+	flags.Var(&drives, "drive", "additional virtio drive")
 	if err := flags.Parse(args); err != nil {
 		return usageErrorf("create: %v", err)
 	}
@@ -125,6 +145,20 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			Password: *vncPassword,
 		}
 	}
+	if len(usbs) > usbDeviceLimit(vnc) {
+		return usageErrorf("create: --usb supports at most %d devices with current VNC settings", usbDeviceLimit(vnc))
+	}
+	for i := range drives {
+		var err error
+		if drives[i].Format == "" {
+			drives[i].Format, err = detectDriveFormat(drives[i].Source)
+		} else {
+			err = requireRegularSource(drives[i].Source)
+		}
+		if err != nil {
+			return fmt.Errorf("create: --drive file %q: %w", drives[i].Source, err)
+		}
+	}
 	qemuPath, err := resolveExecutable(*qemu)
 	if err != nil {
 		return fmt.Errorf("qemu: %w", err)
@@ -146,11 +180,23 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		return err
 	}
 
-	bootIndex := 0
+	primaryBootIndex := 0
 	var installer *model.InstallerConfig
 	if *iso != "" {
-		bootIndex = 1
+		primaryBootIndex = 1
 		installer = &model.InstallerConfig{Path: "installer.iso", BootIndex: 0}
+	}
+	disks := []model.DiskConfig{{Path: "disk.qcow2", Format: "qcow2", Serial: "disk-" + id[:16], BootIndex: primaryBootIndex}}
+	for i, drive := range drives {
+		disks = append(disks, model.DiskConfig{
+			Path:      drive.Source,
+			Format:    drive.Format,
+			Serial:    fmt.Sprintf("disk-%s-%d", id[:12], i+1),
+			BootIndex: primaryBootIndex + i + 1,
+			ReadOnly:  drive.ReadOnly,
+			Cache:     drive.Cache,
+			AIO:       drive.AIO,
+		})
 	}
 	config := &model.Config{
 		SchemaVersion:          model.SchemaVersion,
@@ -165,10 +211,11 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		ShutdownTimeoutSeconds: timeoutSeconds,
 		Firmware:               model.FirmwareConfig{Code: "firmware-code.fd", Variables: "firmware-vars.fd"},
 		Installer:              installer,
-		Disks:                  []model.DiskConfig{{Path: "disk.qcow2", Format: "qcow2", Serial: "disk-" + id[:16], BootIndex: bootIndex}},
+		Disks:                  disks,
 		Network:                model.NetworkConfig{Mode: model.NetworkUser, MAC: mac, Forwards: []model.PortForward{}},
 		GuestAgent:             model.GuestAgentConfig{},
 		VNC:                    vnc,
+		USB:                    []model.USBDeviceConfig(usbs),
 		QEMU:                   model.QEMUConfig{Binary: qemuPath, ImageTool: qemuImgPath, Machine: "virt", ExtraArgs: []string{}},
 		Autostart:              model.AutostartConfig{Scope: model.AutostartNone},
 	}
@@ -229,6 +276,231 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		}
 		return nil
 	})
+}
+
+func (v *usbValues) Set(raw string) error {
+	if raw == "" {
+		return errors.New("specification is empty")
+	}
+	parts := strings.Split(raw, ",")
+	selector := model.USBDeviceConfig{}
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			return errors.New("contains an empty item")
+		}
+		key, value, ok := strings.Cut(part, "=")
+		if !ok || key == "" || value == "" {
+			return fmt.Errorf("item %q must have the form key=value", part)
+		}
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("duplicate key %q", key)
+		}
+		seen[key] = struct{}{}
+		switch key {
+		case "vendor":
+			normalized, err := parseUSBHexValue(value)
+			if err != nil {
+				return fmt.Errorf("vendor: %w", err)
+			}
+			selector.VendorID = normalized
+		case "product":
+			normalized, err := parseUSBHexValue(value)
+			if err != nil {
+				return fmt.Errorf("product: %w", err)
+			}
+			selector.ProductID = normalized
+		case "bus":
+			bus, err := parseUSBDecimalValue(value, 255)
+			if err != nil {
+				return fmt.Errorf("bus: %w", err)
+			}
+			selector.HostBus = bus
+		case "address":
+			address, err := parseUSBDecimalValue(value, 127)
+			if err != nil {
+				return fmt.Errorf("address: %w", err)
+			}
+			selector.HostAddress = address
+		default:
+			return fmt.Errorf("unknown key %q", key)
+		}
+	}
+	switch {
+	case selector.VendorID != "" || selector.ProductID != "":
+		if selector.VendorID == "" || selector.ProductID == "" {
+			return errors.New("vendor and product must be provided together")
+		}
+		if selector.HostBus != 0 || selector.HostAddress != 0 {
+			return errors.New("vendor/product cannot be mixed with bus/address")
+		}
+	case selector.HostBus != 0 || selector.HostAddress != 0:
+		if selector.HostBus == 0 || selector.HostAddress == 0 {
+			return errors.New("bus and address must be provided together")
+		}
+	default:
+		return errors.New("selector is required")
+	}
+	*v = append(*v, selector)
+	return nil
+}
+
+func (v *driveValues) Set(raw string) error {
+	items, err := splitDriveItems(raw)
+	if err != nil {
+		return err
+	}
+	drive := createDrive{}
+	keys := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		key, value, ok := strings.Cut(item, "=")
+		if !ok || key == "" || value == "" {
+			return fmt.Errorf("item %q must have the form key=value", item)
+		}
+		if _, exists := keys[key]; exists {
+			return fmt.Errorf("duplicate key %q", key)
+		}
+		keys[key] = struct{}{}
+		switch key {
+		case "file":
+			source, err := filepath.Abs(value)
+			if err != nil {
+				return fmt.Errorf("resolve file %q: %w", value, err)
+			}
+			drive.Source = filepath.Clean(source)
+		case "if":
+			if value != "virtio" {
+				return fmt.Errorf("if %q is invalid; valid values: virtio", value)
+			}
+		case "format":
+			if value != "raw" && value != "qcow2" {
+				return fmt.Errorf("format %q is invalid; valid values: raw, qcow2", value)
+			}
+			drive.Format = value
+		case "cache":
+			if !validDriveCache(value) {
+				return fmt.Errorf(
+					"cache %q is invalid; valid values: none, writeback, writethrough, directsync, unsafe",
+					value,
+				)
+			}
+			drive.Cache = value
+		case "aio":
+			if value != "threads" && value != "native" {
+				return fmt.Errorf("aio %q is invalid; valid values: threads, native", value)
+			}
+			drive.AIO = value
+		case "readonly":
+			switch value {
+			case "on":
+				drive.ReadOnly = true
+			case "off":
+				drive.ReadOnly = false
+			default:
+				return fmt.Errorf("readonly %q is invalid; valid values: on, off", value)
+			}
+		default:
+			return fmt.Errorf("unknown key %q", key)
+		}
+	}
+	if drive.Source == "" {
+		return errors.New("file is required")
+	}
+	*v = append(*v, drive)
+	return nil
+}
+
+func usbDeviceLimit(vnc *model.VNCConfig) int {
+	if vnc != nil {
+		return 2
+	}
+	return 4
+}
+
+func parseUSBHexValue(raw string) (string, error) {
+	if len(raw) != 4 {
+		return "", errors.New("must be exactly four hexadecimal digits")
+	}
+	value, err := strconv.ParseUint(raw, 16, 16)
+	if err != nil {
+		return "", errors.New("must be exactly four hexadecimal digits")
+	}
+	if value == 0 {
+		return "", errors.New("must be between 0001 and ffff")
+	}
+	return fmt.Sprintf("%04x", value), nil
+}
+
+func parseUSBDecimalValue(raw string, maximum int) (int, error) {
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("must be between 1 and %d", maximum)
+	}
+	if value < 1 || value > maximum {
+		return 0, fmt.Errorf("must be between 1 and %d", maximum)
+	}
+	return value, nil
+}
+
+func splitDriveItems(raw string) ([]string, error) {
+	if raw == "" {
+		return nil, errors.New("specification is empty")
+	}
+	items := make([]string, 0, 6)
+	var current strings.Builder
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != ',' {
+			current.WriteByte(raw[i])
+			continue
+		}
+		if i+1 < len(raw) && raw[i+1] == ',' {
+			current.WriteByte(',')
+			i++
+			continue
+		}
+		if current.Len() == 0 {
+			return nil, errors.New("contains an empty item")
+		}
+		items = append(items, current.String())
+		current.Reset()
+	}
+	if current.Len() == 0 {
+		return nil, errors.New("contains an empty item")
+	}
+	items = append(items, current.String())
+	return items, nil
+}
+
+func validDriveCache(value string) bool {
+	switch value {
+	case "none", "writeback", "writethrough", "directsync", "unsafe":
+		return true
+	default:
+		return false
+	}
+}
+
+func detectDriveFormat(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("not a regular file")
+	}
+	var header [4]byte
+	if _, err := io.ReadFull(file, header[:]); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", err
+	}
+	if string(header[:]) == "QFI\xfb" {
+		return "qcow2", nil
+	}
+	return "raw", nil
 }
 
 func parseMiB(value string) (int, error) {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -43,6 +44,10 @@ type RuntimeService interface {
 	Status(context.Context, *model.Config) (StatusRow, error)
 	DeleteAllowed(context.Context, *model.Config) (bool, error)
 }
+type MonitorClient interface {
+	HumanMonitorCommand(context.Context, string) (string, error)
+	Close() error
+}
 
 type App struct {
 	Store               *store.Store
@@ -60,6 +65,8 @@ type App struct {
 	DiscoverFirmware    func() (string, string)
 	DiscoverSocketVMNet func() *model.SocketVMNetConfig
 	OpenVNC             func(context.Context, backend.VNCEndpoint, string) error
+	DialQMP             func(context.Context, string) (MonitorClient, error)
+	CallGuestAgent      func(context.Context, string, qemu.GuestAgentRequest) (json.RawMessage, error)
 
 	initializationError error
 }
@@ -79,6 +86,10 @@ func NewApp() *App {
 			return exec.CommandContext(ctx, path, args...).Run()
 		},
 		OpenVNC: openVNC,
+		DialQMP: func(ctx context.Context, path string) (MonitorClient, error) {
+			return qemu.NewQMPClientContext(ctx, path)
+		},
+		CallGuestAgent: qemu.GuestAgentCommand,
 	}
 
 	var storeErr error
@@ -175,7 +186,7 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		err = a.dispatchConfig(ctx, args[1:], stdin, stdout, stderr)
 	case "showcmd", "status", "list", "delete":
 		err = a.runInfoCommand(ctx, args[0], args[1:], stdin, stdout, stderr)
-	case "start", "stop", "console", "vnc", "doctor", "supervise":
+	case "start", "stop", "console", "monitor", "guest-agent", "vnc", "doctor", "supervise":
 		err = a.runRuntimeCommand(ctx, args[0], args[1:], stdin, stdout, stderr)
 	case "autostart":
 		err = a.runAutostart(ctx, args[1:], stdout, stderr)

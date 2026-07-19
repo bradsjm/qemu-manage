@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/bradsjm/qemu-manage/internal/model"
@@ -99,20 +100,31 @@ type qmpResponse struct {
 // command mode. Construction is bounded so an unresponsive private socket
 // cannot stall backend startup indefinitely.
 func NewQMPClient(path string) (*QMPClient, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), qmpOperationTimeout)
+	return NewQMPClientContext(context.Background(), path)
+}
+
+func NewQMPClientContext(ctx context.Context, path string) (*QMPClient, error) {
+	callCtx, cancel := boundedQMPContext(ctx, qmpOperationTimeout)
 	defer cancel()
 
-	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
+	conn, err := (&net.Dialer{}).DialContext(callCtx, "unix", path)
 	if err != nil {
 		return nil, fmt.Errorf("connect QMP socket: %w", err)
 	}
 	client := &QMPClient{gate: make(chan struct{}, 1), conn: conn, dec: json.NewDecoder(conn)}
 	client.gate <- struct{}{}
-	if err := client.initialize(ctx); err != nil {
+	if err := client.initialize(callCtx); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
 	return client, nil
+}
+
+func boundedQMPContext(ctx context.Context, maximum time.Duration) (context.Context, context.CancelFunc) {
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= maximum {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, maximum)
 }
 
 func (c *QMPClient) initialize(ctx context.Context) error {
@@ -124,6 +136,9 @@ func (c *QMPClient) initialize(ctx context.Context) error {
 	var greeting qmpGreeting
 	if err := c.dec.Decode(&greeting); err != nil {
 		finish()
+		if contextErr := ctx.Err(); contextErr != nil {
+			return contextErr
+		}
 		return fmt.Errorf("decode QMP greeting: %w", err)
 	}
 	finish()
@@ -212,6 +227,28 @@ func (c *QMPClient) QueryVNC(ctx context.Context) (VNCInfo, error) {
 		Family:  info.Family,
 		Auth:    info.Auth,
 	}, nil
+}
+
+func (c *QMPClient) HumanMonitorCommand(ctx context.Context, commandLine string) (string, error) {
+	if strings.TrimSpace(commandLine) == "" {
+		return "", errors.New("human monitor command is empty")
+	}
+	result, err := c.execute(ctx, "human-monitor-command", map[string]any{"command-line": commandLine})
+	if err != nil {
+		return "", err
+	}
+	var output *string
+	decoder := json.NewDecoder(bytes.NewReader(result))
+	if err := decoder.Decode(&output); err != nil {
+		return "", fmt.Errorf("decode human-monitor-command response: %w", err)
+	}
+	if output == nil {
+		return "", errors.New("decode human-monitor-command response: return must be a JSON string")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return "", errors.New("decode human-monitor-command response: trailing data")
+	}
+	return *output, nil
 }
 
 func (c *QMPClient) SystemPowerdown(ctx context.Context) error {

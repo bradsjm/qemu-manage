@@ -31,8 +31,10 @@ type Paths struct {
 	ControlSocket    string
 	LifetimeLock     string
 	QMP              string
+	QMPCommand       string
 	QGA              string
 	Console          string
+	Monitor          string
 	VNCSecret        string
 	RuntimeMetadata  string
 	LastExitMetadata string
@@ -97,8 +99,10 @@ func (s *Store) Paths(config *model.Config) Paths {
 		ControlSocket:    filepath.Join(runtimeDir, "control.sock"),
 		LifetimeLock:     filepath.Join(runtimeDir, "lifetime.lock"),
 		QMP:              filepath.Join(runtimeDir, "qmp.sock"),
+		QMPCommand:       filepath.Join(runtimeDir, "qmp-command.sock"),
 		QGA:              filepath.Join(runtimeDir, "qga.sock"),
 		Console:          filepath.Join(runtimeDir, "console.sock"),
+		Monitor:          filepath.Join(runtimeDir, "monitor.sock"),
 		VNCSecret:        filepath.Join(runtimeDir, "vnc-password"),
 		RuntimeMetadata:  filepath.Join(runtimeDir, "runtime.json"),
 		LastExitMetadata: filepath.Join(runtimeDir, "last_exit.json"),

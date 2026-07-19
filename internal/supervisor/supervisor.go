@@ -660,8 +660,14 @@ func (s *Service) now() time.Time {
 
 func backendPaths(paths store.Paths) backend.RuntimePaths {
 	return backend.RuntimePaths{
-		VMDir: paths.VMDir, QMP: paths.QMP, QGA: paths.QGA, Console: paths.Console,
-		QEMULog: paths.QEMULog, SerialLog: paths.SerialLog,
+		VMDir:      paths.VMDir,
+		QMP:        paths.QMP,
+		QMPCommand: paths.QMPCommand,
+		QGA:        paths.QGA,
+		Console:    paths.Console,
+		Monitor:    paths.Monitor,
+		QEMULog:    paths.QEMULog,
+		SerialLog:  paths.SerialLog,
 	}
 }
 

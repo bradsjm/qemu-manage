@@ -33,6 +33,12 @@ func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths) (back
 	if !filepath.IsAbs(qemuPath) {
 		return backend.Command{}, fmt.Errorf("qemu: binary path must resolve to an absolute path")
 	}
+	if !filepath.IsAbs(paths.QMPCommand) {
+		return backend.Command{}, fmt.Errorf("qemu: QMP command socket path must be absolute")
+	}
+	if !filepath.IsAbs(paths.Monitor) {
+		return backend.Command{}, fmt.Errorf("qemu: monitor socket path must be absolute")
+	}
 	args := []string{
 		"-nodefaults",
 		"-display", "none",
@@ -56,6 +62,12 @@ func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths) (back
 	for i, disk := range config.Disks {
 		id := "disk" + strconv.Itoa(i)
 		drive := "if=none,media=disk,id=" + id + ",file.filename=" + keyval(backend.ResolvePath(paths.VMDir, disk.Path)) + ",format=" + keyval(disk.Format)
+		if disk.Cache != "" {
+			drive += ",cache=" + keyval(disk.Cache)
+		}
+		if disk.AIO != "" {
+			drive += ",aio=" + keyval(disk.AIO)
+		}
 		if disk.ReadOnly {
 			drive += ",readonly=on"
 		} else {
@@ -78,6 +90,10 @@ func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths) (back
 		"-chardev", "socket,id=console0,path="+keyval(paths.Console)+",server=on,wait=off,logfile="+keyval(paths.SerialLog)+",logappend=on",
 		"-serial", "chardev:console0",
 		"-qmp", "unix:"+keyval(paths.QMP)+",server=on,wait=off",
+		"-chardev", "socket,id=qmpcommand0,path="+keyval(paths.QMPCommand)+",server=on,wait=off",
+		"-mon", "chardev=qmpcommand0,mode=control",
+		"-chardev", "socket,id=monitor0,path="+keyval(paths.Monitor)+",server=on,wait=off",
+		"-mon", "chardev=monitor0,mode=readline",
 	)
 	if config.VNC != nil {
 		if !filepath.IsAbs(paths.VNCSecret) {
@@ -91,6 +107,17 @@ func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths) (back
 			"-object", "secret,id=vnc-password,file="+keyval(paths.VNCSecret),
 			"-vnc", fmt.Sprintf("%s:%d,to=%d,password-secret=vnc-password", config.VNC.Bind, int(config.VNC.Port)-5900, int(config.VNC.PortTo)-5900),
 		)
+	} else if len(config.USB) != 0 {
+		args = append(args, "-device", "nec-usb-xhci,id=usb")
+	}
+	for i, usb := range config.USB {
+		device := "usb-host,id=usb-host" + strconv.Itoa(i) + ",bus=usb.0"
+		if usb.VendorID != "" || usb.ProductID != "" {
+			device += ",vendorid=0x" + keyval(usb.VendorID) + ",productid=0x" + keyval(usb.ProductID)
+		} else {
+			device += ",hostbus=" + strconv.Itoa(usb.HostBus) + ",hostaddr=" + strconv.Itoa(usb.HostAddress)
+		}
+		args = append(args, "-device", device)
 	}
 	if config.GuestAgent.Enabled {
 		args = append(args,

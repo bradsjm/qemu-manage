@@ -1,13 +1,16 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +18,7 @@ import (
 	"github.com/bradsjm/qemu-manage/internal/launchd"
 	"github.com/bradsjm/qemu-manage/internal/lifecycle"
 	"github.com/bradsjm/qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/qemu"
 	"github.com/bradsjm/qemu-manage/internal/store"
 	"github.com/bradsjm/qemu-manage/internal/supervisor"
 )
@@ -28,6 +32,40 @@ type fakeRuntime struct {
 func (f *fakeRuntime) Status(context.Context, *model.Config) (StatusRow, error) { return f.row, f.err }
 func (f *fakeRuntime) DeleteAllowed(context.Context, *model.Config) (bool, error) {
 	return f.deleteAllowed, f.err
+}
+
+type fakeMonitorClient struct {
+	output   string
+	err      error
+	closeErr error
+	command  string
+	closed   bool
+}
+
+func (f *fakeMonitorClient) HumanMonitorCommand(_ context.Context, command string) (string, error) {
+	f.command = command
+	return f.output, f.err
+}
+
+func (f *fakeMonitorClient) Close() error {
+	f.closed = true
+	return f.closeErr
+}
+
+type signalBuffer struct {
+	bytes.Buffer
+	written chan struct{}
+	once    sync.Once
+}
+
+func (b *signalBuffer) Write(p []byte) (int, error) {
+	n, err := b.Buffer.Write(p)
+	if n > 0 {
+		b.once.Do(func() {
+			close(b.written)
+		})
+	}
+	return n, err
 }
 
 type absentLaunchdRunner struct{}
@@ -50,6 +88,35 @@ func configureAbsentLaunchd(t *testing.T, a *App) {
 	manager.LoginDir = filepath.Join(root, "LaunchAgents")
 	manager.SystemDir = filepath.Join(root, "LaunchDaemons")
 	a.Launchd = manager
+}
+
+func serveUnixSocket(t *testing.T, socketPath string, serve func(net.Conn) error) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0700); err != nil {
+		t.Fatalf("create socket directory: %v", err)
+	}
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen %s: %v", socketPath, err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			err = serve(conn)
+			if conn != nil {
+				_ = conn.Close()
+			}
+		}
+		_ = listener.Close()
+		done <- err
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		if err := <-done; err != nil {
+			t.Errorf("socket server %s: %v", socketPath, err)
+		}
+	})
 }
 
 func serveRuntimeStatus(t *testing.T, socketPath string, status supervisor.Status) <-chan error {
@@ -270,6 +337,296 @@ func TestConsoleAdmissionRejectsStoppedVMWithoutDialing(t *testing.T) {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
 	}
 }
+
+func TestMonitorCommandRejectsStoppedVMWithoutDialing(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	saveTestConfig(t, a, cfg)
+	a.Runtime = &fakeRuntime{row: StatusRow{State: model.RunStateStopped}}
+	dialed := false
+	a.DialQMP = func(context.Context, string) (MonitorClient, error) {
+		dialed = true
+		return &fakeMonitorClient{}, nil
+	}
+	code, stdout, stderr := runCLI(a, "monitor", "vm", "info status")
+	if code != 1 || stdout != "" || !strings.Contains(stderr, "monitor requires running or paused") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if dialed {
+		t.Fatal("DialQMP ran for stopped VM")
+	}
+}
+
+func TestMonitorInteractiveUsesMonitorSocket(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	saveTestConfig(t, a, cfg)
+	a.Runtime = &fakeRuntime{row: StatusRow{State: model.RunStateRunning}}
+	paths := a.Store.Paths(cfg)
+	received := make(chan string, 1)
+	serveUnixSocket(t, paths.Monitor, func(conn net.Conn) error {
+		buffer := make([]byte, len("info version\n"))
+		if _, err := io.ReadFull(conn, buffer); err != nil {
+			return err
+		}
+		received <- string(buffer)
+		if _, err := conn.Write([]byte("QEMU monitor ready\n")); err != nil {
+			return err
+		}
+		return nil
+	})
+
+	stdin, input := net.Pipe()
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = input.Close()
+	})
+	stdout := &signalBuffer{written: make(chan struct{})}
+	var stderr bytes.Buffer
+	go func() {
+		_, _ = input.Write([]byte("info version\n"))
+		<-stdout.written
+		_ = input.Close()
+	}()
+	code := a.Run(context.Background(), []string{"monitor", "vm"}, stdin, stdout, &stderr)
+	if code != 0 || stderr.String() != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if stdout.String() != "QEMU monitor ready\n" {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	if got := <-received; got != "info version\n" {
+		t.Fatalf("monitor input = %q, want %q", got, "info version\n")
+	}
+}
+
+func TestMonitorCommandUsesQMPCommandSocketAndClosesClient(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	saveTestConfig(t, a, cfg)
+	a.Runtime = &fakeRuntime{row: StatusRow{State: model.RunStateRunning}}
+	client := &fakeMonitorClient{output: "status: running"}
+	dialPath := ""
+	a.DialQMP = func(_ context.Context, path string) (MonitorClient, error) {
+		dialPath = path
+		return client, nil
+	}
+	code, stdout, stderr := runCLI(a, "monitor", "vm", "info status")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if stdout != "status: running\n" {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if dialPath != a.Store.Paths(cfg).QMPCommand {
+		t.Fatalf("dial path = %q, want %q", dialPath, a.Store.Paths(cfg).QMPCommand)
+	}
+	if client.command != "info status" {
+		t.Fatalf("command = %q, want %q", client.command, "info status")
+	}
+	if !client.closed {
+		t.Fatal("monitor client was not closed")
+	}
+}
+
+func TestMonitorCommandValidatesArgumentsAndAvailability(t *testing.T) {
+	t.Run("empty command", func(t *testing.T) {
+		a := testApp(t)
+		cfg := testConfig("vm")
+		saveTestConfig(t, a, cfg)
+		a.Runtime = &fakeRuntime{row: StatusRow{State: model.RunStateRunning}}
+		dialed := false
+		a.DialQMP = func(context.Context, string) (MonitorClient, error) {
+			dialed = true
+			return &fakeMonitorClient{}, nil
+		}
+		code, stdout, stderr := runCLI(a, "monitor", "vm", "   ")
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "COMMAND must not be empty") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		if dialed {
+			t.Fatal("DialQMP ran for an empty command")
+		}
+	})
+
+	t.Run("empty command precedes config lookup", func(t *testing.T) {
+		a := testApp(t)
+		a.Runtime = &fakeRuntime{err: errors.New("runtime status must not run")}
+		code, stdout, stderr := runCLI(a, "monitor", "missing", "\t ")
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "COMMAND must not be empty") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+	})
+
+	t.Run("too many commands", func(t *testing.T) {
+		a := testApp(t)
+		cfg := testConfig("vm")
+		saveTestConfig(t, a, cfg)
+		a.Runtime = &fakeRuntime{row: StatusRow{State: model.RunStateRunning}}
+		code, stdout, stderr := runCLI(a, "monitor", "vm", "info", "status")
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "expected at most one COMMAND") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+	})
+
+	t.Run("missing seam", func(t *testing.T) {
+		a := testApp(t)
+		cfg := testConfig("vm")
+		saveTestConfig(t, a, cfg)
+		a.Runtime = &fakeRuntime{row: StatusRow{State: model.RunStateRunning}}
+		a.DialQMP = nil
+		code, stdout, stderr := runCLI(a, "monitor", "vm", "info status")
+		if code != 1 || stdout != "" || stderr != "runtime: monitor is unavailable\n" {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+	})
+}
+
+func TestGuestAgentRejectsMalformedRequestAndAdmissionFailures(t *testing.T) {
+	t.Run("malformed request", func(t *testing.T) {
+		a := testApp(t)
+		cfg := testConfig("vm")
+		cfg.GuestAgent.Enabled = true
+		saveTestConfig(t, a, cfg)
+		called := false
+		a.CallGuestAgent = func(context.Context, string, qemu.GuestAgentRequest) (json.RawMessage, error) {
+			called = true
+			return nil, nil
+		}
+		code, stdout, stderr := runCLI(a, "guest-agent", "vm", "not-json")
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "guest-agent:") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		if called {
+			t.Fatal("CallGuestAgent ran for malformed request")
+		}
+	})
+
+	t.Run("missing request", func(t *testing.T) {
+		a := testApp(t)
+		cfg := testConfig("vm")
+		cfg.GuestAgent.Enabled = true
+		saveTestConfig(t, a, cfg)
+		called := false
+		a.CallGuestAgent = func(context.Context, string, qemu.GuestAgentRequest) (json.RawMessage, error) {
+			called = true
+			return nil, nil
+		}
+		code, stdout, stderr := runCLI(a, "guest-agent", "vm")
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "missing REQUEST") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		if called {
+			t.Fatal("CallGuestAgent ran without a request")
+		}
+	})
+
+	t.Run("too many arguments", func(t *testing.T) {
+		a := testApp(t)
+		cfg := testConfig("vm")
+		cfg.GuestAgent.Enabled = true
+		saveTestConfig(t, a, cfg)
+		called := false
+		a.CallGuestAgent = func(context.Context, string, qemu.GuestAgentRequest) (json.RawMessage, error) {
+			called = true
+			return nil, nil
+		}
+		code, stdout, stderr := runCLI(a, "guest-agent", "vm", `{"execute":"guest-info"}`, "extra")
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "unexpected arguments") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		if called {
+			t.Fatal("CallGuestAgent ran for extra arguments")
+		}
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		a := testApp(t)
+		cfg := testConfig("vm")
+		saveTestConfig(t, a, cfg)
+		called := false
+		a.CallGuestAgent = func(context.Context, string, qemu.GuestAgentRequest) (json.RawMessage, error) {
+			called = true
+			return nil, nil
+		}
+		code, stdout, stderr := runCLI(a, "guest-agent", "vm", `{"execute":"guest-info"}`)
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "does not have the guest agent enabled") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		if called {
+			t.Fatal("CallGuestAgent ran for disabled guest agent")
+		}
+	})
+
+	t.Run("stopped", func(t *testing.T) {
+		a := testApp(t)
+		cfg := testConfig("vm")
+		cfg.GuestAgent.Enabled = true
+		saveTestConfig(t, a, cfg)
+		a.Runtime = &fakeRuntime{row: StatusRow{State: model.RunStateStopped}}
+		called := false
+		a.CallGuestAgent = func(context.Context, string, qemu.GuestAgentRequest) (json.RawMessage, error) {
+			called = true
+			return nil, nil
+		}
+		code, stdout, stderr := runCLI(a, "guest-agent", "vm", `{"execute":"guest-info"}`)
+		if code != 1 || stdout != "" || !strings.Contains(stderr, "guest-agent requires running or paused") {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		if called {
+			t.Fatal("CallGuestAgent ran for stopped VM")
+		}
+	})
+
+	t.Run("missing seam", func(t *testing.T) {
+		a := testApp(t)
+		cfg := testConfig("vm")
+		cfg.GuestAgent.Enabled = true
+		saveTestConfig(t, a, cfg)
+		a.Runtime = &fakeRuntime{row: StatusRow{State: model.RunStateRunning}}
+		a.CallGuestAgent = nil
+		code, stdout, stderr := runCLI(a, "guest-agent", "vm", `{"execute":"guest-info"}`)
+		if code != 1 || stdout != "" || stderr != "runtime: guest-agent is unavailable\n" {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+	})
+}
+
+func TestGuestAgentCommandForwardsRequestAndPrintsCompactJSON(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	cfg.GuestAgent.Enabled = true
+	saveTestConfig(t, a, cfg)
+	a.Runtime = &fakeRuntime{row: StatusRow{State: model.RunStateRunning}}
+	gotPath := ""
+	var gotRequest qemu.GuestAgentRequest
+	a.CallGuestAgent = func(_ context.Context, path string, request qemu.GuestAgentRequest) (json.RawMessage, error) {
+		gotPath = path
+		gotRequest = request
+		return json.RawMessage(` { "ok": true, "count": 1 } `), nil
+	}
+	code, stdout, stderr := runCLI(a, "guest-agent", "vm", `{"execute":"guest-file-open","arguments":{"path":"/tmp/file","mode":"r"}}`)
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if stdout != "{\"ok\":true,\"count\":1}\n" {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if gotPath != a.Store.Paths(cfg).QGA {
+		t.Fatalf("QGA path = %q, want %q", gotPath, a.Store.Paths(cfg).QGA)
+	}
+	if gotRequest.Execute != "guest-file-open" {
+		t.Fatalf("execute = %q", gotRequest.Execute)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, gotRequest.Arguments); err != nil {
+		t.Fatalf("compact arguments: %v", err)
+	}
+	if compact.String() != `{"path":"/tmp/file","mode":"r"}` {
+		t.Fatalf("arguments = %s", compact.String())
+	}
+}
+
 func TestVNCAdmissionRejectsDisabledStoppedMissingEndpointAndStaleConfig(t *testing.T) {
 	t.Run("disabled", func(t *testing.T) {
 		a := testApp(t)
@@ -318,6 +675,7 @@ func TestVNCAdmissionRejectsDisabledStoppedMissingEndpointAndStaleConfig(t *test
 	})
 
 	t.Run("missing endpoint", func(t *testing.T) {
+
 		a := testApp(t)
 		cfg := testConfig("vm")
 		cfg.VNC = &model.VNCConfig{Bind: "127.0.0.1", Port: 5900, PortTo: 5900, Password: "secret"}
@@ -460,10 +818,11 @@ func TestStopAndStartMissingServicesAreReported(t *testing.T) {
 	}
 }
 
-func TestAbsoluteStorePathsIncludesVNCSecret(t *testing.T) {
+func TestAbsoluteStorePathsIncludesMonitorSocketsAndVNCSecret(t *testing.T) {
 	paths := store.Paths{
 		VMDir: "vm", Config: "config.json", RuntimeDir: "runtime", ControlSocket: "control.sock",
-		LifetimeLock: "lifetime.lock", QMP: "qmp.sock", QGA: "qga.sock", Console: "console.sock",
+		LifetimeLock: "lifetime.lock", QMP: "qmp.sock", QMPCommand: "qmp-command.sock",
+		QGA: "qga.sock", Console: "console.sock", Monitor: "monitor.sock",
 		VNCSecret: "vnc-password", RuntimeMetadata: "runtime.json", LastExitMetadata: "last_exit.json",
 		SupervisorStdout: "supervisor.stdout.log", SupervisorStderr: "supervisor.stderr.log",
 		QEMULog: "qemu.log", SerialLog: "serial.log",
@@ -473,9 +832,9 @@ func TestAbsoluteStorePathsIncludesVNCSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{
-		got.VMDir, got.Config, got.RuntimeDir, got.ControlSocket, got.LifetimeLock, got.QMP, got.QGA,
-		got.Console, got.VNCSecret, got.RuntimeMetadata, got.LastExitMetadata, got.SupervisorStdout,
-		got.SupervisorStderr, got.QEMULog, got.SerialLog,
+		got.VMDir, got.Config, got.RuntimeDir, got.ControlSocket, got.LifetimeLock, got.QMP, got.QMPCommand,
+		got.QGA, got.Console, got.Monitor, got.VNCSecret, got.RuntimeMetadata, got.LastExitMetadata,
+		got.SupervisorStdout, got.SupervisorStderr, got.QEMULog, got.SerialLog,
 	} {
 		if !filepath.IsAbs(path) {
 			t.Fatalf("path %q is not absolute", path)
@@ -487,5 +846,18 @@ func TestAbsoluteStorePathsIncludesVNCSecret(t *testing.T) {
 	}
 	if got.VNCSecret != wantSecret {
 		t.Fatalf("VNC secret = %q, want %q", got.VNCSecret, wantSecret)
+	}
+}
+
+func TestBackendPathsIncludePrivateMonitorSockets(t *testing.T) {
+	paths := store.Paths{
+		VMDir: "/vm", QMP: "/run/qmp.sock", QMPCommand: "/run/qmp-command.sock", QGA: "/run/qga.sock",
+		Console: "/run/console.sock", Monitor: "/run/monitor.sock", QEMULog: "/logs/qemu.log", SerialLog: "/logs/serial.log",
+	}
+	got := backendPaths(paths)
+	if got.VMDir != paths.VMDir || got.QMP != paths.QMP || got.QMPCommand != paths.QMPCommand ||
+		got.QGA != paths.QGA || got.Console != paths.Console || got.Monitor != paths.Monitor ||
+		got.QEMULog != paths.QEMULog || got.SerialLog != paths.SerialLog {
+		t.Fatalf("backend paths = %#v", got)
 	}
 }

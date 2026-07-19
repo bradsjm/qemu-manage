@@ -2,6 +2,7 @@ package model
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"net"
@@ -104,6 +105,87 @@ func TestCanonicalRoundTripAndHashStability(t *testing.T) {
 	}
 	if h1 != h2 || len(h1) != 64 {
 		t.Fatalf("unstable hash: %q != %q", h1, h2)
+	}
+}
+
+func TestCanonicalCompatibilityOmitsUSBAndDiskOptions(t *testing.T) {
+	config := Config{
+		SchemaVersion:          SchemaVersion,
+		ID:                     "0123456789abcdef0123456789abcdef",
+		Name:                   "compat",
+		Backend:                BackendQEMU,
+		Architecture:           "aarch64",
+		UUID:                   "123e4567-e89b-42d3-a456-426614174000",
+		CPUs:                   2,
+		MemoryMiB:              2048,
+		RestartPolicy:          RestartNever,
+		ShutdownTimeoutSeconds: 180,
+		Firmware:               FirmwareConfig{Code: "firmware-code.fd", Variables: "firmware-vars.fd"},
+		Disks:                  []DiskConfig{{Path: "disk.qcow2", Format: "qcow2", Serial: "disk-0123456789abcdef", BootIndex: 0}},
+		Network:                NetworkConfig{Mode: NetworkUser, MAC: "02:00:00:00:00:01", Forwards: []PortForward{}},
+		GuestAgent:             GuestAgentConfig{},
+		QEMU:                   QEMUConfig{Binary: "/usr/bin/qemu-system-aarch64", ImageTool: "/usr/bin/qemu-img", Machine: "virt", ExtraArgs: []string{}},
+		Autostart:              AutostartConfig{Scope: AutostartNone},
+	}
+	data, err := CanonicalJSON(&config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "{\n" +
+		"  \"schema_version\": 1,\n" +
+		"  \"id\": \"0123456789abcdef0123456789abcdef\",\n" +
+		"  \"name\": \"compat\",\n" +
+		"  \"backend\": \"qemu\",\n" +
+		"  \"architecture\": \"aarch64\",\n" +
+		"  \"uuid\": \"123e4567-e89b-42d3-a456-426614174000\",\n" +
+		"  \"cpus\": 2,\n" +
+		"  \"memory_mib\": 2048,\n" +
+		"  \"restart_policy\": \"never\",\n" +
+		"  \"shutdown_timeout_seconds\": 180,\n" +
+		"  \"firmware\": {\n" +
+		"    \"code\": \"firmware-code.fd\",\n" +
+		"    \"variables\": \"firmware-vars.fd\"\n" +
+		"  },\n" +
+		"  \"disks\": [\n" +
+		"    {\n" +
+		"      \"path\": \"disk.qcow2\",\n" +
+		"      \"format\": \"qcow2\",\n" +
+		"      \"serial\": \"disk-0123456789abcdef\",\n" +
+		"      \"boot_index\": 0,\n" +
+		"      \"read_only\": false\n" +
+		"    }\n" +
+		"  ],\n" +
+		"  \"network\": {\n" +
+		"    \"mode\": \"user\",\n" +
+		"    \"mac\": \"02:00:00:00:00:01\",\n" +
+		"    \"forwards\": []\n" +
+		"  },\n" +
+		"  \"guest_agent\": {\n" +
+		"    \"enabled\": false\n" +
+		"  },\n" +
+		"  \"qemu\": {\n" +
+		"    \"binary\": \"/usr/bin/qemu-system-aarch64\",\n" +
+		"    \"image_tool\": \"/usr/bin/qemu-img\",\n" +
+		"    \"machine\": \"virt\",\n" +
+		"    \"extra_args\": []\n" +
+		"  },\n" +
+		"  \"autostart\": {\n" +
+		"    \"scope\": \"none\"\n" +
+		"  }\n" +
+		"}\n"
+	if string(data) != want {
+		t.Fatalf("canonical JSON changed\n got:\n%s\nwant:\n%s", data, want)
+	}
+	if strings.Contains(want, "\"usb\"") || strings.Contains(want, "\"cache\"") || strings.Contains(want, "\"aio\"") {
+		t.Fatal("expected fixture unexpectedly contains omitted fields")
+	}
+	hash, err := Hash(&config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(want))
+	if hash != hex.EncodeToString(sum[:]) {
+		t.Fatalf("hash=%q want=%q", hash, hex.EncodeToString(sum[:]))
 	}
 }
 
@@ -350,6 +432,10 @@ func TestStorageValidation(t *testing.T) {
 		"disk negative index":      func(c *Config) { c.Disks[0].BootIndex = -1 },
 		"format uppercase":         func(c *Config) { c.Disks[0].Format = "QCOW2" },
 		"format other":             func(c *Config) { c.Disks[0].Format = "vmdk" },
+		"cache uppercase":          func(c *Config) { c.Disks[0].Cache = "Writeback" },
+		"cache other":              func(c *Config) { c.Disks[0].Cache = "passthrough" },
+		"aio uppercase":            func(c *Config) { c.Disks[0].AIO = "Threads" },
+		"aio other":                func(c *Config) { c.Disks[0].AIO = "io_uring" },
 		"serial empty":             func(c *Config) { c.Disks[0].Serial = "" },
 		"serial unsafe":            func(c *Config) { c.Disks[0].Serial = "bad,serial" },
 		"serial too long":          func(c *Config) { c.Disks[0].Serial = strings.Repeat("a", 65) },
@@ -364,6 +450,20 @@ func TestStorageValidation(t *testing.T) {
 		c.Disks[0].Serial = strings.Repeat("Z", 64)
 		if err := c.Validate(); err != nil {
 			t.Fatalf("valid storage rejected: %v", err)
+		}
+	}
+	for _, cache := range []string{"", "none", "writeback", "writethrough", "directsync", "unsafe"} {
+		c := validTestConfig()
+		c.Disks[0].Cache = cache
+		if err := c.Validate(); err != nil {
+			t.Fatalf("valid cache %q rejected: %v", cache, err)
+		}
+	}
+	for _, aio := range []string{"", "threads", "native"} {
+		c := validTestConfig()
+		c.Disks[0].AIO = aio
+		if err := c.Validate(); err != nil {
+			t.Fatalf("valid aio %q rejected: %v", aio, err)
 		}
 	}
 }
@@ -388,6 +488,7 @@ func TestNetworkValidation(t *testing.T) {
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) { c := validTestConfig(); mutate(&c); requireInvalid(t, c) })
 	}
+
 	distinctListeners := validTestConfig()
 	distinctListeners.Network.Forwards = []PortForward{
 		{Protocol: "tcp", HostAddress: "127.0.0.1", HostPort: 65535, GuestPort: 65535},
@@ -422,6 +523,59 @@ func TestNetworkValidation(t *testing.T) {
 	}
 }
 
+func TestUSBValidationSelectorsDuplicatesAndCapacity(t *testing.T) {
+	valid := validTestConfig()
+	valid.USB = []USBDeviceConfig{
+		{VendorID: "0001", ProductID: "ffff"},
+		{HostBus: 255, HostAddress: 127},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid usb selectors rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"empty":            func(c *Config) { c.USB = []USBDeviceConfig{{}} },
+		"vendor only":      func(c *Config) { c.USB = []USBDeviceConfig{{VendorID: "0001"}} },
+		"product zero":     func(c *Config) { c.USB = []USBDeviceConfig{{VendorID: "0001", ProductID: "0000"}} },
+		"vendor zero":      func(c *Config) { c.USB = []USBDeviceConfig{{VendorID: "0000", ProductID: "0001"}} },
+		"vendor uppercase": func(c *Config) { c.USB = []USBDeviceConfig{{VendorID: "ABCD", ProductID: "0001"}} },
+		"mixed selectors": func(c *Config) {
+			c.USB = []USBDeviceConfig{{VendorID: "0001", ProductID: "0002", HostBus: 1, HostAddress: 2}}
+		},
+		"bus only":         func(c *Config) { c.USB = []USBDeviceConfig{{HostBus: 1}} },
+		"address too high": func(c *Config) { c.USB = []USBDeviceConfig{{HostBus: 1, HostAddress: 128}} },
+		"duplicate vendor pair": func(c *Config) {
+			c.USB = []USBDeviceConfig{{VendorID: "0001", ProductID: "0002"}, {VendorID: "0001", ProductID: "0002"}}
+		},
+		"duplicate bus address": func(c *Config) { c.USB = []USBDeviceConfig{{HostBus: 2, HostAddress: 3}, {HostBus: 2, HostAddress: 3}} },
+	} {
+		t.Run(name, func(t *testing.T) { c := validTestConfig(); mutate(&c); requireInvalid(t, c) })
+	}
+	withoutVNC := validTestConfig()
+	withoutVNC.USB = []USBDeviceConfig{
+		{VendorID: "0001", ProductID: "0001"},
+		{VendorID: "0001", ProductID: "0002"},
+		{HostBus: 1, HostAddress: 1},
+		{HostBus: 1, HostAddress: 2},
+	}
+	if err := withoutVNC.Validate(); err != nil {
+		t.Fatalf("four usb devices without VNC rejected: %v", err)
+	}
+	withoutVNC.USB = append(withoutVNC.USB, USBDeviceConfig{HostBus: 1, HostAddress: 3})
+	requireInvalid(t, withoutVNC)
+
+	withVNC := validTestConfig()
+	withVNC.VNC = validTestVNC()
+	withVNC.USB = []USBDeviceConfig{
+		{VendorID: "0001", ProductID: "0001"},
+		{HostBus: 1, HostAddress: 1},
+	}
+	if err := withVNC.Validate(); err != nil {
+		t.Fatalf("two usb devices with VNC rejected: %v", err)
+	}
+	withVNC.USB = append(withVNC.USB, USBDeviceConfig{HostBus: 1, HostAddress: 2})
+	requireInvalid(t, withVNC)
+}
+
 func TestValidateApplyImmutableFieldsAndScope(t *testing.T) {
 	current := validTestConfig()
 	mutable := cloneTestConfig(t, current)
@@ -449,7 +603,7 @@ func TestValidateApplyImmutableFieldsAndScope(t *testing.T) {
 }
 
 func TestManagerOwnedQEMUOptionsRejected(t *testing.T) {
-	options := []string{"qmp", "monitor", "chardev", "serial", "daemonize", "pidfile", "run-with", "accel", "machine", "M", "cpu", "smp", "m", "drive", "blockdev", "device", "hda", "hdb", "hdc", "hdd", "fda", "fdb", "cdrom", "netdev", "nic", "net", "display", "nographic", "vga", "nodefaults", "name", "uuid", "boot", "bios", "readconfig", "writeconfig", "set", "global", "incoming", "snapshot", "S", "preconfig", "no-shutdown", "action", "vnc", "object"}
+	options := []string{"qmp", "monitor", "mon", "chardev", "serial", "daemonize", "pidfile", "run-with", "accel", "machine", "M", "cpu", "smp", "m", "drive", "blockdev", "device", "hda", "hdb", "hdc", "hdd", "fda", "fdb", "cdrom", "netdev", "nic", "net", "display", "nographic", "vga", "nodefaults", "name", "uuid", "boot", "bios", "readconfig", "writeconfig", "set", "global", "incoming", "snapshot", "S", "preconfig", "no-shutdown", "action", "vnc", "object"}
 	for _, option := range options {
 		for _, arg := range []string{"-" + option, "-" + option + "=value", "--" + option, "--" + option + "=value"} {
 			t.Run(strings.ReplaceAll(arg, "/", "_"), func(t *testing.T) { c := validTestConfig(); c.QEMU.ExtraArgs = []string{arg}; requireInvalid(t, c) })
