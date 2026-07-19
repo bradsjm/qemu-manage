@@ -132,9 +132,7 @@ func (s Status) Validate() error {
 	default:
 		return fmt.Errorf("unsupported run state %q", s.State)
 	}
-	switch s.Backend {
-	case model.BackendQEMU, model.BackendVZ:
-	default:
+	if s.Backend != model.BackendQEMU {
 		return fmt.Errorf("unsupported backend %q", s.Backend)
 	}
 	if s.SupervisorPID <= 0 {

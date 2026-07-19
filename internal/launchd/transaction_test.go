@@ -103,38 +103,17 @@ func TestEnableRollbackAfterBootstrapFailure(t *testing.T) {
 	}
 }
 
-func TestEnableRefusesVZAndForeignOrphan(t *testing.T) {
+func TestEnableRefusesForeignOrphan(t *testing.T) {
 	m, _, cfg := launchdTestManager(t)
 	m.Stopped = func(context.Context, *model.Config) error { return nil }
-	lock, err := m.Store.LockName(cfg.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Backend = model.BackendVZ
-	if err = lock.Save(cfg); err != nil {
-		t.Fatal(err)
-	}
-	lock.Close()
-	if err = m.Enable(context.Background(), cfg.Name, model.AutostartLogin, func(context.Context, *model.Config) error { return nil }); err == nil || !strings.Contains(err.Error(), `backend "vz" is unavailable`) {
-		t.Fatalf("VZ error=%v", err)
-	}
-	lock, err = m.Store.LockName(cfg.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Backend = model.BackendQEMU
-	if err = lock.Save(cfg); err != nil {
-		t.Fatal(err)
-	}
-	lock.Close()
-	if err = os.MkdirAll(m.LoginDir, 0700); err != nil {
+	if err := os.MkdirAll(m.LoginDir, 0700); err != nil {
 		t.Fatal(err)
 	}
 	foreign := []byte(`<?xml version="1.0"?><plist><dict><key>Label</key><string>foreign.job</string></dict></plist>`)
-	if err = os.WriteFile(m.plistPath(domainLogin, cfg.ID), foreign, 0600); err != nil {
+	if err := os.WriteFile(m.plistPath(domainLogin, cfg.ID), foreign, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err = m.Enable(context.Background(), cfg.Name, model.AutostartLogin, func(context.Context, *model.Config) error { return nil }); err == nil || !strings.Contains(err.Error(), "foreign plist") {
+	if err := m.Enable(context.Background(), cfg.Name, model.AutostartLogin, func(context.Context, *model.Config) error { return nil }); err == nil || !strings.Contains(err.Error(), "foreign plist") {
 		t.Fatalf("foreign error=%v", err)
 	}
 	got, err := os.ReadFile(m.plistPath(domainLogin, cfg.ID))

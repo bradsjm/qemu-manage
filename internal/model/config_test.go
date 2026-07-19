@@ -302,14 +302,12 @@ func TestValidationEnumsRangesAndArchitecture(t *testing.T) {
 		t.Run(name, func(t *testing.T) { c := validTestConfig(); mutate(&c); requireInvalid(t, c) })
 	}
 
-	for _, backend := range []Backend{BackendQEMU, BackendVZ} {
-		for _, restart := range []RestartPolicy{RestartNever, RestartOnFailure} {
-			for _, scope := range []AutostartScope{AutostartNone, AutostartBoot, AutostartLogin} {
-				c := validTestConfig()
-				c.Backend, c.RestartPolicy, c.Autostart.Scope = backend, restart, scope
-				if err := c.Validate(); err != nil {
-					t.Fatalf("valid enum combination rejected: %v", err)
-				}
+	for _, restart := range []RestartPolicy{RestartNever, RestartOnFailure} {
+		for _, scope := range []AutostartScope{AutostartNone, AutostartBoot, AutostartLogin} {
+			c := validTestConfig()
+			c.RestartPolicy, c.Autostart.Scope = restart, scope
+			if err := c.Validate(); err != nil {
+				t.Fatalf("valid enum combination rejected: %v", err)
 			}
 		}
 	}
@@ -437,7 +435,6 @@ func TestValidateApplyImmutableFieldsAndScope(t *testing.T) {
 		"schema":       func(c *Config) { c.SchemaVersion++ },
 		"ID":           func(c *Config) { c.ID = "abcdef0123456789abcdef0123456789" },
 		"name":         func(c *Config) { c.Name = "renamed" },
-		"backend":      func(c *Config) { c.Backend = BackendVZ },
 		"architecture": func(c *Config) { c.Architecture = "x86_64" },
 		"scope":        func(c *Config) { c.Autostart.Scope = AutostartBoot },
 	} {
@@ -448,17 +445,6 @@ func TestValidateApplyImmutableFieldsAndScope(t *testing.T) {
 				t.Fatal("immutable change accepted")
 			}
 		})
-	}
-}
-
-func TestRuntimeVZError(t *testing.T) {
-	c := validTestConfig()
-	c.Backend = BackendVZ
-	if err := c.Validate(); err != nil {
-		t.Fatalf("VZ must be schema-valid: %v", err)
-	}
-	if err := c.ValidateRuntime(); err == nil || err.Error() != `backend "vz" is unavailable in this build` {
-		t.Fatalf("unexpected VZ runtime error: %v", err)
 	}
 }
 

@@ -179,19 +179,6 @@ func TestNamedInvalidStatusJSONIsAFailedRow(t *testing.T) {
 	}
 }
 
-func TestVZRuntimeCommandsReturnUnavailableError(t *testing.T) {
-	a := testApp(t)
-	cfg := testConfig("vm")
-	cfg.Backend = model.BackendVZ
-	saveTestConfig(t, a, cfg)
-	for _, args := range [][]string{{"start", "vm"}, {"doctor", "vm", "--json"}} {
-		code, _, stderr := runCLI(a, args...)
-		if code != 1 || !strings.Contains(stderr, `backend "vz" is unavailable`) {
-			t.Errorf("args=%v code=%d stderr=%q", args, code, stderr)
-		}
-	}
-}
-
 func TestDeleteRequiresForceAndRefusesAutostartOrRunning(t *testing.T) {
 	a := testApp(t)
 	cfg := testConfig("vm")

@@ -301,14 +301,7 @@ func (a *App) runSupervise(ctx context.Context, args []string) error {
 }
 
 func (a *App) loadQEMUConfig(name string) (*model.Config, error) {
-	config, err := a.Store.Load(name)
-	if err != nil {
-		return nil, err
-	}
-	if config.Backend != model.BackendQEMU {
-		return nil, fmt.Errorf("qemu: backend %q is unavailable in this build", config.Backend)
-	}
-	return config, nil
+	return a.Store.Load(name)
 }
 
 func backendPaths(paths store.Paths) backend.RuntimePaths {

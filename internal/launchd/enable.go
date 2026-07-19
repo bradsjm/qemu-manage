@@ -39,7 +39,7 @@ func (m *Manager) Enable(ctx context.Context, name string, scope model.Autostart
 	if cfg.Autostart.Scope != model.AutostartNone {
 		return fmt.Errorf("launchd: VM %q already has autostart scope %q; disable it before enabling", name, cfg.Autostart.Scope)
 	}
-	if err := cfg.ValidateRuntime(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return err
 	}
 

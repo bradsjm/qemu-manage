@@ -22,7 +22,6 @@ type Backend string
 
 const (
 	BackendQEMU Backend = "qemu"
-	BackendVZ   Backend = "vz"
 )
 
 type RestartPolicy string
@@ -279,8 +278,8 @@ func (c *Config) Validate() error {
 	if !namePattern.MatchString(c.Name) {
 		return configError("invalid name %q", c.Name)
 	}
-	if c.Backend != BackendQEMU && c.Backend != BackendVZ {
-		return configError("invalid backend %q; valid values: qemu, vz", c.Backend)
+	if c.Backend != BackendQEMU {
+		return configError("invalid backend %q; valid values: qemu", c.Backend)
 	}
 	if c.Architecture != "aarch64" {
 		return configError("architecture must be %q", "aarch64")
@@ -322,17 +321,6 @@ func (c *Config) Validate() error {
 	}
 	if err := validateVNC(c.VNC); err != nil {
 		return err
-	}
-	return nil
-}
-
-// ValidateRuntime rejects schema-valid backends unavailable in this release.
-func (c *Config) ValidateRuntime() error {
-	if err := c.Validate(); err != nil {
-		return err
-	}
-	if c.Backend == BackendVZ {
-		return errors.New(`backend "vz" is unavailable in this build`)
 	}
 	return nil
 }
