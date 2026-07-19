@@ -31,7 +31,7 @@ jobs:
           fi
           version="${GITHUB_REF_NAME#v}"
           mkdir -p dist/package
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -o dist/package/qemu-manage ./cmd/qemu-manage
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-X github.com/bradsjm/qemu-manage/internal/cli.releaseVersion=${version}" -o dist/package/qemu-manage ./cmd/qemu-manage
           cp LICENSE README.md dist/package/
           tar -C dist/package -czf "dist/qemu-manage_${version}_darwin_arm64.tar.gz" qemu-manage LICENSE README.md
           rm -rf dist/package

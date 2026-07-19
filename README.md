@@ -43,10 +43,10 @@
 
 Download the latest archive from [GitHub Releases](https://github.com/bradsjm/qemu-manage/releases/latest). Archives are unsigned and target Apple Silicon only. macOS may ask you to approve the binary in Privacy & Security.
 
-Replace `0.1.0` with the version you want to install:
+Replace `0.2.0` with the version you want to install:
 
 ```sh
-VERSION=0.1.0
+VERSION=0.2.0
 curl -fLO "https://github.com/bradsjm/qemu-manage/releases/download/v${VERSION}/qemu-manage_${VERSION}_darwin_arm64.tar.gz"
 curl -fLO "https://github.com/bradsjm/qemu-manage/releases/download/v${VERSION}/checksums.txt"
 shasum -a 256 -c checksums.txt
@@ -64,7 +64,7 @@ Make sure `$HOME/.local/bin` is on your `PATH`.
 go install github.com/bradsjm/qemu-manage/cmd/qemu-manage@latest
 
 # Specific version
-go install github.com/bradsjm/qemu-manage/cmd/qemu-manage@v0.1.0
+go install github.com/bradsjm/qemu-manage/cmd/qemu-manage@v0.2.0
 ```
 
 Requires Go 1.25+ and builds locally — no unsigned binary needed.
@@ -74,9 +74,13 @@ Requires Go 1.25+ and builds locally — no unsigned binary needed.
 ```sh
 go build -o qemu-manage ./cmd/qemu-manage
 ./qemu-manage --help
+./qemu-manage --version
 ```
 
 Copy the resulting binary to a directory on your `PATH` to make it globally available.
+
+`--version` reports the release version, VCS revision and commit time, whether the
+source tree was modified, the Go toolchain version, and the project repository.
 
 ## Quick start
 

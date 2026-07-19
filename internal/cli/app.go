@@ -156,6 +156,17 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	debugEnabled, args := parseLeadingDebugFlags(args)
 	a.debug = debugEnabled
 	a.debugWriter = stderr
+	if len(args) > 0 && args[0] == "--version" {
+		if len(args) != 1 {
+			writeUsageFailure(stderr, usageErrorf("--version does not accept arguments"), args, a.LookupEnv)
+			return 2
+		}
+		if err := writeVersion(stdout); err != nil {
+			fmt.Fprintf(stderr, "write version: %v\n", err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) == 0 {
 		if err := writeHelp(stderr, "", a.LookupEnv); err != nil {
 			fmt.Fprintf(stderr, "write help: %v\n", err)

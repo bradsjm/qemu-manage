@@ -111,6 +111,37 @@ func TestRunRefusesRootBeforeInitializationOrMutation(t *testing.T) {
 	}
 }
 
+func TestVersionBypassesRootAndInitialization(t *testing.T) {
+	a := testApp(t)
+	a.Geteuid = func() int { return 0 }
+	a.initializationError = os.ErrPermission
+
+	code, stdout, stderr := runCLI(a, "--version")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{
+		"qemu-manage ",
+		"revision: ",
+		"commit time: ",
+		"modified: ",
+		"go version: ",
+		"repository: " + repositoryURL,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("version output does not contain %q: %q", want, stdout)
+		}
+	}
+}
+
+func TestVersionRejectsArguments(t *testing.T) {
+	a := testApp(t)
+	code, stdout, stderr := runCLI(a, "--version", "extra")
+	if code != 2 || stdout != "" || !strings.Contains(stderr, "--version does not accept arguments") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
 func TestUsageAndNameBeforeFlags(t *testing.T) {
 	a := testApp(t)
 	for _, tc := range []struct {

@@ -562,10 +562,12 @@ Usage:
   qemu-manage [-d|--debug] COMMAND [ARGUMENTS]
   qemu-manage [-d|--debug] COMMAND --help
   qemu-manage help [COMMAND [SUBCOMMAND]]
+  qemu-manage --version
 
 Options:
   -d, --debug  Emit redacted diagnostic records to stderr for this invocation
   -h, --help   Show progressive help for the current command
+  --version    Show version and build information
 
 Getting started:
   1. Install QEMU: brew install qemu
@@ -607,6 +609,7 @@ Environment:
 	builder.WriteString(`
 Examples:
   qemu-manage --help
+  qemu-manage --version
   qemu-manage create --help
   qemu-manage --debug doctor
   qemu-manage help guest-agent
