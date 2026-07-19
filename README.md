@@ -197,7 +197,7 @@ before running.
 Omit both `--image` and `--iso` and you get a blank 32 GiB qcow2 disk by
 default.
 
-### Repeatable extra drives
+### Adding extra drives
 
 Repeat `--drive` to append extra virtio disks after the managed primary disk:
 
@@ -206,11 +206,11 @@ Repeat `--drive` to append extra virtio disks after the managed primary disk:
 ```
 
 Relative paths are resolved to absolute external references in the stored
-config. Double each literal comma in a value as `,,`. `qemu-manage` never
-copies, resizes, converts, chmods, or deletes those extra drive files, so they
-must remain readable and in place. Omitted `format` is detected from the file
-header; omitted `if` means `virtio`. `aio=native` still depends on host and
-QEMU support.
+config. `qemu-manage` never copies, resizes, converts, chmods, or deletes those extra drive files, so they must remain readable and in place.
+
+- If `format` is omitted, it is detected from the file header
+- If `if` is omitted, it defaults to `virtio`
+- The `aio=native` option relies on Linux native AIO which is not available on Mac OS
 
 ```sh
 qemu-manage create lab \
@@ -219,7 +219,7 @@ qemu-manage create lab \
   --drive "file=archive.qcow2,format=qcow2,readonly=on"
 ```
 
-### Repeatable USB passthrough
+### Adding a USB passthrough
 
 Repeat `--usb` with either exact selector form:
 
@@ -272,8 +272,23 @@ vice versa. `socket_vmnet` VMs and additional SMB folders are not supported.
 
 ## Networking
 
-VMs use QEMU user-mode networking by default. Port forwards bind explicitly to
-an IPv4 address:
+Choose one of three networking options:
+
+- **QEMU user mode (default):** Choose this for the simplest setup, outbound
+  connectivity, and a small number of explicitly forwarded services. It needs
+  no privileged networking service and is the only mode that supports
+  `--share`, but the guest is not directly reachable without port forwards.
+- **`socket_vmnet` shared:** Choose this when the host or other VMs need to
+  reach the guest without maintaining QEMU port forwards, but the guest does
+  not need to appear directly on the physical LAN.
+- **`socket_vmnet` bridged:** Choose this when the guest must appear as a
+  separate machine on the physical LAN, including receiving an address from
+  that network and participating in LAN discovery.
+
+### QEMU user mode
+
+User-mode networking requires no additional installation. Port forwards bind
+explicitly to an IPv4 address:
 
 ```sh
 qemu-manage set home-assistant \
@@ -285,18 +300,35 @@ User-network VMs may also expose one host folder over SMB with the create-only
 `--share PATH` option; see [Optional host folder share over SMB](#optional-host-folder-share-over-smb)
 for the syntax, single-folder limit, and guest mount recipe.
 
-`socket_vmnet` provides shared or bridged networking without running QEMU as
-root. Install the Homebrew package first:
+### `socket_vmnet` shared
+
+Both `socket_vmnet` modes provide fuller networking without running QEMU as
+root. Install the Homebrew package and start its standard shared service:
 
 ```sh
 brew install socket_vmnet
+sudo "$(brew --prefix)/bin/brew" services start socket_vmnet
+
+qemu-manage create lab \
+  --image "$HOME/Images/lab.qcow2" \
+  --network socket_vmnet \
+  --socket-vmnet-interface shared
 ```
 
-For bridged networking, name the macOS host interface during creation.
-`qemu-manage` requests `sudo` to copy the Homebrew daemon and client into the
-root-owned `/opt/socket_vmnet/bin` directory, installs and starts one persistent
-bridged LaunchDaemon for that interface, waits for its Unix socket, and stores
-the resulting paths in the VM configuration:
+During shared-network creation and explicit `set --network socket_vmnet`,
+`qemu-manage` resolves `QEMU_MANAGE_SOCKET_VMNET_CLIENT` and
+`QEMU_MANAGE_SOCKET_VMNET_SOCKET` first, then falls back to Homebrew or MacPorts
+discovery. Resolved absolute paths are persisted for later manual and launchd
+starts.
+
+### `socket_vmnet` bridged
+
+Install `socket_vmnet` with `brew install socket_vmnet`, then name the macOS
+host interface during creation. `qemu-manage` requests `sudo` to copy the
+Homebrew daemon and client into the root-owned `/opt/socket_vmnet/bin`
+directory, installs and starts one persistent bridged LaunchDaemon for that
+interface, waits for its Unix socket, and stores the resulting paths in the VM
+configuration:
 
 ```sh
 qemu-manage create home-assistant \
@@ -314,24 +346,6 @@ after the networking daemon becomes ready during boot.
 
 The bridged daemon is shared by every qemu-manage VM using the same host
 interface and remains installed when an individual VM is deleted.
-
-For Homebrew's standard shared network instead, start its service and select
-the `shared` interface:
-
-```sh
-sudo "$(brew --prefix)/bin/brew" services start socket_vmnet
-
-qemu-manage create lab \
-  --image "$HOME/Images/lab.qcow2" \
-  --network socket_vmnet \
-  --socket-vmnet-interface shared
-```
-
-During shared-network creation and explicit `set --network socket_vmnet`,
-`qemu-manage` resolves `QEMU_MANAGE_SOCKET_VMNET_CLIENT` and
-`QEMU_MANAGE_SOCKET_VMNET_SOCKET` first, then falls back to Homebrew or MacPorts
-discovery. Resolved absolute paths are persisted for later manual and launchd
-starts.
 
 ## Starting and inspecting a VM
 
@@ -371,7 +385,8 @@ Interactive monitor mode connects your terminal directly to QEMU's human monitor
 qemu-manage monitor home-assistant
 ```
 
-Press `Ctrl-]` to disconnect without stopping the VM. `qemu-manage` does not add its own prompt; you interact with QEMU's HMP prompt directly.
+Press `Ctrl-]` to disconnect without stopping the VM. `qemu-manage` does not
+add its own prompt; you interact with QEMU's HMP prompt directly.
 
 You can also run one HMP command through QMP:
 
@@ -379,9 +394,28 @@ You can also run one HMP command through QMP:
 qemu-manage monitor home-assistant "info status"
 ```
 
-In that one-shot form, stdout is only the returned HMP text, so it is safe to pipe into other tools or scripts.
+In that one-shot form, stdout is only the returned HMP text, so it is safe to
+pipe into other tools or scripts. Commonly useful monitor commands include:
 
-VMs that were already running when `qemu-manage` was upgraded must be restarted once before either monitor mode can use the new monitor sockets.
+| Command | Use |
+| --- | --- |
+| `help` or `help COMMAND` | List available commands or show command-specific help |
+| `info status` | Show whether the VM is running, paused, or shutting down |
+| `info version` | Show the running QEMU version |
+| `info cpus` | Show virtual CPU state |
+| `info block` | Show attached block devices and backing files |
+| `info network` | Show network devices and backends |
+| `info pci` | Show the guest-visible PCI topology |
+| `info qtree` | Show QEMU's device tree |
+| `info snapshots` | List internal disk snapshots |
+| `info registers` | Show the current virtual CPU's registers |
+| `stop` / `cont` | Pause or resume virtual CPU execution |
+| `system_powerdown` | Request an ACPI guest shutdown |
+| `system_reset` | Immediately reset the VM |
+
+Available HMP commands depend on the QEMU version and machine configuration.
+Use `help` in the monitor to inspect the commands supported by the running VM.
+Commands such as `stop`, `system_powerdown`, and `system_reset` change VM state.
 
 ### Guest agent
 
@@ -391,14 +425,49 @@ Enable the guest agent before starting the VM:
 qemu-manage set home-assistant --guest-agent on
 ```
 
-Then send one strict JSON request object:
+Then send one strict JSON request object. Common read-only requests include:
 
 ```sh
-qemu-manage guest-agent home-assistant '{"execute":"guest-info"}'
+# Check responsiveness and list the agent's supported commands.
 qemu-manage guest-agent home-assistant '{"execute":"guest-ping"}'
+qemu-manage guest-agent home-assistant '{"execute":"guest-info"}'
+
+# Inspect the guest operating system, hostname, users, and time zone.
+qemu-manage guest-agent home-assistant '{"execute":"guest-get-osinfo"}'
+qemu-manage guest-agent home-assistant '{"execute":"guest-get-host-name"}'
+qemu-manage guest-agent home-assistant '{"execute":"guest-get-users"}'
+qemu-manage guest-agent home-assistant '{"execute":"guest-get-timezone"}'
+
+# Inspect guest network interfaces, filesystems, and disks.
+qemu-manage guest-agent home-assistant '{"execute":"guest-network-get-interfaces"}'
+qemu-manage guest-agent home-assistant '{"execute":"guest-get-fsinfo"}'
+qemu-manage guest-agent home-assistant '{"execute":"guest-get-disks"}'
 ```
 
-Stdout is only the compact JSON `return` value, so this command is safe to pipe. A VM that was already running before `qemu-manage` was upgraded can still use `guest-agent` without a restart if that VM was started with the guest agent enabled.
+To run a program inside a guest that permits `guest-exec`, first capture the
+returned `pid`, then substitute it into `guest-exec-status`. With
+`capture-output` enabled, completed stdout and stderr are returned as Base64:
+
+```sh
+qemu-manage guest-agent home-assistant \
+  '{"execute":"guest-exec","arguments":{"path":"/usr/bin/uname","arg":["-a"],"capture-output":true}}'
+qemu-manage guest-agent home-assistant \
+  '{"execute":"guest-exec-status","arguments":{"pid":1234}}'
+```
+
+Guest-agent commands can also change guest state. For example:
+
+```sh
+# Ask the guest operating system to shut down or reboot.
+qemu-manage guest-agent home-assistant \
+  '{"execute":"guest-shutdown","arguments":{"mode":"powerdown"}}'
+qemu-manage guest-agent home-assistant \
+  '{"execute":"guest-shutdown","arguments":{"mode":"reboot"}}'
+```
+
+Supported commands depend on the guest-agent version and guest policy; inspect
+the `supported_commands` returned by `guest-info`. Stdout is only the compact
+JSON `return` value, so this command is safe to pipe.
 
 ## Autostart
 
