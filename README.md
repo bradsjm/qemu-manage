@@ -4,29 +4,39 @@
 [![Coding Harness](https://img.shields.io/badge/coding_harness-oh--my--pi/gpt--5.6-orange)](https://opencode.ai/)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/bradsjm/qemu-manage)
 
-`qemu-manage` is a small command-line manager for headless QEMU virtual machines on Apple Silicon Macs. It manages VM configuration, lifecycle, serial consoles, networking, and launchd autostart without a persistent central daemon. It was built primarily to make it easier to manage QEMU for running Home Assistant in my Mac Mini M4 using a bridged network.
+**A single-binary CLI for managing headless AArch64 QEMU virtual machines on Apple Silicon.** No persistent daemon, no database, no shell execution — just declarative JSON configs, per-VM supervisors, and authenticated control sockets.
+
+## Features
+
+- **VM lifecycle** — Create, start, stop, and inspect VMs with straightforward commands.
+- **Disk import** — Pull images from HTTP(S) URLs (auto-decompresses `.xz`/`.gz`), copy local qcow2/raw images, or boot installer ISOs.
+- **Serial console** — Connect to any guest with `Ctrl-]` disconnect handling.
+- **VNC passthrough** — Optional VNC with password auth; `qemu-manage vnc NAME` opens it in Screen Sharing with the password on your clipboard.
+- **Networking** — User-mode NAT out of the box; optional `socket_vmnet` for shared or bridged mode without running QEMU as root.
+- **Autostart** — Per-VM launchd jobs at login or boot scope; QEMU stays unprivileged.
+- **Secure by design** — Atomic writes, owner-only file modes, peer-authenticated Unix sockets, immutable-ID lifetime locks, and no central service to attack.
 
 ## Requirements
 
 - Apple Silicon Mac running macOS 13 or newer
-- Go 1.25 or newer to build from source or install with `go install`
+- Go 1.25+ to build from source (or use a prebuilt release)
 - QEMU for AArch64 guests:
 
   ```sh
   brew install qemu
   ```
 
-- Optional [`socket_vmnet`](https://github.com/lima-vm/socket_vmnet) installation for shared or bridged networking
+- Optional [`socket_vmnet`](https://github.com/lima-vm/socket_vmnet) for shared or bridged networking
 
-The first release supports native AArch64 guests using QEMU's HVF accelerator. It does not silently fall back to cross-architecture emulation.
+All guests use QEMU's HVF accelerator. There is no silent fallback to cross-architecture emulation or TCG.
 
 ## Installation
 
 ### GitHub release
 
-Download the latest archive from [GitHub Releases](https://github.com/bradsjm/qemu-manage/releases/latest). Release archives are unsigned and target Apple Silicon macOS only. macOS may require you to approve the specific `qemu-manage` binary in Privacy & Security before running it.
+Download the latest archive from [GitHub Releases](https://github.com/bradsjm/qemu-manage/releases/latest). Archives are unsigned and target Apple Silicon only. macOS may ask you to approve the binary in Privacy & Security.
 
-Replace `0.1.0` with the release version you want to install:
+Replace `0.1.0` with the version you want to install:
 
 ```sh
 VERSION=0.1.0
@@ -38,23 +48,19 @@ mkdir -p "$HOME/.local/bin"
 install -m 0755 qemu-manage "$HOME/.local/bin/qemu-manage"
 ```
 
-Ensure `$HOME/.local/bin` is on your `PATH`.
+Make sure `$HOME/.local/bin` is on your `PATH`.
 
 ### Install with Go
 
-Install the latest release:
-
 ```sh
+# Latest release
 go install github.com/bradsjm/qemu-manage/cmd/qemu-manage@latest
-```
 
-Or install a specific version:
-
-```sh
+# Specific version
 go install github.com/bradsjm/qemu-manage/cmd/qemu-manage@v0.1.0
 ```
 
-This method requires Go 1.25 or newer and builds `qemu-manage` locally instead of installing the unsigned release archive.
+Requires Go 1.25+ and builds locally — no unsigned binary needed.
 
 ### Build from source
 
@@ -63,21 +69,39 @@ go build -o qemu-manage ./cmd/qemu-manage
 ./qemu-manage --help
 ```
 
-To make the command available globally, copy the resulting executable to a directory on `PATH`.
+Copy the resulting binary to a directory on your `PATH` to make it globally available.
 
-## Getting started
+## Quick start
 
-Inspect QEMU and firmware discovery before creating a VM:
+Check that QEMU and firmware are discoverable:
 
 ```sh
 qemu-manage doctor
 ```
 
-### Common VM creation workflows
+Create a VM, start it, connect to its serial console, then shut it down:
 
-#### Import an HTTP(S) disk image
+```sh
+qemu-manage create my-vm --cpus 2 --memory 4GiB
+qemu-manage doctor my-vm
+qemu-manage start my-vm
+qemu-manage status my-vm
 
-Pass an HTTP(S) URL to `--image` to download and import an ARM64 qcow2 or raw image directly. URL paths ending in `.xz` or `.gz` are decompressed while downloading, and the source is converted to a managed qcow2 disk:
+# Ctrl-] to disconnect
+qemu-manage console my-vm
+
+qemu-manage stop my-vm
+```
+
+Run `qemu-manage COMMAND --help` for command-specific options and examples.
+
+## Creating a VM
+
+You can create a VM from an HTTP(S) disk image, a local image file, an ARM64 installer ISO, or leave it blank.
+
+### Import from an HTTP(S) URL
+
+Pass a qcow2 or raw URL to `--image`. URLs ending in `.xz` or `.gz` are decompressed while downloading and converted to a managed qcow2 disk:
 
 ```sh
 qemu-manage create home-assistant \
@@ -88,9 +112,9 @@ qemu-manage create home-assistant \
   --restart-policy on-failure
 ```
 
-#### Import a local disk image
+### Import a local image
 
-Use a local qcow2 or raw image when it is already on the Mac:
+Pass a local qcow2 or raw path to `--image`. The source is copied and converted — the original file is never touched:
 
 ```sh
 qemu-manage create appliance \
@@ -100,11 +124,9 @@ qemu-manage create appliance \
   --disk-size 32GiB
 ```
 
-Source images are copied and converted; the original local file is not modified.
+### Install from an ARM64 ISO
 
-#### Install from an ARM64 ISO
-
-Pass a local installer ISO to `--iso`. `qemu-manage` creates the primary qcow2 disk, copies the ISO into managed storage, and boots the ISO before the disk. VNC is useful for graphical installers; set `VNC_PASSWORD` to a password of 1–8 UTF-8 bytes before running this example:
+Pass a local ISO to `--iso`. The tool creates the qcow2 disk, copies the ISO into managed storage, and boots ISO-first. VNC is useful for graphical installers:
 
 ```sh
 qemu-manage create linux \
@@ -116,45 +138,28 @@ qemu-manage create linux \
   --vnc-password "$VNC_PASSWORD"
 ```
 
-For advanced workflows, omitting both `--image` and `--iso` creates a blank 32GiB qcow2 disk by default.
+VNC passwords must be 1–8 UTF-8 bytes; set `VNC_PASSWORD` in your environment before running.
 
-After creating a VM, validate its files and host requirements before starting it:
+### Blank disk
 
-```sh
-qemu-manage doctor home-assistant
-qemu-manage showcmd home-assistant
-qemu-manage start home-assistant
-qemu-manage status home-assistant
-```
+Omit both `--image` and `--iso` and you get a blank 32 GiB qcow2 disk by default.
 
-Connect to the guest's serial console and press `Ctrl-]` to disconnect:
+### ISO installation with VNC
 
-```sh
-qemu-manage console home-assistant
-```
-
-For an ISO installation using VNC:
+After creating the VM, start it, check its status, and connect with VNC:
 
 ```sh
 qemu-manage doctor linux
 qemu-manage start linux
-qemu-manage status linux --json
-qemu-manage vnc linux
+qemu-manage status linux --json    # shows live VNC endpoint
+qemu-manage vnc linux              # opens in Screen Sharing, password on clipboard
 ```
 
-VNC is disabled by default and binds to `127.0.0.1` when enabled. QEMU selects a free port in the configured range; JSON status reports the authenticated supervisor's live `vnc` endpoint. On macOS, `qemu-manage vnc NAME` copies the configured password to the clipboard and opens that live endpoint in Screen Sharing. The VM must be running or paused with its current configuration.
-
-Request a graceful shutdown:
-
-```sh
-qemu-manage stop home-assistant
-```
-
-Run `qemu-manage COMMAND --help` for command-specific options and examples.
+VNC binds to `127.0.0.1` when enabled. QEMU selects a free port in the configured range; JSON status reports the live endpoint from the authenticated supervisor. The VM must be running or paused with its current configuration.
 
 ## Networking
 
-VMs use QEMU user-mode networking by default. Host forwards bind explicitly to an IPv4 address:
+VMs use QEMU user-mode networking by default. Port forwards bind explicitly to an IPv4 address:
 
 ```sh
 qemu-manage set home-assistant \
@@ -162,11 +167,11 @@ qemu-manage set home-assistant \
   --forward tcp:127.0.0.1:8123:8123
 ```
 
-`socket_vmnet` mode provides host/shared/bridged networking without running QEMU as root. It requires a separately installed and running helper service. Use `qemu-manage set NAME --help` and `qemu-manage doctor NAME` to configure and validate it.
+`socket_vmnet` provides host/shared/bridged networking without running QEMU as root. It requires a separately installed and running helper service — see `qemu-manage set NAME --help` and `qemu-manage doctor NAME` for setup and validation.
 
 ## Autostart
 
-Autostart uses a per-VM launchd job:
+Autostart renders per-VM launchd jobs. Manual starts and autostart use the same supervisor path:
 
 ```sh
 # Start after this user logs in.
@@ -179,25 +184,25 @@ qemu-manage autostart status home-assistant
 qemu-manage autostart disable home-assistant
 ```
 
-Boot-scope changes require `sudo` for the narrow LaunchDaemon installation and launchctl operations. QEMU itself still runs as the non-root VM owner.
+Boot-scope changes require `sudo` for the narrow LaunchDaemon installation and `launchctl` operations. QEMU itself still runs as the non-root VM owner.
 
-## Storage
+## Storage & security
 
-Managed state is stored in macOS user directories:
+Managed state lives in standard macOS user directories:
 
-- VM configuration and managed images: `~/Library/Application Support/qemu-manage/vms`
-- Logs: `~/Library/Logs/qemu-manage`
-- Ephemeral control sockets and runtime metadata: `/tmp/qemu-manage-<uid>`
+- VM configs and managed images — `~/Library/Application Support/qemu-manage/vms`
+- Logs — `~/Library/Logs/qemu-manage`
+- Control sockets and runtime metadata (ephemeral) — `/tmp/qemu-manage-<uid>`
 
-Configuration files are strict, versioned JSON. Use `qemu-manage config show`, `config validate`, and `config apply` for complete configuration changes.
+Override any of these with `QEMU_MANAGE_DATA_ROOT`, `QEMU_MANAGE_RUNTIME_ROOT`, or `QEMU_MANAGE_LOG_ROOT`. Each must be an absolute, owner-controlled directory. The runtime root must stay short enough for macOS Unix-socket path limits. Autostart jobs preserve explicit roots because launchd does not inherit the shell environment.
 
-Set `QEMU_MANAGE_DATA_ROOT`, `QEMU_MANAGE_RUNTIME_ROOT`, or `QEMU_MANAGE_LOG_ROOT` to replace the corresponding default. Each override must be an absolute, owner-controlled directory; unset or empty variables retain the default. The runtime root must also remain short enough for macOS Unix-socket path limits. Autostart jobs preserve the selected roots explicitly because launchd does not inherit the shell environment.
+Configuration files are strict, versioned JSON with owner-only mode `0600`. Use `qemu-manage config show`, `config validate`, and `config apply` for full configuration management.
 
-VM configuration files are owner-only mode `0600`. An enabled VNC password is stored there in plaintext and `qemu-manage config show NAME` prints it. VNC password authentication accepts only 1–8 UTF-8 bytes. VNC transport is not encrypted; binding to an address other than loopback exposes it to that network.
+> **VNC security note:** An enabled VNC password is stored in plaintext in the config file, and `qemu-manage config show NAME` prints it. VNC transport is not encrypted; binding to an address other than loopback exposes it to the network.
 
-## Architecture
+## How it works
 
-`qemu-manage` is a single binary with no central daemon. `internal/cli` dispatches commands and wires the model, secure store, lifecycle services, QEMU backend, console, and launchd integration:
+`qemu-manage` is a single binary with no central daemon. The `start` command re-execs itself in a hidden `supervise` mode — one supervisor per running VM, each owning its QEMU child process, its immutable-ID lifetime lock, runtime metadata, and an authenticated Unix control socket:
 
 ```mermaid
 flowchart LR
@@ -216,11 +221,15 @@ flowchart LR
     Supervisor --> Runtime["runtime metadata<br/>control socket + lifetime lock"]
 ```
 
-Each running VM has one supervisor that owns one QEMU child, its immutable-ID lifetime lock, runtime metadata, and authenticated control socket. Manual starts and launchd autostart use the same supervisor path. Durable JSON stores desired configuration only; live state comes from the supervisor and QEMU control protocols.
+**Key design decisions:**
+
+- **Desired vs. live state** — Durable JSON configs store only what you want. Live state comes from the supervisor and QEMU control protocols (QMP/QGA).
+- **No central service** — Every VM supervisor is an independent process. There is no shared daemon, database, or background agent — just the binary, its config files, and per-VM locks.
+- **Minimal privilege** — QEMU runs unprivileged. The only `sudo` operations are narrow LaunchDaemon installs for boot-scope autostart.
 
 ## Development
 
-Developed using Code assistance from [Oh My Pi](https://omp.sh/) harness with GPT 5.6.
+Built with code assistance from the [Oh My Pi](https://omp.sh/) harness using GPT 5.6.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for local checks and contribution expectations. Security reports are handled according to [SECURITY.md](SECURITY.md).
 
