@@ -18,6 +18,7 @@ type RuntimePaths struct {
 	Console   string
 	QEMULog   string
 	SerialLog string
+	VNCSecret string
 }
 
 // ResolvePath resolves a configured path relative to the VM directory. Absolute
@@ -35,6 +36,12 @@ type Command struct {
 	Args []string
 }
 
+// VNCEndpoint is the live VNC listener selected by the backend.
+type VNCEndpoint struct {
+	Host string `json:"host"`
+	Port uint16 `json:"port"`
+}
+
 // Exit is the single terminal result published by an Instance. Implementations
 // must send exactly one Exit on a channel buffered to one element and then close
 // that channel.
@@ -48,6 +55,7 @@ type Exit struct {
 type Instance interface {
 	PID() int
 	Status(context.Context) (model.RunState, error)
+	VNCEndpoint() (VNCEndpoint, bool)
 	RequestShutdown(context.Context) error
 	ForceStop(context.Context) error
 	Wait() <-chan Exit

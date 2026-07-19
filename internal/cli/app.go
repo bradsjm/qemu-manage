@@ -28,14 +28,15 @@ type PlatformUser struct {
 }
 
 type StatusRow struct {
-	Name                string         `json:"name"`
-	State               model.RunState `json:"state"`
-	RestartRequired     bool           `json:"restart_required"`
-	PID                 *int           `json:"pid,omitempty"`
-	Backend             string         `json:"backend,omitempty"`
-	CurrentConfigSHA256 string         `json:"current_config_sha256,omitempty"`
-	RunningConfigSHA256 string         `json:"running_config_sha256,omitempty"`
-	Error               string         `json:"error,omitempty"`
+	Name                string               `json:"name"`
+	State               model.RunState       `json:"state"`
+	RestartRequired     bool                 `json:"restart_required"`
+	PID                 *int                 `json:"pid,omitempty"`
+	Backend             string               `json:"backend,omitempty"`
+	CurrentConfigSHA256 string               `json:"current_config_sha256,omitempty"`
+	RunningConfigSHA256 string               `json:"running_config_sha256,omitempty"`
+	VNC                 *backend.VNCEndpoint `json:"vnc,omitempty"`
+	Error               string               `json:"error,omitempty"`
 }
 
 type RuntimeService interface {
@@ -58,6 +59,7 @@ type App struct {
 	IsTerminal          func(io.Reader) bool
 	DiscoverFirmware    func() (string, string)
 	DiscoverSocketVMNet func() *model.SocketVMNetConfig
+	OpenVNC             func(context.Context, backend.VNCEndpoint, string) error
 
 	initializationError error
 }
@@ -76,6 +78,7 @@ func NewApp() *App {
 		RunExternal: func(ctx context.Context, path string, args []string) error {
 			return exec.CommandContext(ctx, path, args...).Run()
 		},
+		OpenVNC: openVNC,
 	}
 
 	var storeErr error
@@ -172,7 +175,7 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		err = a.dispatchConfig(ctx, args[1:], stdin, stdout, stderr)
 	case "showcmd", "status", "list", "delete":
 		err = a.runInfoCommand(ctx, args[0], args[1:], stdin, stdout, stderr)
-	case "start", "stop", "console", "doctor", "supervise":
+	case "start", "stop", "console", "vnc", "doctor", "supervise":
 		err = a.runRuntimeCommand(ctx, args[0], args[1:], stdin, stdout, stderr)
 	case "autostart":
 		err = a.runAutostart(ctx, args[1:], stdout, stderr)

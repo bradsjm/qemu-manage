@@ -50,6 +50,91 @@ func TestSetForwardsGuestAgentAndNetworkTransitions(t *testing.T) {
 		t.Fatalf("unexpected user config: %+v", got)
 	}
 }
+func TestSetVNCTransitions(t *testing.T) {
+	a := testApp(t)
+	saveTestConfig(t, a, testConfig("vm"))
+
+	code, _, stderr := runCLI(a, "set", "vm", "--vnc", "on")
+	if code != 2 || !strings.Contains(stderr, "--vnc-password is required") {
+		t.Fatalf("enable without password code=%d stderr=%q", code, stderr)
+	}
+	got, _ := a.Store.Load("vm")
+	if got.VNC != nil {
+		t.Fatalf("failed enable mutated VNC config: %+v", got.VNC)
+	}
+
+	code, _, stderr = runCLI(a, "set", "vm", "--vnc-password", "secret")
+	if code != 2 || !strings.Contains(stderr, "existing VNC or --vnc on") {
+		t.Fatalf("detail without enable code=%d stderr=%q", code, stderr)
+	}
+	got, _ = a.Store.Load("vm")
+	if got.VNC != nil {
+		t.Fatalf("detail-only update mutated disabled VNC config: %+v", got.VNC)
+	}
+
+	code, _, stderr = runCLI(a, "set", "vm", "--vnc", "on", "--vnc-password", "secret")
+	if code != 0 {
+		t.Fatalf("enable VNC failed: %s", stderr)
+	}
+	got, _ = a.Store.Load("vm")
+	if got.VNC == nil {
+		t.Fatal("VNC config was not enabled")
+	}
+	if *got.VNC != (model.VNCConfig{
+		Bind:     defaultVNCBind,
+		Port:     defaultVNCPort,
+		PortTo:   defaultVNCPortTo,
+		Password: "secret",
+	}) {
+		t.Fatalf("unexpected enabled VNC config: %+v", *got.VNC)
+	}
+
+	code, _, stderr = runCLI(a, "set", "vm", "--vnc-bind", "0.0.0.0", "--vnc-port", "5905")
+	if code != 0 {
+		t.Fatalf("update VNC details failed: %s", stderr)
+	}
+	got, _ = a.Store.Load("vm")
+	if *got.VNC != (model.VNCConfig{
+		Bind:     "0.0.0.0",
+		Port:     5905,
+		PortTo:   defaultVNCPortTo,
+		Password: "secret",
+	}) {
+		t.Fatalf("VNC update did not preserve omitted fields: %+v", *got.VNC)
+	}
+
+	code, _, stderr = runCLI(a, "set", "vm", "--vnc", "off", "--vnc-port-to", "5906")
+	if code != 2 || !strings.Contains(stderr, "--vnc off is incompatible") {
+		t.Fatalf("disable with details code=%d stderr=%q", code, stderr)
+	}
+	got, _ = a.Store.Load("vm")
+	if *got.VNC != (model.VNCConfig{
+		Bind:     "0.0.0.0",
+		Port:     5905,
+		PortTo:   defaultVNCPortTo,
+		Password: "secret",
+	}) {
+		t.Fatalf("failed disable mutated enabled VNC config: %+v", *got.VNC)
+	}
+
+	code, _, stderr = runCLI(a, "set", "vm", "--vnc", "off")
+	if code != 0 {
+		t.Fatalf("disable VNC failed: %s", stderr)
+	}
+	got, _ = a.Store.Load("vm")
+	if got.VNC != nil {
+		t.Fatalf("VNC config was not cleared: %+v", got.VNC)
+	}
+
+	code, _, stderr = runCLI(a, "set", "vm", "--vnc-port-to", "5906")
+	if code != 2 || !strings.Contains(stderr, "existing VNC or --vnc on") {
+		t.Fatalf("detail after disable code=%d stderr=%q", code, stderr)
+	}
+	got, _ = a.Store.Load("vm")
+	if got.VNC != nil {
+		t.Fatalf("failed detail-only update mutated disabled VNC config: %+v", got.VNC)
+	}
+}
 
 func TestConfigShowValidateAndStrictApply(t *testing.T) {
 	a := testApp(t)
@@ -97,6 +182,22 @@ func TestConfigShowValidateAndStrictApply(t *testing.T) {
 	}
 	if code, _, stderr = runCLI(a, "config", "validate", badFile); code != 1 || !strings.Contains(stderr, "unknown field") {
 		t.Fatalf("strict validation code=%d stderr=%q", code, stderr)
+	}
+	malformed := strings.TrimSuffix(string(data), "\n")
+	malformed = strings.TrimSuffix(malformed, "}") + `,"vnc":{"bind":"127.0.0.1","port":5900,"port_to":5999,"password":"\udc00"}}`
+	malformedFile := filepath.Join(t.TempDir(), "malformed-vnc.json")
+	if err := os.WriteFile(malformedFile, []byte(malformed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr = runCLI(a, "config", "validate", malformedFile); code != 1 || stderr == "" {
+		t.Fatalf("malformed validate code=%d stderr=%q", code, stderr)
+	}
+	if code, _, stderr = runCLI(a, "config", "apply", "vm", malformedFile); code != 1 || stderr == "" {
+		t.Fatalf("malformed apply code=%d stderr=%q", code, stderr)
+	}
+	got, _ = a.Store.Load("vm")
+	if got.ID != cfg.ID || got.CPUs != 6 || got.VNC != nil {
+		t.Fatalf("malformed apply mutated config: %+v", got)
 	}
 
 	other := replacement

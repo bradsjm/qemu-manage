@@ -33,6 +33,7 @@ type Paths struct {
 	QMP              string
 	QGA              string
 	Console          string
+	VNCSecret        string
 	RuntimeMetadata  string
 	LastExitMetadata string
 	SupervisorStdout string
@@ -46,15 +47,35 @@ type CreateArtifacts func(config *model.Config, paths Paths) error
 type DeleteInspector func(config *model.Config, paths Paths) error
 
 func Default() (*Store, error) {
+	return DefaultFromEnv(os.Getenv)
+}
+
+func DefaultFromEnv(getenv func(string) string) (*Store, error) {
+	if getenv == nil {
+		return nil, errors.New("store: environment lookup is nil")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("store: determine home directory: %w", err)
 	}
-	return New(
-		filepath.Join(home, "Library", "Application Support", "qemu-manage", "vms"),
-		filepath.Join(os.TempDir(), fmt.Sprintf("qemu-manage-%d", os.Getuid())),
-		filepath.Join(home, "Library", "Logs", "qemu-manage"),
-	)
+	dataRoot, runtimeRoot, logRoot := resolveDefaultRoots(home, os.TempDir(), os.Getuid(), getenv)
+	return New(dataRoot, runtimeRoot, logRoot)
+}
+
+func resolveDefaultRoots(home, temp string, uid int, getenv func(string) string) (dataRoot, runtimeRoot, logRoot string) {
+	dataRoot = filepath.Join(home, "Library", "Application Support", "qemu-manage", "vms")
+	runtimeRoot = filepath.Join(temp, fmt.Sprintf("qemu-manage-%d", uid))
+	logRoot = filepath.Join(home, "Library", "Logs", "qemu-manage")
+	if value := getenv("QEMU_MANAGE_DATA_ROOT"); value != "" {
+		dataRoot = value
+	}
+	if value := getenv("QEMU_MANAGE_RUNTIME_ROOT"); value != "" {
+		runtimeRoot = value
+	}
+	if value := getenv("QEMU_MANAGE_LOG_ROOT"); value != "" {
+		logRoot = value
+	}
+	return dataRoot, runtimeRoot, logRoot
 }
 
 func New(dataRoot, runtimeRoot, logRoot string) (*Store, error) {
@@ -78,6 +99,7 @@ func (s *Store) Paths(config *model.Config) Paths {
 		QMP:              filepath.Join(runtimeDir, "qmp.sock"),
 		QGA:              filepath.Join(runtimeDir, "qga.sock"),
 		Console:          filepath.Join(runtimeDir, "console.sock"),
+		VNCSecret:        filepath.Join(runtimeDir, "vnc-password"),
 		RuntimeMetadata:  filepath.Join(runtimeDir, "runtime.json"),
 		LastExitMetadata: filepath.Join(runtimeDir, "last_exit.json"),
 		SupervisorStdout: filepath.Join(logDir, "supervisor.stdout.log"),

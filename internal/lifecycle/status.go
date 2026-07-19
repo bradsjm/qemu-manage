@@ -9,6 +9,7 @@ import (
 	"net"
 	"time"
 
+	"qemu-manage/internal/backend"
 	"qemu-manage/internal/model"
 	"qemu-manage/internal/store"
 	"qemu-manage/internal/supervisor"
@@ -37,6 +38,7 @@ type StatusResult struct {
 	Backend             model.Backend
 	CurrentConfigSHA256 string
 	RunningConfigSHA256 string
+	VNC                 *backend.VNCEndpoint
 	Error               string
 }
 
@@ -78,6 +80,7 @@ func (s *Service) status(ctx context.Context, cfg *model.Config) (StatusResult, 
 		result.PID = response.Status.BackendPID
 		result.Backend = response.Status.Backend
 		result.RunningConfigSHA256 = response.Status.RunningConfigSHA256
+		result.VNC = response.Status.VNC
 		return result, true, nil
 	}
 	var protocolErr *supervisor.ResponseError

@@ -219,7 +219,7 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	if err != nil {
 		return err
 	}
-	runtimePaths := backend.RuntimePaths{VMDir: paths.VMDir, QMP: paths.QMP, QGA: paths.QGA, Console: paths.Console, QEMULog: paths.QEMULog, SerialLog: paths.SerialLog}
+	runtimePaths := backendPaths(paths)
 	command, err := implementation.Render(config, runtimePaths)
 	if err != nil {
 		return fmt.Errorf("qemu: render: %w", err)
@@ -247,8 +247,13 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	if err != nil {
 		return fmt.Errorf("config: hash: %w", err)
 	}
+	var vnc *backend.VNCEndpoint
+	if endpoint, ok := instance.VNCEndpoint(); ok {
+		endpoint := endpoint
+		vnc = &endpoint
+	}
 	run.mu.Lock()
-	run.status = Status{State: backendState, Backend: config.Backend, SupervisorPID: os.Getpid(), BackendPID: instance.PID(), StartedAt: startedAt, RunningConfigSHA256: hash}
+	run.status = Status{State: backendState, Backend: config.Backend, SupervisorPID: os.Getpid(), BackendPID: instance.PID(), StartedAt: startedAt, RunningConfigSHA256: hash, VNC: vnc}
 	run.mu.Unlock()
 	select {
 	case <-run.done:
@@ -651,6 +656,13 @@ func (s *Service) now() time.Time {
 		clock = time.Now
 	}
 	return clock().UTC()
+}
+
+func backendPaths(paths store.Paths) backend.RuntimePaths {
+	return backend.RuntimePaths{
+		VMDir: paths.VMDir, QMP: paths.QMP, QGA: paths.QGA, Console: paths.Console,
+		QEMULog: paths.QEMULog, SerialLog: paths.SerialLog,
+	}
 }
 
 func ensurePrivateDirectory(path string) error {

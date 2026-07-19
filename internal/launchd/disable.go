@@ -174,7 +174,7 @@ func (m *Manager) Status(ctx context.Context, name string) (StatusReport, error)
 			expectedCfg := *cfg
 			expectedCfg.Autostart.Scope = item.scope
 			paths := m.Store.Paths(&expectedCfg)
-			expected, renderErr := Render(&expectedCfg, executable, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home)
+			expected, renderErr := Render(&expectedCfg, executable, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home, m.Store.DataRoot, m.Store.RuntimeRoot, m.Store.LogRoot)
 			if renderErr != nil {
 				return StatusReport{}, renderErr
 			}
@@ -190,7 +190,7 @@ func (m *Manager) Status(ctx context.Context, name string) (StatusReport, error)
 
 func (m *Manager) renderForConfig(cfg *model.Config) ([]byte, error) {
 	paths := m.Store.Paths(cfg)
-	return Render(cfg, m.Executable, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home)
+	return Render(cfg, m.Executable, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home, m.Store.DataRoot, m.Store.RuntimeRoot, m.Store.LogRoot)
 }
 
 func (m *Manager) restorePlist(ctx context.Context, d domain, id string, inspection pathInspection) error {

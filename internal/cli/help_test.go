@@ -71,6 +71,7 @@ func TestCommandAndNestedHelp(t *testing.T) {
 		{name: "config show", args: []string{"config", "show", "--help"}, want: []string{"config show NAME", "Examples:"}},
 		{name: "autostart", args: []string{"autostart", "--help"}, want: []string{"autostart", "enable", "disable", "status", "Examples:"}},
 		{name: "autostart enable", args: []string{"autostart", "enable", "--help"}, want: []string{"autostart enable NAME", "--scope", "boot", "login", "Examples:"}},
+		{name: "vnc", args: []string{"vnc", "--help"}, want: []string{"vnc NAME", "Screen Sharing", "clipboard", "Examples:"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

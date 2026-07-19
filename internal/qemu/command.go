@@ -78,6 +78,19 @@ func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths) (back
 		"-serial", "chardev:console0",
 		"-qmp", "unix:"+keyval(paths.QMP)+",server=on,wait=off",
 	)
+	if config.VNC != nil {
+		if !filepath.IsAbs(paths.VNCSecret) {
+			return backend.Command{}, fmt.Errorf("qemu: VNC secret path must be absolute")
+		}
+		args = append(args,
+			"-device", "virtio-gpu-pci",
+			"-device", "nec-usb-xhci,id=usb",
+			"-device", "usb-kbd,bus=usb.0",
+			"-device", "usb-tablet,bus=usb.0",
+			"-object", "secret,id=vnc-password,file="+keyval(paths.VNCSecret),
+			"-vnc", fmt.Sprintf("%s:%d,to=%d,password-secret=vnc-password", config.VNC.Bind, int(config.VNC.Port)-5900, int(config.VNC.PortTo)-5900),
+		)
+	}
 	if config.GuestAgent.Enabled {
 		args = append(args,
 			"-device", "virtio-serial-pci",

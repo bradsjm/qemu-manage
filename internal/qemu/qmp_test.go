@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -133,6 +134,126 @@ func TestQMPFramingEventsIDsAndStatusMapping(t *testing.T) {
 				t.Errorf("unexpected status = %q, %v", got, err)
 			}
 		}
+	}
+}
+
+func TestQMPQueryVNCFramingAndFiltering(t *testing.T) {
+	server := startQMPServer(t, func(conn net.Conn) error {
+		reader := bufio.NewReader(conn)
+		if err := initializeQMP(conn, reader); err != nil {
+			return err
+		}
+		command, err := readQMPCommand(reader)
+		if err != nil {
+			return err
+		}
+		if command.Execute != "query-vnc" || command.ID != 2 {
+			return fmt.Errorf("query-vnc command = %#v", command)
+		}
+		response := fmt.Sprintf(
+			`{"event":"VNC_INITIALIZED"}`+"\n"+
+				`{"return":{"enabled":true,"host":"127.0.0.1","service":"5907","family":"ipv4","auth":"vnc","clients":[]},"id":0}`+"\n"+
+				`{"return":{"enabled":true,"host":"127.0.0.1","service":"5907","family":"ipv4","auth":"vnc","clients":[]},"id":%d}`+"\n",
+			command.ID,
+		)
+		if _, err := conn.Write([]byte(response[:39])); err != nil {
+			return err
+		}
+		_, err = conn.Write([]byte(response[39:]))
+		return err
+	})
+	client, err := NewQMPClient(server.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	info, err := client.QueryVNC(context.Background())
+	if err != nil {
+		t.Fatalf("QueryVNC: %v", err)
+	}
+	want := VNCInfo{Enabled: true, Host: "127.0.0.1", Service: "5907", Family: "ipv4", Auth: "vnc"}
+	if info != want {
+		t.Fatalf("QueryVNC = %#v, want %#v", info, want)
+	}
+}
+
+func TestQMPQueryVNCResponseValidation(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		server := startQMPServer(t, func(conn net.Conn) error {
+			reader := bufio.NewReader(conn)
+			if err := initializeQMP(conn, reader); err != nil {
+				return err
+			}
+			command, err := readQMPCommand(reader)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(conn, `{"return":{"enabled":false},"id":%d}`+"\n", command.ID)
+			return err
+		})
+		client, err := NewQMPClient(server.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer client.Close()
+		info, err := client.QueryVNC(context.Background())
+		if err != nil {
+			t.Fatalf("QueryVNC: %v", err)
+		}
+		if info.Enabled || info.Host != "" || info.Service != "" || info.Family != "" || info.Auth != "" {
+			t.Fatalf("disabled QueryVNC = %#v", info)
+		}
+	})
+
+	cases := []struct {
+		name     string
+		response string
+		want     string
+	}{
+		{
+			name:     "non-object",
+			response: `{"return":1,"id":%d}` + "\n",
+			want:     "decode query-vnc response",
+		},
+		{
+			name:     "unknown field",
+			response: `{"return":{"enabled":false,"unexpected":true},"id":%d}` + "\n",
+			want:     "unknown field",
+		},
+		{
+			name:     "missing enabled fields",
+			response: `{"return":{"enabled":true,"service":"5907","family":"ipv4","auth":"vnc","clients":[]},"id":%d}` + "\n",
+			want:     "missing enabled VNC fields",
+		},
+		{
+			name:     "connected clients",
+			response: `{"return":{"enabled":true,"host":"127.0.0.1","service":"5907","family":"ipv4","auth":"vnc","clients":[{}]},"id":%d}` + "\n",
+			want:     "connected clients",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := startQMPServer(t, func(conn net.Conn) error {
+				reader := bufio.NewReader(conn)
+				if err := initializeQMP(conn, reader); err != nil {
+					return err
+				}
+				command, err := readQMPCommand(reader)
+				if err != nil {
+					return err
+				}
+				_, err = fmt.Fprintf(conn, tc.response, command.ID)
+				return err
+			})
+			client, err := NewQMPClient(server.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			if _, err := client.QueryVNC(context.Background()); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("QueryVNC error = %v, want substring %q", err, tc.want)
+			}
+		})
 	}
 }
 

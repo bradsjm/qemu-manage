@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 const SchemaVersion = 1
@@ -73,6 +74,7 @@ type Config struct {
 	Disks                  []DiskConfig     `json:"disks"`
 	Network                NetworkConfig    `json:"network"`
 	GuestAgent             GuestAgentConfig `json:"guest_agent"`
+	VNC                    *VNCConfig       `json:"vnc,omitempty"`
 	QEMU                   QEMUConfig       `json:"qemu"`
 	Autostart              AutostartConfig  `json:"autostart"`
 }
@@ -119,6 +121,13 @@ type GuestAgentConfig struct {
 	Enabled bool `json:"enabled"`
 }
 
+type VNCConfig struct {
+	Bind     string `json:"bind"`
+	Port     uint16 `json:"port"`
+	PortTo   uint16 `json:"port_to"`
+	Password string `json:"password"`
+}
+
 type QEMUConfig struct {
 	Binary    string   `json:"binary"`
 	ImageTool string   `json:"image_tool"`
@@ -137,10 +146,100 @@ var (
 	macPattern    = regexp.MustCompile(`^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$`)
 )
 
+func validateRawJSONUnicode(data []byte) error {
+	if !utf8.Valid(data) {
+		return errors.New("config: decode: raw JSON must be valid UTF-8")
+	}
+	for i := 0; i < len(data); i++ {
+		if data[i] != '"' {
+			continue
+		}
+		next, err := validateJSONStringUnicode(data, i+1)
+		if err != nil {
+			return err
+		}
+		i = next
+	}
+	return nil
+}
+
+func validateJSONStringUnicode(data []byte, start int) (int, error) {
+	for i := start; i < len(data); {
+		switch data[i] {
+		case '"':
+			return i, nil
+		case '\\':
+			if i+1 >= len(data) {
+				return len(data), nil
+			}
+			if data[i+1] != 'u' {
+				i += 2
+				continue
+			}
+			code, ok := parseJSONHexEscape(data, i+2)
+			if !ok {
+				return len(data), nil
+			}
+			if code >= 0xDC00 && code <= 0xDFFF {
+				return 0, errors.New("config: decode: JSON strings must not contain unpaired surrogate escapes")
+			}
+			if code >= 0xD800 && code <= 0xDBFF {
+				if i+12 > len(data) {
+					return len(data), nil
+				}
+				if data[i+6] != '\\' || data[i+7] != 'u' {
+					return 0, errors.New("config: decode: JSON strings must not contain unpaired surrogate escapes")
+				}
+				next, ok := parseJSONHexEscape(data, i+8)
+				if !ok {
+					return len(data), nil
+				}
+				if next < 0xDC00 || next > 0xDFFF {
+					return 0, errors.New("config: decode: JSON strings must not contain unpaired surrogate escapes")
+				}
+				i += 12
+				continue
+			}
+			i += 6
+		default:
+			i++
+		}
+	}
+	return len(data), nil
+}
+
+func parseJSONHexEscape(data []byte, start int) (uint16, bool) {
+	if start+4 > len(data) {
+		return 0, false
+	}
+	var value uint16
+	for _, b := range data[start : start+4] {
+		value <<= 4
+		switch {
+		case b >= '0' && b <= '9':
+			value |= uint16(b - '0')
+		case b >= 'a' && b <= 'f':
+			value |= uint16(b-'a') + 10
+		case b >= 'A' && b <= 'F':
+			value |= uint16(b-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return value, true
+}
+
 // Decode strictly decodes exactly one non-null JSON object and validates it.
 func Decode(r io.Reader) (*Config, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("config: decode: %w", err)
+	}
+	if err := validateRawJSONUnicode(data); err != nil {
+		return nil, err
+	}
 	var raw json.RawMessage
-	decoder := json.NewDecoder(r)
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := decoder.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("config: decode: %w", err)
 	}
@@ -219,6 +318,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := validateNetwork(c.Network); err != nil {
+		return err
+	}
+	if err := validateVNC(c.VNC); err != nil {
 		return err
 	}
 	return nil
@@ -320,6 +422,32 @@ func validateNetwork(network NetworkConfig) error {
 	return nil
 }
 
+func validateVNC(vnc *VNCConfig) error {
+	if vnc == nil {
+		return nil
+	}
+	address := net.ParseIP(vnc.Bind)
+	if address == nil || address.To4() == nil || strings.Contains(vnc.Bind, ":") {
+		return configError("vnc bind must be an IPv4 literal")
+	}
+	if vnc.Port < 5900 {
+		return configError("vnc port must be between 5900 and 65535")
+	}
+	if vnc.PortTo < vnc.Port {
+		return configError("vnc port_to must be between port and 65535")
+	}
+	if !utf8.ValidString(vnc.Password) {
+		return configError("vnc password must be valid UTF-8")
+	}
+	if len(vnc.Password) < 1 || len(vnc.Password) > 8 {
+		return configError("vnc password must be between 1 and 8 bytes")
+	}
+	if strings.IndexByte(vnc.Password, 0) >= 0 {
+		return configError("vnc password must not contain NUL")
+	}
+	return nil
+}
+
 var managerOwnedQEMUOptions = map[string]struct{}{
 	"qmp": {}, "monitor": {}, "chardev": {}, "serial": {}, "daemonize": {}, "pidfile": {}, "run-with": {},
 	"accel": {}, "machine": {}, "M": {}, "cpu": {}, "smp": {}, "m": {}, "drive": {}, "blockdev": {},
@@ -327,6 +455,7 @@ var managerOwnedQEMUOptions = map[string]struct{}{
 	"netdev": {}, "nic": {}, "net": {}, "display": {}, "nographic": {}, "vga": {}, "nodefaults": {},
 	"name": {}, "uuid": {}, "boot": {}, "bios": {}, "readconfig": {}, "writeconfig": {}, "set": {},
 	"global": {}, "incoming": {}, "snapshot": {}, "S": {}, "preconfig": {}, "no-shutdown": {}, "action": {},
+	"vnc": {}, "object": {},
 }
 
 func forbiddenQEMUArg(arg string) bool {

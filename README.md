@@ -55,6 +55,18 @@ Connect to the guest's serial console and press `Ctrl-]` to disconnect:
 qemu-manage console home-assistant
 ```
 
+For installation or diagnostics, opt into password-protected VNC:
+
+```sh
+qemu-manage create linux --iso "$HOME/Downloads/linux-arm64.iso" \
+  --vnc --vnc-password "$VNC_PASSWORD"
+qemu-manage start linux
+qemu-manage status linux --json
+qemu-manage vnc linux
+```
+
+VNC is disabled by default and binds to `127.0.0.1` when enabled. QEMU selects a free port in the configured range; JSON status reports the authenticated supervisor's live `vnc` endpoint. On macOS, `qemu-manage vnc NAME` copies the configured password to the clipboard and opens that live endpoint in Screen Sharing. The VM must be running or paused with its current configuration.
+
 Request a graceful shutdown:
 
 ```sh
@@ -101,6 +113,10 @@ Managed state is stored in macOS user directories:
 - Ephemeral control sockets and runtime metadata: `/tmp/qemu-manage-<uid>`
 
 Configuration files are strict, versioned JSON. Use `qemu-manage config show`, `config validate`, and `config apply` for complete configuration changes.
+
+Set `QEMU_MANAGE_DATA_ROOT`, `QEMU_MANAGE_RUNTIME_ROOT`, or `QEMU_MANAGE_LOG_ROOT` to replace the corresponding default. Each override must be an absolute, owner-controlled directory; unset or empty variables retain the default. The runtime root must also remain short enough for macOS Unix-socket path limits. Autostart jobs preserve the selected roots explicitly because launchd does not inherit the shell environment.
+
+VM configuration files are owner-only mode `0600`. An enabled VNC password is stored there in plaintext and `qemu-manage config show NAME` prints it. VNC password authentication accepts only 1–8 UTF-8 bytes. VNC transport is not encrypted; binding to an address other than loopback exposes it to that network.
 
 ## Development
 

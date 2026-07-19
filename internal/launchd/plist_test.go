@@ -15,11 +15,14 @@ func TestRenderPlistScopesPoliciesAndEscaping(t *testing.T) {
 				cfg := launchdTestConfig()
 				cfg.Autostart.Scope = scope
 				cfg.RestartPolicy = policy
-				got, err := Render(cfg, "/Applications/QEMU & Tools/qemu-manage", "/tmp/vm&dir", "/tmp/out<log", "/tmp/err>log", "alice&admin", "/Users/alice&co")
+				dataRoot := "/tmp/data&root"
+				runtimeRoot := "/tmp/runtime<root"
+				logRoot := "/tmp/log>root"
+				got, err := Render(cfg, "/Applications/QEMU & Tools/qemu-manage", "/tmp/vm&dir", "/tmp/out<log", "/tmp/err>log", "alice&admin", "/Users/alice&co", dataRoot, runtimeRoot, logRoot)
 				if err != nil {
 					t.Fatal(err)
 				}
-				again, err := Render(cfg, "/Applications/QEMU & Tools/qemu-manage", "/tmp/vm&dir", "/tmp/out<log", "/tmp/err>log", "alice&admin", "/Users/alice&co")
+				again, err := Render(cfg, "/Applications/QEMU & Tools/qemu-manage", "/tmp/vm&dir", "/tmp/out<log", "/tmp/err>log", "alice&admin", "/Users/alice&co", dataRoot, runtimeRoot, logRoot)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -33,6 +36,9 @@ func TestRenderPlistScopesPoliciesAndEscaping(t *testing.T) {
 					"<key>RunAtLoad</key>\n  <true/>", "<key>ThrottleInterval</key>\n  <integer>30</integer>",
 					"<key>ExitTimeOut</key>\n  <integer>195</integer>", "<key>Umask</key>\n  <integer>63</integer>",
 					"<key>PATH</key>\n    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>",
+					"<key>QEMU_MANAGE_DATA_ROOT</key>\n    <string>/tmp/data&amp;root</string>",
+					"<key>QEMU_MANAGE_RUNTIME_ROOT</key>\n    <string>/tmp/runtime&lt;root</string>",
+					"<key>QEMU_MANAGE_LOG_ROOT</key>\n    <string>/tmp/log&gt;root</string>",
 				} {
 					if !strings.Contains(s, want) {
 						t.Errorf("missing %q", want)
@@ -64,8 +70,30 @@ func TestRenderRejectsUnsafeScopeAndBootUser(t *testing.T) {
 		user  string
 	}{{model.AutostartNone, "alice"}, {model.AutostartBoot, ""}, {model.AutostartBoot, "root"}} {
 		cfg.Autostart.Scope = tc.scope
-		if _, err := Render(cfg, "/bin/qemu-manage", "/tmp/vm", "/tmp/out", "/tmp/err", tc.user, "/Users/alice"); err == nil {
+		if _, err := Render(cfg, "/bin/qemu-manage", "/tmp/vm", "/tmp/out", "/tmp/err", tc.user, "/Users/alice", "/tmp/data", "/tmp/runtime", "/tmp/log"); err == nil {
 			t.Fatalf("scope %q user %q accepted", tc.scope, tc.user)
 		}
+	}
+}
+
+func TestRenderRejectsRelativeRoots(t *testing.T) {
+	cfg := launchdTestConfig()
+	cfg.Autostart.Scope = model.AutostartLogin
+	for _, tc := range []struct {
+		name        string
+		dataRoot    string
+		runtimeRoot string
+		logRoot     string
+	}{
+		{name: "data root", dataRoot: "data", runtimeRoot: "/tmp/runtime", logRoot: "/tmp/log"},
+		{name: "runtime root", dataRoot: "/tmp/data", runtimeRoot: "runtime", logRoot: "/tmp/log"},
+		{name: "log root", dataRoot: "/tmp/data", runtimeRoot: "/tmp/runtime", logRoot: "log"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Render(cfg, "/bin/qemu-manage", "/tmp/vm", "/tmp/out", "/tmp/err", "alice", "/Users/alice", tc.dataRoot, tc.runtimeRoot, tc.logRoot)
+			if err == nil || !strings.Contains(err.Error(), tc.name+" path must be absolute") {
+				t.Fatalf("expected relative %s rejection, got %v", tc.name, err)
+			}
+		})
 	}
 }

@@ -78,6 +78,7 @@ func TestUsageAndNameBeforeFlags(t *testing.T) {
 		{[]string{"start", "--foreground", "vm"}, "missing NAME"},
 		{[]string{"stop", "--force", "vm"}, "missing NAME"},
 		{[]string{"console", "--bad"}, "missing NAME"},
+		{[]string{"vnc", "--bad"}, "missing NAME"},
 		{[]string{"delete", "--force", "vm"}, "usage:"},
 	} {
 		code, _, stderr := runCLI(a, tc.args...)

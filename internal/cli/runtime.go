@@ -48,6 +48,7 @@ func (r *runtimeAdapter) Status(ctx context.Context, config *model.Config) (Stat
 		Backend:             string(result.Backend),
 		CurrentConfigSHA256: result.CurrentConfigSHA256,
 		RunningConfigSHA256: result.RunningConfigSHA256,
+		VNC:                 result.VNC,
 		Error:               result.Error,
 	}
 	if result.PID > 0 {
@@ -76,6 +77,8 @@ func (a *App) runRuntimeCommand(ctx context.Context, command string, args []stri
 		return a.runStop(ctx, args, stderr)
 	case "console":
 		return a.runConsole(ctx, args, stdin, stdout)
+	case "vnc":
+		return a.runVNC(ctx, args, stdout)
 	case "doctor":
 		return a.runDoctor(ctx, args, stdout)
 	case "supervise":
@@ -184,6 +187,47 @@ func (a *App) runConsole(ctx context.Context, args []string, stdin io.Reader, st
 	}
 	return nil
 }
+func (a *App) runVNC(ctx context.Context, args []string, stdout io.Writer) error {
+	name, rest, err := nameBeforeFlags("vnc", args)
+	if err != nil {
+		return err
+	}
+	if len(rest) != 0 {
+		return usageErrorf("vnc: unexpected arguments")
+	}
+	config, err := a.loadQEMUConfig(name)
+	if err != nil {
+		return err
+	}
+	if config.VNC == nil {
+		return fmt.Errorf("runtime: VM %q does not have VNC enabled", name)
+	}
+	status, err := a.statusRow(ctx, config)
+	if err != nil {
+		return err
+	}
+	if status.State != model.RunStateRunning && status.State != model.RunStatePaused {
+		return fmt.Errorf("runtime: VM %q is %s; VNC requires running or paused", name, status.State)
+	}
+	if status.RestartRequired {
+		return fmt.Errorf("runtime: VM %q requires restart before VNC can use the current password", name)
+	}
+	if status.VNC == nil {
+		return fmt.Errorf("runtime: VM %q has no live VNC endpoint", name)
+	}
+	if a.OpenVNC == nil {
+		return errors.New("vnc: viewer is unavailable")
+	}
+	endpoint := *status.VNC
+	if endpoint.Host == "0.0.0.0" {
+		endpoint.Host = "127.0.0.1"
+	}
+	if err := a.OpenVNC(ctx, endpoint, config.VNC.Password); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(stdout, "VNC password copied to clipboard; opening vnc://%s:%d\n", endpoint.Host, endpoint.Port)
+	return err
+}
 
 func (a *App) runDoctor(ctx context.Context, args []string, stdout io.Writer) error {
 	name := ""
@@ -196,7 +240,7 @@ func (a *App) runDoctor(ctx context.Context, args []string, stdout io.Writer) er
 		return err
 	}
 	config := model.Config{}
-	paths := backend.RuntimePaths{}
+	var paths backend.RuntimePaths
 	if name != "" {
 		loaded, err := a.loadQEMUConfig(name)
 		if err != nil {
@@ -268,7 +312,10 @@ func (a *App) loadQEMUConfig(name string) (*model.Config, error) {
 }
 
 func backendPaths(paths store.Paths) backend.RuntimePaths {
-	return backend.RuntimePaths{VMDir: paths.VMDir, QMP: paths.QMP, QGA: paths.QGA, Console: paths.Console, QEMULog: paths.QEMULog, SerialLog: paths.SerialLog}
+	return backend.RuntimePaths{
+		VMDir: paths.VMDir, QMP: paths.QMP, QGA: paths.QGA, Console: paths.Console,
+		QEMULog: paths.QEMULog, SerialLog: paths.SerialLog,
+	}
 }
 
 func writeReadyFailure(ready io.Writer, id string, cause error) {
@@ -279,8 +326,9 @@ func writeReadyFailure(ready io.Writer, id string, cause error) {
 func absoluteStorePaths(paths store.Paths) (store.Paths, error) {
 	values := []*string{
 		&paths.VMDir, &paths.Config, &paths.RuntimeDir, &paths.ControlSocket, &paths.LifetimeLock,
-		&paths.QMP, &paths.QGA, &paths.Console, &paths.RuntimeMetadata, &paths.LastExitMetadata,
-		&paths.SupervisorStdout, &paths.SupervisorStderr, &paths.QEMULog, &paths.SerialLog,
+		&paths.QMP, &paths.QGA, &paths.Console, &paths.VNCSecret, &paths.RuntimeMetadata,
+		&paths.LastExitMetadata, &paths.SupervisorStdout, &paths.SupervisorStderr, &paths.QEMULog,
+		&paths.SerialLog,
 	}
 	for _, value := range values {
 		absolute, err := filepath.Abs(*value)

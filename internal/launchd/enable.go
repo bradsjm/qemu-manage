@@ -72,7 +72,7 @@ func (m *Manager) Enable(ctx context.Context, name string, scope model.Autostart
 	configured := *cfg
 	configured.Autostart.Scope = scope
 	paths := m.Store.Paths(cfg)
-	rendered, err := Render(&configured, executable, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home)
+	rendered, err := Render(&configured, executable, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home, m.Store.DataRoot, m.Store.RuntimeRoot, m.Store.LogRoot)
 	if err != nil {
 		return err
 	}

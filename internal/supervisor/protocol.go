@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"regexp"
 	"time"
 
+	"qemu-manage/internal/backend"
 	"qemu-manage/internal/model"
 )
 
@@ -57,12 +59,13 @@ type ProtocolError struct {
 }
 
 type Status struct {
-	State               model.RunState `json:"state"`
-	Backend             model.Backend  `json:"backend"`
-	SupervisorPID       int            `json:"supervisor_pid"`
-	BackendPID          int            `json:"backend_pid"`
-	StartedAt           time.Time      `json:"started_at"`
-	RunningConfigSHA256 string         `json:"running_config_sha256"`
+	State               model.RunState       `json:"state"`
+	Backend             model.Backend        `json:"backend"`
+	SupervisorPID       int                  `json:"supervisor_pid"`
+	BackendPID          int                  `json:"backend_pid"`
+	StartedAt           time.Time            `json:"started_at"`
+	RunningConfigSHA256 string               `json:"running_config_sha256"`
+	VNC                 *backend.VNCEndpoint `json:"vnc,omitempty"`
 }
 
 var (
@@ -146,6 +149,22 @@ func (s Status) Validate() error {
 	}
 	if !protocolHashPattern.MatchString(s.RunningConfigSHA256) {
 		return errors.New("running_config_sha256 must be 64 lowercase hexadecimal characters")
+	}
+	if err := validateVNCEndpoint(s.VNC); err != nil {
+		return err
+	}
+	return nil
+}
+func validateVNCEndpoint(endpoint *backend.VNCEndpoint) error {
+	if endpoint == nil {
+		return nil
+	}
+	ip := net.ParseIP(endpoint.Host)
+	if ip == nil || ip.To4() == nil || ip.String() != endpoint.Host {
+		return errors.New("vnc.host must be an IPv4 literal")
+	}
+	if endpoint.Port == 0 {
+		return errors.New("vnc.port must be nonzero")
 	}
 	return nil
 }

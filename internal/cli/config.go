@@ -94,8 +94,7 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 	}
 	var timeout optionalValue[int]
 	timeout.parse = parseSetWholeSeconds
-	var guestAgent optionalValue[bool]
-	guestAgent.parse = func(raw string) (bool, error) {
+	parseOnOff := func(raw string) (bool, error) {
 		switch raw {
 		case "on":
 			return true, nil
@@ -105,6 +104,10 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 			return false, fmt.Errorf("valid values: on, off")
 		}
 	}
+	var guestAgent optionalValue[bool]
+	guestAgent.parse = parseOnOff
+	var vnc optionalValue[bool]
+	vnc.parse = parseOnOff
 	var networkMode optionalValue[model.NetworkMode]
 	networkMode.parse = func(raw string) (model.NetworkMode, error) {
 		value := model.NetworkMode(raw)
@@ -113,10 +116,13 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 		}
 		return value, nil
 	}
-	var clientPath, socketPath, interfaceName optionalValue[string]
-	for _, value := range []*optionalValue[string]{&clientPath, &socketPath, &interfaceName} {
+	var clientPath, socketPath, interfaceName, vncPassword, vncBind optionalValue[string]
+	for _, value := range []*optionalValue[string]{&clientPath, &socketPath, &interfaceName, &vncPassword, &vncBind} {
 		value.parse = func(raw string) (string, error) { return raw, nil }
 	}
+	var vncPort, vncPortTo optionalValue[uint16]
+	vncPort.parse = parsePort
+	vncPortTo.parse = parsePort
 	var forwards forwardValues
 	var clearForwards bool
 
@@ -126,6 +132,11 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 	flags.Var(&restart, "restart-policy", "never or on-failure")
 	flags.Var(&timeout, "shutdown-timeout", "whole-second shutdown timeout")
 	flags.Var(&guestAgent, "guest-agent", "on or off")
+	flags.Var(&vnc, "vnc", "on or off")
+	flags.Var(&vncPassword, "vnc-password", "QEMU VNC password")
+	flags.Var(&vncBind, "vnc-bind", "VNC bind IPv4 address")
+	flags.Var(&vncPort, "vnc-port", "minimum VNC TCP port")
+	flags.Var(&vncPortTo, "vnc-port-to", "maximum VNC TCP port")
 	flags.Var(&networkMode, "network", "user or socket_vmnet")
 	flags.Var(&forwards, "forward", "proto:IPv4:host-port:guest-port (repeatable)")
 	flags.BoolVar(&clearForwards, "clear-forwards", false, "replace existing forwards")
@@ -168,6 +179,55 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 	}
 	if guestAgent.set {
 		config.GuestAgent.Enabled = guestAgent.value
+	}
+	vncDetailsSet := vncPassword.set || vncBind.set || vncPort.set || vncPortTo.set
+	switch {
+	case vnc.set && !vnc.value:
+		if vncDetailsSet {
+			return usageErrorf("set %s: --vnc off is incompatible with --vnc-password, --vnc-bind, --vnc-port, and --vnc-port-to", name)
+		}
+		config.VNC = nil
+	case config.VNC == nil:
+		if vncDetailsSet && !(vnc.set && vnc.value) {
+			return usageErrorf("set %s: VNC detail flags require existing VNC or --vnc on", name)
+		}
+		if vnc.set && vnc.value {
+			if !vncPassword.set || vncPassword.value == "" {
+				return usageErrorf("set %s: --vnc-password is required when enabling VNC", name)
+			}
+			config.VNC = &model.VNCConfig{
+				Bind:     defaultVNCBind,
+				Port:     defaultVNCPort,
+				PortTo:   defaultVNCPortTo,
+				Password: vncPassword.value,
+			}
+			if vncBind.set {
+				config.VNC.Bind = vncBind.value
+			}
+			if vncPort.set {
+				config.VNC.Port = vncPort.value
+			}
+			if vncPortTo.set {
+				config.VNC.PortTo = vncPortTo.value
+			}
+		}
+	default:
+		if vnc.set && vnc.value || vncDetailsSet {
+			updated := *config.VNC
+			if vncPassword.set {
+				updated.Password = vncPassword.value
+			}
+			if vncBind.set {
+				updated.Bind = vncBind.value
+			}
+			if vncPort.set {
+				updated.Port = vncPort.value
+			}
+			if vncPortTo.set {
+				updated.PortTo = vncPortTo.value
+			}
+			config.VNC = &updated
+		}
 	}
 
 	targetMode := config.Network.Mode

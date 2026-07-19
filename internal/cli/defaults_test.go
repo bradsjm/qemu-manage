@@ -149,6 +149,90 @@ func TestCreateDoesNotMixExplicitAndDiscoveredFirmware(t *testing.T) {
 		})
 	}
 }
+func TestCreateVNCDefaultsAndFlagConsistency(t *testing.T) {
+	newCreateApp := func(t *testing.T) (*App, string, string) {
+		t.Helper()
+		a := testApp(t)
+		codePath, variablesPath, qemuPath, qemuImgPath := createInputs(t)
+		a.DiscoverFirmware = func() (code, variables string) {
+			return codePath, variablesPath
+		}
+		fakeDiskCreation(t, a)
+		return a, qemuPath, qemuImgPath
+	}
+
+	t.Run("enabled persists defaults", func(t *testing.T) {
+		a, qemuPath, qemuImgPath := newCreateApp(t)
+		exit, _, stderr := runCLI(
+			a,
+			"create", "vm",
+			"--qemu", qemuPath,
+			"--qemu-img", qemuImgPath,
+			"--disk-size", "1GiB",
+			"--vnc",
+			"--vnc-password", "secret",
+		)
+		if exit != 0 {
+			t.Fatalf("create exited %d: %s", exit, stderr)
+		}
+		cfg, err := a.Store.Load("vm")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.VNC == nil {
+			t.Fatal("VNC config was not persisted")
+		}
+		if *cfg.VNC != (model.VNCConfig{
+			Bind:     defaultVNCBind,
+			Port:     defaultVNCPort,
+			PortTo:   defaultVNCPortTo,
+			Password: "secret",
+		}) {
+			t.Fatalf("unexpected persisted VNC config: %+v", *cfg.VNC)
+		}
+	})
+
+	t.Run("enabled requires password", func(t *testing.T) {
+		a, qemuPath, qemuImgPath := newCreateApp(t)
+		exit, _, stderr := runCLI(
+			a,
+			"create", "vm",
+			"--qemu", qemuPath,
+			"--qemu-img", qemuImgPath,
+			"--disk-size", "1GiB",
+			"--vnc",
+		)
+		if exit != 2 || !strings.Contains(stderr, "--vnc-password is required") {
+			t.Fatalf("create exited %d, stderr=%q", exit, stderr)
+		}
+		if _, err := a.Store.Load("vm"); err == nil {
+			t.Fatal("missing VNC password still created a VM")
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "password", args: []string{"--vnc-password", "secret"}},
+		{name: "bind", args: []string{"--vnc-bind", "0.0.0.0"}},
+		{name: "port", args: []string{"--vnc-port", "5901"}},
+		{name: "port-to", args: []string{"--vnc-port-to", "5902"}},
+	} {
+		t.Run("detail without enable/"+tc.name, func(t *testing.T) {
+			a, qemuPath, qemuImgPath := newCreateApp(t)
+			args := []string{"create", "vm", "--qemu", qemuPath, "--qemu-img", qemuImgPath, "--disk-size", "1GiB"}
+			args = append(args, tc.args...)
+			exit, _, stderr := runCLI(a, args...)
+			if exit != 2 || !strings.Contains(stderr, "require --vnc") {
+				t.Fatalf("create exited %d, stderr=%q", exit, stderr)
+			}
+			if _, err := a.Store.Load("vm"); err == nil {
+				t.Fatalf("detail flag %q created a VM without --vnc", tc.name)
+			}
+		})
+	}
+}
 
 func TestSetSocketVMNetUsesCompleteDiscoveredDefaults(t *testing.T) {
 	a := testApp(t)

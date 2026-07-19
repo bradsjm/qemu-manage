@@ -53,6 +53,75 @@ func requireMode(t *testing.T, path string, want os.FileMode) {
 	}
 }
 
+func TestResolveDefaultRoots(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "Users", "test")
+	temp := filepath.Join(string(filepath.Separator), "private", "tmp")
+	defaults := []string{
+		filepath.Join(home, "Library", "Application Support", "qemu-manage", "vms"),
+		filepath.Join(temp, "qemu-manage-501"),
+		filepath.Join(home, "Library", "Logs", "qemu-manage"),
+	}
+	tests := []struct {
+		name string
+		env  map[string]string
+		want []string
+	}{
+		{name: "unset", env: map[string]string{}, want: defaults},
+		{name: "empty", env: map[string]string{
+			"QEMU_MANAGE_DATA_ROOT": "", "QEMU_MANAGE_RUNTIME_ROOT": "", "QEMU_MANAGE_LOG_ROOT": "",
+		}, want: defaults},
+		{name: "data", env: map[string]string{"QEMU_MANAGE_DATA_ROOT": "/data"}, want: []string{"/data", defaults[1], defaults[2]}},
+		{name: "runtime", env: map[string]string{"QEMU_MANAGE_RUNTIME_ROOT": "/run"}, want: []string{defaults[0], "/run", defaults[2]}},
+		{name: "log", env: map[string]string{"QEMU_MANAGE_LOG_ROOT": "/log"}, want: []string{defaults[0], defaults[1], "/log"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dataRoot, runtimeRoot, logRoot := resolveDefaultRoots(home, temp, 501, func(name string) string {
+				return tc.env[name]
+			})
+			if got := []string{dataRoot, runtimeRoot, logRoot}; !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("resolveDefaultRoots() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDefaultFromEnv(t *testing.T) {
+	if _, err := DefaultFromEnv(nil); err == nil || err.Error() != "store: environment lookup is nil" {
+		t.Fatalf("DefaultFromEnv(nil) error = %v", err)
+	}
+
+	root := t.TempDir()
+	overrides := map[string]string{
+		"QEMU_MANAGE_DATA_ROOT":    filepath.Join(root, "data"),
+		"QEMU_MANAGE_RUNTIME_ROOT": filepath.Join(root, "r"),
+		"QEMU_MANAGE_LOG_ROOT":     filepath.Join(root, "log"),
+	}
+	s, err := DefaultFromEnv(func(name string) string { return overrides[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{s.DataRoot, s.RuntimeRoot, s.LogRoot}; !reflect.DeepEqual(got, []string{overrides["QEMU_MANAGE_DATA_ROOT"], overrides["QEMU_MANAGE_RUNTIME_ROOT"], overrides["QEMU_MANAGE_LOG_ROOT"]}) {
+		t.Fatalf("roots = %q", got)
+	}
+	for _, path := range []string{s.DataRoot, s.RuntimeRoot, s.LogRoot} {
+		requireMode(t, path, 0o700)
+	}
+	cfg := testConfig("alpha", "11111111111111111111111111111111")
+	paths := s.Paths(cfg)
+	if got, want := paths.RuntimeDir, filepath.Join(overrides["QEMU_MANAGE_RUNTIME_ROOT"], "111111111111"); got != want {
+		t.Fatalf("runtime dir = %q, want %q", got, want)
+	}
+	if got, want := paths.VNCSecret, filepath.Join(paths.RuntimeDir, "vnc-password"); got != want {
+		t.Fatalf("VNC secret = %q, want %q", got, want)
+	}
+
+	overrides["QEMU_MANAGE_DATA_ROOT"] = "relative"
+	if _, err := DefaultFromEnv(func(name string) string { return overrides[name] }); err == nil || !strings.Contains(err.Error(), "data root must be absolute") {
+		t.Fatalf("relative override error = %v", err)
+	}
+}
+
 func TestCreateOwnerModesAtomicSaveAndReload(t *testing.T) {
 	oldMask := syscall.Umask(0o077)
 	defer syscall.Umask(oldMask)

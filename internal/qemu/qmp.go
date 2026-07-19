@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -37,6 +38,23 @@ type UnexpectedStatusError struct {
 
 func (e *UnexpectedStatusError) Error() string {
 	return fmt.Sprintf("unexpected QMP status %q", e.Status)
+}
+
+type VNCInfo struct {
+	Enabled bool
+	Host    string
+	Service string
+	Family  string
+	Auth    string
+}
+
+type qmpVNCInfo struct {
+	Enabled bool              `json:"enabled"`
+	Host    string            `json:"host"`
+	Service string            `json:"service"`
+	Family  string            `json:"family"`
+	Auth    string            `json:"auth"`
+	Clients []json.RawMessage `json:"clients"`
 }
 
 // QMPClient is a persistent, synchronous QMP connection. All commands,
@@ -160,6 +178,40 @@ func (c *QMPClient) Status(ctx context.Context) (model.RunState, error) {
 	default:
 		return model.RunStateFailed, &UnexpectedStatusError{Status: status.Status}
 	}
+}
+
+func (c *QMPClient) QueryVNC(ctx context.Context) (VNCInfo, error) {
+	result, err := c.execute(ctx, "query-vnc", nil)
+	if err != nil {
+		return VNCInfo{}, err
+	}
+	var info *qmpVNCInfo
+	decoder := json.NewDecoder(bytes.NewReader(result))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&info); err != nil {
+		return VNCInfo{}, fmt.Errorf("decode query-vnc response: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return VNCInfo{}, errors.New("decode query-vnc response: trailing data")
+	}
+	if info == nil {
+		return VNCInfo{}, errors.New("query-vnc response is null")
+	}
+	if info.Enabled {
+		if info.Host == "" || info.Service == "" || info.Family == "" || info.Auth == "" {
+			return VNCInfo{}, errors.New("query-vnc response is missing enabled VNC fields")
+		}
+		if len(info.Clients) != 0 {
+			return VNCInfo{}, errors.New("query-vnc response reports connected clients")
+		}
+	}
+	return VNCInfo{
+		Enabled: info.Enabled,
+		Host:    info.Host,
+		Service: info.Service,
+		Family:  info.Family,
+		Auth:    info.Auth,
+	}, nil
 }
 
 func (c *QMPClient) SystemPowerdown(ctx context.Context) error {

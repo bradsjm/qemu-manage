@@ -116,8 +116,13 @@ func TestMetadataIdentityAndFutureTimestampRemainObservable(t *testing.T) {
 
 func TestCleanupRuntimePreservesLastExitAndLifetimeLock(t *testing.T) {
 	dir := privateRuntimeDir(t)
-	paths := store.Paths{RuntimeDir: dir, ControlSocket: filepath.Join(dir, "control.sock"), QMP: filepath.Join(dir, "qmp.sock"), QGA: filepath.Join(dir, "qga.sock"), Console: filepath.Join(dir, "console.sock"), RuntimeMetadata: filepath.Join(dir, "runtime.json"), LastExitMetadata: filepath.Join(dir, "last_exit.json"), LifetimeLock: filepath.Join(dir, "lifetime.lock")}
-	for _, path := range []string{paths.ControlSocket, paths.QMP, paths.QGA, paths.Console, paths.RuntimeMetadata, paths.LifetimeLock} {
+	paths := store.Paths{
+		RuntimeDir: dir, ControlSocket: filepath.Join(dir, "control.sock"), QMP: filepath.Join(dir, "qmp.sock"),
+		QGA: filepath.Join(dir, "qga.sock"), Console: filepath.Join(dir, "console.sock"),
+		VNCSecret: filepath.Join(dir, "vnc-password"), RuntimeMetadata: filepath.Join(dir, "runtime.json"),
+		LastExitMetadata: filepath.Join(dir, "last_exit.json"), LifetimeLock: filepath.Join(dir, "lifetime.lock"),
+	}
+	for _, path := range []string{paths.ControlSocket, paths.QMP, paths.QGA, paths.Console, paths.VNCSecret, paths.RuntimeMetadata, paths.LifetimeLock} {
 		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -129,7 +134,7 @@ func TestCleanupRuntimePreservesLastExitAndLifetimeLock(t *testing.T) {
 	if err := CleanupRuntime(paths); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{paths.ControlSocket, paths.QMP, paths.QGA, paths.Console, paths.RuntimeMetadata} {
+	for _, path := range []string{paths.ControlSocket, paths.QMP, paths.QGA, paths.Console, paths.VNCSecret, paths.RuntimeMetadata} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("ephemeral %s remains: %v", path, err)
 		}

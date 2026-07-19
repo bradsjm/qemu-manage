@@ -14,7 +14,6 @@ import (
 
 	"golang.org/x/term"
 
-	"qemu-manage/internal/backend"
 	"qemu-manage/internal/model"
 	"qemu-manage/internal/store"
 )
@@ -51,10 +50,7 @@ func (a *App) runShowcmd(args []string, stdout io.Writer) error {
 		return fmt.Errorf("qemu: %w", err)
 	}
 	paths := a.Store.Paths(config)
-	command, err := implementation.Render(config, backend.RuntimePaths{
-		VMDir: paths.VMDir, QMP: paths.QMP, QGA: paths.QGA, Console: paths.Console,
-		QEMULog: paths.QEMULog, SerialLog: paths.SerialLog,
-	})
+	command, err := implementation.Render(config, backendPaths(paths))
 	if err != nil {
 		return fmt.Errorf("qemu: render command: %w", err)
 	}

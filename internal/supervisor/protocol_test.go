@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"qemu-manage/internal/backend"
 	"qemu-manage/internal/model"
 )
 
@@ -31,7 +32,15 @@ func TestProtocolRoundTrip(t *testing.T) {
 		t.Fatalf("decoded request = %#v", decoded)
 	}
 
-	status := &Status{State: model.RunStateRunning, Backend: model.BackendQEMU, SupervisorPID: 11, BackendPID: 12, StartedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), RunningConfigSHA256: strings.Repeat("a", 64)}
+	status := &Status{
+		State:               model.RunStateRunning,
+		Backend:             model.BackendQEMU,
+		SupervisorPID:       11,
+		BackendPID:          12,
+		StartedAt:           time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		RunningConfigSHA256: strings.Repeat("a", 64),
+		VNC:                 &backend.VNCEndpoint{Host: "127.0.0.1", Port: 5901},
+	}
 	wire.Reset()
 	if err := EncodeResponse(&wire, &Response{Version: ProtocolVersion, ID: testProtocolID, OK: true, Status: status}); err != nil {
 		t.Fatal(err)
@@ -40,7 +49,7 @@ func TestProtocolRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.Status == nil || response.Status.State != model.RunStateRunning {
+	if response.Status == nil || response.Status.State != model.RunStateRunning || response.Status.VNC == nil || *response.Status.VNC != *status.VNC {
 		t.Fatalf("decoded response = %#v", response)
 	}
 }
@@ -93,7 +102,15 @@ func TestRequestOptionConsistency(t *testing.T) {
 }
 
 func TestResponseOptionConsistency(t *testing.T) {
-	goodStatus := &Status{State: model.RunStatePaused, Backend: model.BackendQEMU, SupervisorPID: 1, BackendPID: 2, StartedAt: time.Now().UTC(), RunningConfigSHA256: strings.Repeat("0", 64)}
+	goodStatus := &Status{
+		State:               model.RunStatePaused,
+		Backend:             model.BackendQEMU,
+		SupervisorPID:       1,
+		BackendPID:          2,
+		StartedAt:           time.Now().UTC(),
+		RunningConfigSHA256: strings.Repeat("0", 64),
+		VNC:                 &backend.VNCEndpoint{Host: "127.0.0.1", Port: 5900},
+	}
 	goodError := &ProtocolError{Code: ErrorInternal, Message: "failed"}
 	tests := []struct {
 		name     string
@@ -112,6 +129,45 @@ func TestResponseOptionConsistency(t *testing.T) {
 			err := tt.response.Validate()
 			if (err == nil) != tt.valid {
 				t.Fatalf("Validate error = %v, valid=%v", err, tt.valid)
+			}
+		})
+	}
+}
+
+func TestStatusValidateVNCEndpoint(t *testing.T) {
+	base := Status{
+		State:               model.RunStateRunning,
+		Backend:             model.BackendQEMU,
+		SupervisorPID:       1,
+		BackendPID:          2,
+		StartedAt:           time.Now().UTC(),
+		RunningConfigSHA256: strings.Repeat("a", 64),
+	}
+	tests := []struct {
+		name   string
+		vnc    *backend.VNCEndpoint
+		valid  bool
+		errSub string
+	}{
+		{name: "omitted", valid: true},
+		{name: "ipv4", vnc: &backend.VNCEndpoint{Host: "0.0.0.0", Port: 5900}, valid: true},
+		{name: "ipv6", vnc: &backend.VNCEndpoint{Host: "::1", Port: 5900}, errSub: "IPv4"},
+		{name: "ipv4 mapped ipv6", vnc: &backend.VNCEndpoint{Host: "::ffff:127.0.0.1", Port: 5900}, errSub: "IPv4"},
+		{name: "zero port", vnc: &backend.VNCEndpoint{Host: "127.0.0.1", Port: 0}, errSub: "nonzero"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status := base
+			status.VNC = tt.vnc
+			err := status.Validate()
+			if tt.valid {
+				if err != nil {
+					t.Fatalf("Validate error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.errSub) {
+				t.Fatalf("Validate error = %v, want containing %q", err, tt.errSub)
 			}
 		})
 	}

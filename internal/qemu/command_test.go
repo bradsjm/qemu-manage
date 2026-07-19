@@ -84,6 +84,52 @@ func TestRenderSocketVMNetGolden(t *testing.T) {
 	assertSafeQEMUCommand(t, got)
 }
 
+func TestRenderUserNetworkGoldenWithVNC(t *testing.T) {
+	config, paths := renderFixture()
+	config.VNC = &model.VNCConfig{
+		Bind:     "127.0.0.1",
+		Port:     5900,
+		PortTo:   5999,
+		Password: "secret12",
+	}
+	paths.VNCSecret = "/run/vnc,password"
+	got, err := NewBackend().Render(config, paths)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	want := backend.Command{Path: "/vms/ha/bin/qemu-system-aarch64", Args: []string{
+		"-nodefaults", "-display", "none", "-machine", "virt", "-accel", "hvf", "-cpu", "host",
+		"-smp", "cpus=4,sockets=1,cores=4,threads=1", "-m", "4096", "-name", "ha,,vm", "-uuid", "123e4567-e89b-42d3-a456-426614174000", "-run-with", "exit-with-parent=on",
+		"-drive", "if=pflash,unit=0,format=raw,readonly=on,file.locking=off,file.filename=/vms/ha/firmware/code,,uefi.fd",
+		"-drive", "if=pflash,unit=1,format=raw,file.filename=/vms/ha/firmware/vars.fd",
+		"-drive", "if=none,media=disk,id=disk0,file.filename=/vms/ha/disks/root,,one.qcow2,format=qcow2,discard=unmap,detect-zeroes=unmap",
+		"-device", "virtio-blk-pci,drive=disk0,serial=root,,serial,bootindex=1",
+		"-drive", "if=none,media=disk,id=disk1,file.filename=/images/recovery.raw,format=raw,readonly=on",
+		"-device", "virtio-blk-pci,drive=disk1,serial=recovery,bootindex=2", "-device", "virtio-rng-pci",
+		"-device", "virtio-scsi-pci,id=scsi0", "-drive", "if=none,media=cdrom,id=install,file.filename=/vms/ha/install/os,,arm.iso,format=raw,readonly=on",
+		"-device", "scsi-cd,drive=install,bus=scsi0.0,bootindex=0",
+		"-chardev", "socket,id=console0,path=/run/console.sock,server=on,wait=off,logfile=/logs/serial,,0.log,logappend=on", "-serial", "chardev:console0",
+		"-qmp", "unix:/run/qmp,,0.sock,server=on,wait=off",
+		"-device", "virtio-gpu-pci",
+		"-device", "nec-usb-xhci,id=usb",
+		"-device", "usb-kbd,bus=usb.0",
+		"-device", "usb-tablet,bus=usb.0",
+		"-object", "secret,id=vnc-password,file=/run/vnc,,password",
+		"-vnc", "127.0.0.1:0,to=99,password-secret=vnc-password",
+		"-device", "virtio-serial-pci", "-chardev", "socket,id=qga0,path=/run/qga.sock,server=on,wait=off",
+		"-device", "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0",
+		"-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22,hostfwd=tcp:127.0.0.1:8123-:8123,hostfwd=udp:127.0.0.1:5353-:5353",
+		"-device", "virtio-net-pci,netdev=net0,mac=02:00:00:00:00:01",
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("command mismatch\n got: %#v\nwant: %#v", got, want)
+	}
+	if strings.Contains(strings.Join(append([]string{got.Path}, got.Args...), " "), config.VNC.Password) {
+		t.Fatalf("command leaked VNC password: %#v", got)
+	}
+	assertSafeQEMUCommand(t, got)
+}
+
 func assertSafeQEMUCommand(t *testing.T, command backend.Command) {
 	t.Helper()
 	all := append([]string{command.Path}, command.Args...)

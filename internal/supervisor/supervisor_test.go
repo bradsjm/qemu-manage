@@ -21,6 +21,7 @@ type fakeInstance struct {
 	mu                        sync.Mutex
 	state                     model.RunState
 	statusErr                 error
+	vnc                       *backend.VNCEndpoint
 	shutdown                  func(context.Context) error
 	force                     func(context.Context) error
 	exits                     chan backend.Exit
@@ -35,6 +36,14 @@ func (f *fakeInstance) Status(context.Context) (model.RunState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.state, f.statusErr
+}
+func (f *fakeInstance) VNCEndpoint() (backend.VNCEndpoint, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.vnc == nil {
+		return backend.VNCEndpoint{}, false
+	}
+	return *f.vnc, true
 }
 func (f *fakeInstance) RequestShutdown(ctx context.Context) error {
 	f.mu.Lock()
@@ -100,6 +109,38 @@ func TestSupervisedRunStatusAndHash(t *testing.T) {
 		t.Fatalf("status = %#v", status)
 	}
 	instance.exit(backend.Exit{})
+}
+
+func TestSuperviseStatusIncludesVNCEndpoint(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("authenticated supervisor control sockets require macOS peer credentials")
+	}
+	instance := newFakeInstance()
+	instance.vnc = &backend.VNCEndpoint{Host: "127.0.0.1", Port: 5905}
+	service, cfg, paths := supervisorFixture(t, instance)
+	writer := &readinessWriter{ready: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() { done <- service.Supervise(context.Background(), cfg.Name, cfg.ID, writer) }()
+	select {
+	case <-writer.ready:
+	case err := <-done:
+		t.Fatalf("supervisor exited before readiness: %v", err)
+	}
+	response, err := Control(context.Background(), paths.ControlSocket, Request{
+		Version: ProtocolVersion,
+		ID:      cfg.ID,
+		Command: CommandStatus,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Status == nil || response.Status.VNC == nil || *response.Status.VNC != *instance.vnc {
+		t.Fatalf("status = %#v", response.Status)
+	}
+	instance.exit(backend.Exit{})
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestJoinedNormalStopsShareOneRequest(t *testing.T) {

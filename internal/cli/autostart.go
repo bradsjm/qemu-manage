@@ -6,7 +6,6 @@ import (
 	"io"
 	"strings"
 
-	"qemu-manage/internal/backend"
 	"qemu-manage/internal/launchd"
 	"qemu-manage/internal/model"
 	"qemu-manage/internal/qemu"
@@ -46,10 +45,7 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 		}
 		err := a.Launchd.Enable(ctx, name, scope, func(ctx context.Context, config *model.Config) error {
 			paths := a.Store.Paths(config)
-			checks := qemu.Doctor(ctx, *config, backend.RuntimePaths{
-				VMDir: paths.VMDir, QMP: paths.QMP, QGA: paths.QGA, Console: paths.Console,
-				QEMULog: paths.QEMULog, SerialLog: paths.SerialLog,
-			})
+			checks := qemu.Doctor(ctx, *config, backendPaths(paths))
 			return qemu.RequiredPassed(checks)
 		})
 		return withLaunchdPrefix(err)

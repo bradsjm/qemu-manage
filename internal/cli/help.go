@@ -35,15 +35,21 @@ Commands:
   start        Start a VM in the background
   stop         Gracefully stop a VM, or explicitly force it
   console      Connect to a running VM's serial console
+  vnc          Copy the VNC password and open Screen Sharing (macOS)
   status       Show one VM or all VM runtime states
   list         List all managed VMs
   doctor       Check QEMU, firmware, VM files, and networking prerequisites
   autostart    Manage login or system-boot startup with launchd
-  delete       Permanently delete a stopped VM and its managed files
 
 Network choices:
   user          Built into QEMU; simplest setup, with optional port forwards
   socket_vmnet  Host/shared/bridged networking; requires socket_vmnet
+
+
+Storage overrides:
+  QEMU_MANAGE_DATA_ROOT     Absolute owner-controlled VM data directory
+  QEMU_MANAGE_RUNTIME_ROOT  Absolute owner-controlled runtime directory; keep short
+  QEMU_MANAGE_LOG_ROOT      Absolute owner-controlled log directory
 
 Examples:
   qemu-manage --help
@@ -232,6 +238,26 @@ Press Ctrl-] to disconnect without stopping the VM.
 
 Examples:
   qemu-manage console home-assistant
+`},
+	"vnc": {text: `Copy the configured VNC password and open the live endpoint in Screen Sharing.
+
+Usage:
+  qemu-manage vnc NAME
+
+Requirements:
+  - macOS with Screen Sharing available through /usr/bin/open
+  - VNC enabled in the VM configuration
+  - The VM is currently running or paused
+  - The authenticated supervisor reports a live VNC endpoint that matches the
+    running configuration
+
+Behavior:
+  - Copies the configured VNC password to the clipboard with pbcopy
+  - Opens Screen Sharing at the authenticated live vnc://HOST:PORT endpoint
+  - Does not print the password or clear the clipboard afterward
+
+Examples:
+  qemu-manage vnc home-assistant
 `},
 	"status": {text: `Show runtime state and whether a configuration change requires restart.
 

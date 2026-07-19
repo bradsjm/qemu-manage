@@ -22,6 +22,9 @@ import (
 const (
 	defaultMemoryMiB = 2 * 1024
 	defaultDiskBytes = uint64(32) * 1024 * 1024 * 1024
+	defaultVNCBind   = "127.0.0.1"
+	defaultVNCPort   = 5900
+	defaultVNCPortTo = 5999
 )
 
 func (a *App) runCreate(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -45,16 +48,24 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	firmwareVars := flags.String("firmware-vars", defaultFirmwareVars, "AArch64 UEFI variables template (auto-detected)")
 	restartPolicy := flags.String("restart-policy", string(model.RestartNever), "restart policy")
 	shutdownTimeout := flags.String("shutdown-timeout", "180s", "shutdown timeout")
+	vncEnabled := flags.Bool("vnc", false, "enable QEMU VNC")
+	vncPassword := flags.String("vnc-password", "", "QEMU VNC password")
+	vncBind := flags.String("vnc-bind", defaultVNCBind, "VNC bind IPv4 address")
+	vncPort := flags.String("vnc-port", strconv.Itoa(defaultVNCPort), "minimum VNC TCP port")
+	vncPortTo := flags.String("vnc-port-to", strconv.Itoa(defaultVNCPortTo), "maximum VNC TCP port")
 	if err := flags.Parse(args); err != nil {
 		return usageErrorf("create: %v", err)
 	}
 	firmwareCodeExplicit, firmwareVarsExplicit := false, false
+	vncDetailExplicit := false
 	flags.Visit(func(option *flag.Flag) {
 		switch option.Name {
 		case "firmware-code":
 			firmwareCodeExplicit = true
 		case "firmware-vars":
 			firmwareVarsExplicit = true
+		case "vnc-password", "vnc-bind", "vnc-port", "vnc-port-to":
+			vncDetailExplicit = true
 		}
 	})
 	if firmwareCodeExplicit != firmwareVarsExplicit {
@@ -82,6 +93,12 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	if err != nil {
 		return usageErrorf("create: --shutdown-timeout: %v", err)
 	}
+	if !*vncEnabled && vncDetailExplicit {
+		return usageErrorf("create: --vnc-password, --vnc-bind, --vnc-port, and --vnc-port-to require --vnc")
+	}
+	if *vncEnabled && *vncPassword == "" {
+		return usageErrorf("create: --vnc-password is required when --vnc is set")
+	}
 	if *firmwareCode == "" || *firmwareVars == "" {
 		return usageErrorf(
 			"create: --firmware-code and --firmware-vars are required when they cannot be auto-detected; install QEMU with `brew install qemu` or provide both paths",
@@ -90,6 +107,23 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	imageSource, err := parseImageSource(*image)
 	if err != nil {
 		return usageErrorf("create: --image: %v", err)
+	}
+	var vnc *model.VNCConfig
+	if *vncEnabled {
+		vncPortValue, err := parsePort(*vncPort)
+		if err != nil {
+			return usageErrorf("create: --vnc-port: %v", err)
+		}
+		vncPortToValue, err := parsePort(*vncPortTo)
+		if err != nil {
+			return usageErrorf("create: --vnc-port-to: %v", err)
+		}
+		vnc = &model.VNCConfig{
+			Bind:     *vncBind,
+			Port:     vncPortValue,
+			PortTo:   vncPortToValue,
+			Password: *vncPassword,
+		}
 	}
 	qemuPath, err := resolveExecutable(*qemu)
 	if err != nil {
@@ -134,6 +168,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		Disks:                  []model.DiskConfig{{Path: "disk.qcow2", Format: "qcow2", Serial: "disk-" + id[:16], BootIndex: bootIndex}},
 		Network:                model.NetworkConfig{Mode: model.NetworkUser, MAC: mac, Forwards: []model.PortForward{}},
 		GuestAgent:             model.GuestAgentConfig{},
+		VNC:                    vnc,
 		QEMU:                   model.QEMUConfig{Binary: qemuPath, ImageTool: qemuImgPath, Machine: "virt", ExtraArgs: []string{}},
 		Autostart:              model.AutostartConfig{Scope: model.AutostartNone},
 	}

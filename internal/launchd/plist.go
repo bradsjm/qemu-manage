@@ -40,6 +40,12 @@ var plistTemplate = template.Must(template.New("plist").Funcs(template.FuncMap{
     <string>{{xml .Home}}</string>
     <key>PATH</key>
     <string>` + launchdPath + `</string>
+    <key>QEMU_MANAGE_DATA_ROOT</key>
+    <string>{{xml .DataRoot}}</string>
+    <key>QEMU_MANAGE_RUNTIME_ROOT</key>
+    <string>{{xml .RuntimeRoot}}</string>
+    <key>QEMU_MANAGE_LOG_ROOT</key>
+    <string>{{xml .LogRoot}}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -70,6 +76,9 @@ type plistData struct {
 	StdoutLog   string
 	StderrLog   string
 	Home        string
+	DataRoot    string
+	RuntimeRoot string
+	LogRoot     string
 	Username    string
 	ExitTimeOut int
 	KeepAlive   bool
@@ -87,7 +96,7 @@ func Label(id string) string {
 func Filename(id string) string { return Label(id) + ".plist" }
 
 // Render validates cfg and renders its launchd property list deterministically.
-func Render(cfg *model.Config, executable, workDir, stdoutLog, stderrLog, username, home string) ([]byte, error) {
+func Render(cfg *model.Config, executable, workDir, stdoutLog, stderrLog, username, home, dataRoot, runtimeRoot, logRoot string) ([]byte, error) {
 	if cfg == nil {
 		return nil, errors.New("launchd: config is nil")
 	}
@@ -103,6 +112,9 @@ func Render(cfg *model.Config, executable, workDir, stdoutLog, stderrLog, userna
 		{"stdout log", stdoutLog},
 		{"stderr log", stderrLog},
 		{"home", home},
+		{"data root", dataRoot},
+		{"runtime root", runtimeRoot},
+		{"log root", logRoot},
 	} {
 		if !filepath.IsAbs(path.value) {
 			return nil, fmt.Errorf("launchd: %s path must be absolute", path.field)
@@ -130,6 +142,9 @@ func Render(cfg *model.Config, executable, workDir, stdoutLog, stderrLog, userna
 		StdoutLog:   stdoutLog,
 		StderrLog:   stderrLog,
 		Home:        home,
+		DataRoot:    dataRoot,
+		RuntimeRoot: runtimeRoot,
+		LogRoot:     logRoot,
 		Username:    username,
 		ExitTimeOut: cfg.ShutdownTimeoutSeconds + 15,
 		KeepAlive:   cfg.RestartPolicy == model.RestartOnFailure,

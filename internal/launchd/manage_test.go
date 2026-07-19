@@ -128,7 +128,7 @@ func TestStatusReportsBytesAndUsesStableExecutableTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	paths := m.Store.Paths(cfg)
-	data, err := Render(cfg, resolved, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home)
+	data, err := Render(cfg, resolved, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home, m.Store.DataRoot, m.Store.RuntimeRoot, m.Store.LogRoot)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -42,6 +42,15 @@ func validTestConfig() Config {
 	}
 }
 
+func validTestVNC() *VNCConfig {
+	return &VNCConfig{
+		Bind:     "127.0.0.1",
+		Port:     5900,
+		PortTo:   5999,
+		Password: "secret",
+	}
+}
+
 func cloneTestConfig(t *testing.T, source Config) Config {
 	t.Helper()
 	data, err := json.Marshal(source)
@@ -135,16 +144,20 @@ func TestDecodeRejectsUnknownAndTrailingJSON(t *testing.T) {
 	if err == nil || canonical != nil {
 		t.Fatal("invalid zero config unexpectedly encoded")
 	}
-	valid, err := json.Marshal(validTestConfig())
+	config := validTestConfig()
+	config.VNC = validTestVNC()
+	valid, err := json.Marshal(config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	unknown := append([]byte(nil), valid[:len(valid)-1]...)
 	unknown = append(unknown, []byte(`,"surprise":true}`)...)
 	nestedUnknown := bytes.Replace(valid, []byte(`"firmware":{`), []byte(`"firmware":{"surprise":true,`), 1)
+	vncUnknown := bytes.Replace(valid, []byte(`"vnc":{`), []byte(`"vnc":{"surprise":true,`), 1)
 	for name, input := range map[string][]byte{
 		"unknown top-level field": unknown,
 		"unknown nested field":    nestedUnknown,
+		"unknown VNC field":       vncUnknown,
 		"second object":           append(append([]byte(nil), valid...), []byte(` {}`)...),
 		"trailing scalar":         append(append([]byte(nil), valid...), []byte(` true`)...),
 		"null":                    []byte(`null`),
@@ -155,6 +168,109 @@ func TestDecodeRejectsUnknownAndTrailingJSON(t *testing.T) {
 				t.Fatal("Decode succeeded")
 			}
 		})
+	}
+}
+
+func TestVNCValidationAndHashStability(t *testing.T) {
+	disabled := validTestConfig()
+	if err := disabled.Validate(); err != nil {
+		t.Fatalf("nil VNC should be valid: %v", err)
+	}
+	disabledHash, err := Hash(&disabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	enabled := cloneTestConfig(t, disabled)
+	enabled.VNC = validTestVNC()
+	if err := enabled.Validate(); err != nil {
+		t.Fatalf("valid VNC rejected: %v", err)
+	}
+	enabledHash, err := Hash(&enabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabledHash == disabledHash {
+		t.Fatal("VNC did not affect config hash")
+	}
+
+	for _, password := range []string{"a", "éééé"} {
+		t.Run("valid password "+password, func(t *testing.T) {
+			c := cloneTestConfig(t, disabled)
+			c.VNC = validTestVNC()
+			c.VNC.Password = password
+			if err := c.Validate(); err != nil {
+				t.Fatalf("valid password %q rejected: %v", password, err)
+			}
+		})
+	}
+
+	for name, mutate := range map[string]func(*Config){
+		"bind hostname":    func(c *Config) { c.VNC.Bind = "localhost" },
+		"bind IPv6":        func(c *Config) { c.VNC.Bind = "::1" },
+		"port below":       func(c *Config) { c.VNC.Port = 5899 },
+		"port_to below":    func(c *Config) { c.VNC.Port = 5901; c.VNC.PortTo = 5900 },
+		"password empty":   func(c *Config) { c.VNC.Password = "" },
+		"password 9 bytes": func(c *Config) { c.VNC.Password = "123456789" },
+		"password NUL":     func(c *Config) { c.VNC.Password = "abc\x00def" },
+		"password invalid UTF-8": func(c *Config) {
+			c.VNC.Password = string([]byte{0xff})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := cloneTestConfig(t, disabled)
+			c.VNC = validTestVNC()
+			mutate(&c)
+			requireInvalid(t, c)
+		})
+	}
+
+	boundary := cloneTestConfig(t, disabled)
+	boundary.VNC = validTestVNC()
+	boundary.VNC.Bind = "0.0.0.0"
+	boundary.VNC.Port = 65535
+	boundary.VNC.PortTo = 65535
+	boundary.VNC.Password = "12345678"
+	if err := boundary.Validate(); err != nil {
+		t.Fatalf("valid VNC boundaries rejected: %v", err)
+	}
+}
+
+func TestDecodeRejectsInvalidRawUnicodeInVNCPassword(t *testing.T) {
+	config := validTestConfig()
+	config.VNC = validTestVNC()
+	valid, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		raw     []byte
+		wantErr string
+	}{
+		{name: "raw invalid UTF-8", raw: []byte{'"', 0xff, '"'}, wantErr: "raw JSON must be valid UTF-8"},
+		{name: "lone high surrogate", raw: []byte(`"\uD800"`), wantErr: "unpaired surrogate escapes"},
+		{name: "lone low surrogate", raw: []byte(`"\uDC00"`), wantErr: "unpaired surrogate escapes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := bytes.Replace(valid, []byte(`"password":"secret"`), append([]byte(`"password":`), tc.raw...), 1)
+			if bytes.Equal(input, valid) {
+				t.Fatal("password replacement failed")
+			}
+			if _, err := DecodeBytes(input); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("DecodeBytes() error = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+
+	input := bytes.Replace(valid, []byte(`"password":"secret"`), []byte(`"password":"\uD83D\uDE00"`), 1)
+	decoded, err := DecodeBytes(input)
+	if err != nil {
+		t.Fatalf("valid surrogate pair rejected: %v", err)
+	}
+	if decoded.VNC == nil || decoded.VNC.Password != "😀" {
+		t.Fatalf("decoded VNC password = %#v, want %#v", decoded.VNC, "😀")
 	}
 }
 
@@ -347,7 +463,7 @@ func TestRuntimeVZError(t *testing.T) {
 }
 
 func TestManagerOwnedQEMUOptionsRejected(t *testing.T) {
-	options := []string{"qmp", "monitor", "chardev", "serial", "daemonize", "pidfile", "run-with", "accel", "machine", "M", "cpu", "smp", "m", "drive", "blockdev", "device", "hda", "hdb", "hdc", "hdd", "fda", "fdb", "cdrom", "netdev", "nic", "net", "display", "nographic", "vga", "nodefaults", "name", "uuid", "boot", "bios", "readconfig", "writeconfig", "set", "global", "incoming", "snapshot", "S", "preconfig", "no-shutdown", "action"}
+	options := []string{"qmp", "monitor", "chardev", "serial", "daemonize", "pidfile", "run-with", "accel", "machine", "M", "cpu", "smp", "m", "drive", "blockdev", "device", "hda", "hdb", "hdc", "hdd", "fda", "fdb", "cdrom", "netdev", "nic", "net", "display", "nographic", "vga", "nodefaults", "name", "uuid", "boot", "bios", "readconfig", "writeconfig", "set", "global", "incoming", "snapshot", "S", "preconfig", "no-shutdown", "action", "vnc", "object"}
 	for _, option := range options {
 		for _, arg := range []string{"-" + option, "-" + option + "=value", "--" + option, "--" + option + "=value"} {
 			t.Run(strings.ReplaceAll(arg, "/", "_"), func(t *testing.T) { c := validTestConfig(); c.QEMU.ExtraArgs = []string{arg}; requireInvalid(t, c) })
