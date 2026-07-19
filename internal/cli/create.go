@@ -95,6 +95,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	restartPolicy := flags.String("restart-policy", string(model.RestartNever), "restart policy")
 	shutdownTimeout := flags.String("shutdown-timeout", "180s", "shutdown timeout")
 	network := flags.String("network", string(model.NetworkUser), "network mode")
+	macOverride := flags.String("mac", "", "optional canonical MAC override (generated when omitted)")
 	guestAgent := flags.String("guest-agent", "off", "guest agent")
 	socketVMNetInterface := flags.String("socket-vmnet-interface", "", "socket_vmnet interface")
 	rtcBase := flags.String("rtc-base", defaultRTCBase, "QEMU RTC base")
@@ -264,9 +265,12 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	if err != nil {
 		return err
 	}
-	mac, err := model.GenerateMAC()
-	if err != nil {
-		return err
+	mac := *macOverride
+	if mac == "" {
+		mac, err = model.GenerateMAC()
+		if err != nil {
+			return err
+		}
 	}
 
 	networkConfig := model.NetworkConfig{Mode: networkMode, MAC: mac, Forwards: []model.PortForward{}}

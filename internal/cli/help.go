@@ -50,6 +50,7 @@ Defaults:
   With neither --image nor --iso, create makes a blank 32GiB qcow2 disk.
   New VMs start with user networking, the guest agent off, RTC base utc, and a
   concrete machine pinned from the selected QEMU binary as virt-N.N.
+  A locally administered unicast MAC is generated unless --mac is provided.
   QEMU and qemu-img are resolved from PATH. Firmware code and variables are
   auto-detected as a matching pair from QEMU's Homebrew or system share files.
   To override firmware discovery, provide --firmware-code and --firmware-vars together.
@@ -70,6 +71,8 @@ Resources and lifecycle:
 
 Networking:
   --network VALUE             Valid values: user, socket_vmnet (default: user)
+  --mac MAC                   Optional lowercase six-byte colon-separated hexadecimal
+                              locally administered unicast MAC; generated if omitted
   --forward SPEC              Repeatable proto:IPv4:host-port:guest-port (user only)
   --share PATH                Export one host folder over SMB (user network only)
   --socket-vmnet-interface NAME

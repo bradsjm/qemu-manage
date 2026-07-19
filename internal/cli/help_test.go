@@ -83,6 +83,8 @@ func TestCommandAndNestedHelp(t *testing.T) {
 				"--keyboard-layout LAYOUT",
 				"--rtc-base VALUE",
 				"--socket-vmnet-interface NAME",
+				"--mac MAC",
+				"locally administered unicast MAC; generated if omitted",
 				"--share PATH",
 				"single folder",
 				"//10.0.2.4/qemu",

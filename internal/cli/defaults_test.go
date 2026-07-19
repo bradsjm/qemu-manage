@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,6 +61,10 @@ func TestCreateUsesDiscoveredFirmwareWhenFlagsAreOmitted(t *testing.T) {
 	if cfg.Firmware != (model.FirmwareConfig{Code: "firmware-code.fd", Variables: "firmware-vars.fd"}) {
 		t.Fatalf("unexpected persisted firmware config: %+v", cfg.Firmware)
 	}
+	hardware, err := net.ParseMAC(cfg.Network.MAC)
+	if err != nil || len(hardware) != 6 || cfg.Network.MAC != strings.ToLower(cfg.Network.MAC) || len(cfg.Network.MAC) != 17 || hardware[0]&0x03 != 0x02 {
+		t.Fatalf("generated MAC %q is not a canonical locally administered unicast MAC", cfg.Network.MAC)
+	}
 	vmDir := filepath.Join(a.Store.DataRoot, "vm")
 	configData, err := os.ReadFile(filepath.Join(vmDir, "config.json"))
 	if err != nil {
@@ -92,6 +97,57 @@ func TestCreateUsesDiscoveredFirmwareWhenFlagsAreOmitted(t *testing.T) {
 		if info.Mode().Perm() != check.wantPerm {
 			t.Errorf("copied %s mode = %04o, want %04o", check.name, info.Mode().Perm(), check.wantPerm)
 		}
+	}
+}
+
+func TestCreatePersistsExplicitMAC(t *testing.T) {
+	a := testApp(t)
+	codePath, variablesPath, qemuPath, qemuImgPath := createInputs(t)
+	a.DiscoverFirmware = func() (code, variables string) {
+		return codePath, variablesPath
+	}
+	fakeDiskCreation(t, a)
+
+	const wantMAC = "02:12:34:56:78:9a"
+	exit, _, stderr := runCLI(a, "create", "vm", "--qemu", qemuPath, "--qemu-img", qemuImgPath, "--disk-size", "1GiB", "--mac", wantMAC)
+	if exit != 0 {
+		t.Fatalf("create exited %d: %s", exit, stderr)
+	}
+	cfg, err := a.Store.Load("vm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Network.MAC != wantMAC {
+		t.Fatalf("persisted MAC = %q, want %q", cfg.Network.MAC, wantMAC)
+	}
+}
+
+func TestCreateRejectsInvalidExplicitMAC(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mac  string
+	}{
+		{name: "uppercase", mac: "02:12:34:56:78:9A"},
+		{name: "compact", mac: "02123456789a"},
+		{name: "multicast", mac: "03:12:34:56:78:9a"},
+		{name: "globally administered", mac: "00:12:34:56:78:9a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testApp(t)
+			codePath, variablesPath, qemuPath, qemuImgPath := createInputs(t)
+			a.DiscoverFirmware = func() (code, variables string) {
+				return codePath, variablesPath
+			}
+			fakeDiskCreation(t, a)
+
+			exit, _, stderr := runCLI(a, "create", "vm", "--qemu", qemuPath, "--qemu-img", qemuImgPath, "--disk-size", "1GiB", "--mac", tc.mac)
+			if exit == 0 || !strings.Contains(stderr, "network mac must") {
+				t.Fatalf("create exited %d, stderr=%q; want MAC validation failure", exit, stderr)
+			}
+			if _, err := os.Stat(filepath.Join(a.Store.DataRoot, "vm")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("invalid MAC left VM directory: %v", err)
+			}
+		})
 	}
 }
 

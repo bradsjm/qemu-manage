@@ -131,10 +131,14 @@ environment details.
 ## Creating a VM
 
 You can create a VM from an HTTP(S) disk image, a local image file, an ARM64
-installer ISO, or leave it blank. New VMs default to user networking, guest
-agent off, RTC base `utc`, and a concrete Arm machine pinned from the selected
-QEMU binary as `virt-N.N`. When VNC is enabled, the default keyboard layout is
-`en-us`.
+installer ISO, or leave it blank. New VMs default to user networking with a
+generated MAC, guest agent off, RTC base `utc`, and a concrete Arm machine
+pinned from the selected QEMU binary as `virt-N.N`. When VNC is enabled, the
+default keyboard layout is `en-us`.
+
+Use `--mac MAC` to override the generated address at creation time. The value
+must be a lowercase, six-byte, colon-separated hexadecimal locally administered
+unicast MAC.
 
 ### Import from an HTTP(S) URL
 
@@ -162,6 +166,7 @@ Pass a local qcow2 or raw path to `--image`. The source is copied and converted
 ```sh
 qemu-manage create appliance \
   --image "$HOME/Downloads/appliance-aarch64.qcow2" \
+  --mac 02:12:34:56:78:9a \
   --cpus 2 \
   --memory 4GiB \
   --disk-size 32GiB
