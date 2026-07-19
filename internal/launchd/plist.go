@@ -49,6 +49,11 @@ var plistTemplate = template.Must(template.New("plist").Funcs(template.FuncMap{
   </dict>
   <key>RunAtLoad</key>
   <true/>
+{{if .SocketPath}}  <key>WatchPaths</key>
+  <array>
+    <string>{{xml .SocketPath}}</string>
+  </array>
+{{end}}
   <key>ThrottleInterval</key>
   <integer>30</integer>
   <key>ExitTimeOut</key>
@@ -80,6 +85,7 @@ type plistData struct {
 	RuntimeRoot string
 	LogRoot     string
 	Username    string
+	SocketPath  string
 	ExitTimeOut int
 	KeepAlive   bool
 }
@@ -134,6 +140,11 @@ func Render(cfg *model.Config, executable, workDir, stdoutLog, stderrLog, userna
 		username = ""
 	}
 
+	socketPath := ""
+	if cfg.Network.Mode == model.NetworkSocketVMNet {
+		socketPath = cfg.Network.SocketVMNet.SocketPath
+	}
+
 	data := plistData{
 		Label:       Label(cfg.ID),
 		Executable:  executable,
@@ -146,6 +157,7 @@ func Render(cfg *model.Config, executable, workDir, stdoutLog, stderrLog, userna
 		RuntimeRoot: runtimeRoot,
 		LogRoot:     logRoot,
 		Username:    username,
+		SocketPath:  socketPath,
 		ExitTimeOut: cfg.ShutdownTimeoutSeconds + 15,
 		KeepAlive:   cfg.RestartPolicy == model.RestartOnFailure,
 	}

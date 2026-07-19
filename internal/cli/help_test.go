@@ -83,6 +83,11 @@ func TestCommandAndNestedHelp(t *testing.T) {
 				"--keyboard-layout LAYOUT",
 				"--rtc-base VALUE",
 				"--socket-vmnet-interface NAME",
+				"--share PATH",
+				"single folder",
+				"//10.0.2.4/qemu",
+				"sudo mount -t cifs //10.0.2.4/qemu /mnt/share -o username=guest",
+				"brew install samba",
 			},
 		},
 		{

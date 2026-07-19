@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bradsjm/qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/qemu"
 	"github.com/bradsjm/qemu-manage/internal/store"
 )
 
@@ -43,9 +44,38 @@ type driveValues []createDrive
 
 func (v *driveValues) String() string { return "" }
 
+// shareValue implements flag.Value for the single create-time --share option.
+// QEMU exposes one smb folder per user netdev, so a second Set is rejected.
+type shareValue struct {
+	path string
+	set  bool
+}
+
+func (v *shareValue) String() string {
+	if v == nil {
+		return ""
+	}
+	return v.path
+}
+
+func (v *shareValue) Set(raw string) error {
+	if raw == "" {
+		return errors.New("share path is empty")
+	}
+	if v.set {
+		return errors.New("only one --share may be specified because QEMU supports one SMB folder per user network")
+	}
+	absolute, err := filepath.Abs(raw)
+	if err != nil {
+		return fmt.Errorf("resolve share path: %w", err)
+	}
+	v.path = filepath.Clean(absolute)
+	v.set = true
+	return nil
+}
+
 func (a *App) runCreate(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
-	_ = stdout
 	_ = stderr
 	defaultFirmwareCode, defaultFirmwareVars := "", ""
 	if a.DiscoverFirmware != nil {
@@ -80,6 +110,8 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	flags.Var(&usbs, "usb", "USB passthrough selector")
 	var drives driveValues
 	flags.Var(&drives, "drive", "additional virtio drive")
+	var share shareValue
+	flags.Var(&share, "share", "host folder exported over SMB (user network only)")
 	if err := flags.Parse(args); err != nil {
 		return usageErrorf("create: %v", err)
 	}
@@ -153,6 +185,9 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	if networkMode == model.NetworkSocketVMNet && len(forwards) != 0 {
 		return usageErrorf("create: --forward is incompatible with socket_vmnet")
 	}
+	if networkMode == model.NetworkSocketVMNet && share.set {
+		return usageErrorf("create: --share is incompatible with socket_vmnet")
+	}
 	imageSource, err := parseImageSource(*image)
 	if err != nil {
 		return usageErrorf("create: --image: %v", err)
@@ -196,6 +231,16 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			return fmt.Errorf("create: --drive file %q: %w", drives[i].Source, err)
 		}
 	}
+	if share.set {
+		if err := requireSharedDirectory(share.path); err != nil {
+			return fmt.Errorf("create: --share %q: %w", share.path, err)
+		}
+		if a.RequireSMBD != nil {
+			if err := a.RequireSMBD(); err != nil {
+				return fmt.Errorf("create: --share: %w", err)
+			}
+		}
+	}
 	qemuPath, err := resolveExecutable(*qemu)
 	if err != nil {
 		return fmt.Errorf("qemu: %w", err)
@@ -228,15 +273,28 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	switch networkMode {
 	case model.NetworkUser:
 		networkConfig.Forwards = append(networkConfig.Forwards, forwards...)
+		if share.set {
+			networkConfig.SMBFolder = share.path
+		}
 	case model.NetworkSocketVMNet:
 		interfaceName := *socketVMNetInterface
 		if interfaceName == "" {
 			interfaceName = defaultSocketVMNetInterface
 		}
-		networkConfig.SocketVMNet, err = a.resolveSocketVMNet(interfaceName)
+		socketVMNetConfig, err := a.resolveSocketVMNet(interfaceName)
 		if err != nil {
 			return err
 		}
+		if interfaceName != defaultSocketVMNetInterface {
+			if a.ProvisionSocketVMNetBridge == nil {
+				return errors.New("socket_vmnet: bridge provisioner is unavailable")
+			}
+			socketVMNetConfig, err = a.ProvisionSocketVMNetBridge(ctx, socketVMNetConfig.ClientPath, interfaceName)
+			if err != nil {
+				return err
+			}
+		}
+		networkConfig.SocketVMNet = socketVMNetConfig
 	}
 
 	primaryBootIndex := 0
@@ -282,7 +340,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		return err
 	}
 
-	return a.Store.Create(config, func(_ *model.Config, paths store.Paths) error {
+	if err := a.Store.Create(config, func(_ *model.Config, paths store.Paths) error {
 		if err := copyRegularFile(*firmwareCode, filepath.Join(paths.VMDir, config.Firmware.Code), 0o400); err != nil {
 			return fmt.Errorf("copy firmware code: %w", err)
 		}
@@ -334,7 +392,15 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	if config.Network.SMBFolder != "" {
+		if err := writeSMBMountHelp(stdout, config.Network.SMBFolder); err != nil {
+			return fmt.Errorf("write smb guidance: %w", err)
+		}
+	}
+	return nil
 }
 
 func (v *usbValues) Set(raw string) error {
@@ -696,6 +762,26 @@ func copyRegularFile(source, destination string, mode os.FileMode) error {
 	}
 	committed = true
 	return nil
+}
+func requireSharedDirectory(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat share path: %w", err)
+	}
+	if !info.IsDir() {
+		return errors.New("share path is not a directory")
+	}
+	return nil
+}
+// requireSMBDDefault is the default QEMU smbd helper check used when App does
+// not inject its own. It returns nil when QEMU's user-network SMB server will
+// be able to launch smbd; otherwise an actionable error pointing at the
+// Homebrew samba formula.
+func requireSMBDDefault() error {
+	if path := qemu.DiscoverSMBD(); path != "" {
+		return nil
+	}
+	return errors.New("smbd not found; install with `brew install samba` (provides /opt/homebrew/sbin/samba-dot-org-smbd on Apple Silicon, which QEMU's user-network SMB server invokes)")
 }
 
 func qcow2VirtualSize(path string) (uint64, error) {

@@ -143,6 +143,9 @@ func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths, optio
 		for _, forward := range sortedForwards(config.Network.Forwards) {
 			netdev += ",hostfwd=" + keyval(forward.Protocol) + ":" + keyval(forward.HostAddress) + ":" + strconv.Itoa(int(forward.HostPort)) + "-:" + strconv.Itoa(int(forward.GuestPort))
 		}
+		if config.Network.SMBFolder != "" {
+			netdev += ",smb=" + keyval(config.Network.SMBFolder)
+		}
 		args = append(args,
 			"-netdev", netdev,
 			"-device", "virtio-net-pci,netdev=net0,mac="+keyval(config.Network.MAC),

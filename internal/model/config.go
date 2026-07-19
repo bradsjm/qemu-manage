@@ -111,6 +111,7 @@ type NetworkConfig struct {
 	MAC         string             `json:"mac"`
 	Forwards    []PortForward      `json:"forwards"`
 	SocketVMNet *SocketVMNetConfig `json:"socket_vmnet,omitempty"`
+	SMBFolder   string             `json:"smb_folder,omitempty"`
 }
 
 type PortForward struct {
@@ -466,9 +467,15 @@ func validateNetwork(network NetworkConfig) error {
 		if network.SocketVMNet != nil {
 			return configError("socket_vmnet configuration is forbidden in user network mode")
 		}
+		if network.SMBFolder != "" && !filepath.IsAbs(network.SMBFolder) {
+			return configError("smb_folder must be an absolute path")
+		}
 	case NetworkSocketVMNet:
 		if len(network.Forwards) != 0 {
 			return configError("forwards are forbidden in socket_vmnet network mode")
+		}
+		if network.SMBFolder != "" {
+			return configError("smb_folder is forbidden in socket_vmnet network mode")
 		}
 		if network.SocketVMNet == nil {
 			return configError("socket_vmnet configuration is required")

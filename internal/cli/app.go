@@ -51,25 +51,27 @@ type MonitorClient interface {
 }
 
 type App struct {
-	Store               *store.Store
-	Backends            *backend.Registry
-	Lifecycle           *lifecycle.Service
-	Supervisor          *supervisor.Service
-	Launchd             *launchd.Manager
-	Geteuid             func() int
-	ExecutablePath      string
-	User                PlatformUser
-	RunExternal         func(context.Context, string, []string) error
-	HTTPClient          *http.Client
-	Runtime             RuntimeService
-	IsTerminal          func(io.Reader) bool
-	LookupEnv           func(string) (string, bool)
-	DiscoverFirmware    func() (string, string)
-	DiscoverMachine     func(context.Context, string) (string, error)
-	DiscoverSocketVMNet func() *model.SocketVMNetConfig
-	OpenVNC             func(context.Context, backend.VNCEndpoint, string) error
-	DialQMP             func(context.Context, string) (MonitorClient, error)
-	CallGuestAgent      func(context.Context, string, qemu.GuestAgentRequest) (json.RawMessage, error)
+	Store                      *store.Store
+	Backends                   *backend.Registry
+	Lifecycle                  *lifecycle.Service
+	Supervisor                 *supervisor.Service
+	Launchd                    *launchd.Manager
+	Geteuid                    func() int
+	ExecutablePath             string
+	User                       PlatformUser
+	RunExternal                func(context.Context, string, []string) error
+	HTTPClient                 *http.Client
+	Runtime                    RuntimeService
+	IsTerminal                 func(io.Reader) bool
+	LookupEnv                  func(string) (string, bool)
+	DiscoverFirmware           func() (string, string)
+	DiscoverMachine            func(context.Context, string) (string, error)
+	RequireSMBD                func() error
+	DiscoverSocketVMNet        func() *model.SocketVMNetConfig
+	ProvisionSocketVMNetBridge func(context.Context, string, string) (*model.SocketVMNetConfig, error)
+	OpenVNC                    func(context.Context, backend.VNCEndpoint, string) error
+	DialQMP                    func(context.Context, string) (MonitorClient, error)
+	CallGuestAgent             func(context.Context, string, qemu.GuestAgentRequest) (json.RawMessage, error)
 
 	initializationError error
 	debug               bool
@@ -93,6 +95,7 @@ func NewApp() *App {
 		DiscoverFirmware:    qemu.DiscoverFirmware,
 		DiscoverMachine:     qemu.DiscoverVersionedMachine,
 		DiscoverSocketVMNet: qemu.DiscoverSocketVMNet,
+		RequireSMBD:         requireSMBDDefault,
 		HTTPClient:          newImageHTTPClient(),
 		RunExternal: func(ctx context.Context, path string, args []string) error {
 			return exec.CommandContext(ctx, path, args...).Run()
@@ -132,6 +135,7 @@ func NewApp() *App {
 		return qemu.RequiredPassed(qemu.Doctor(ctx, *config, backendPaths(paths)))
 	}
 	a.Launchd = launchd.NewManager(a.Store, a.ExecutablePath, a.User.Name, a.User.Home, a.User.UID)
+	a.ProvisionSocketVMNetBridge = a.Launchd.ProvisionSocketVMNetBridge
 	a.Runtime = newRuntimeAdapter(a.Lifecycle)
 	a.Launchd.Stopped = a.Lifecycle.DeleteAllowed
 	a.Launchd.Stop = func(ctx context.Context, cfg *model.Config) error {

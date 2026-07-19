@@ -25,16 +25,19 @@ type Runner interface {
 }
 
 type Manager struct {
-	Store      *store.Store
-	Runner     Runner
-	Executable string
-	Username   string
-	Home       string
-	UID        int
-	Stopped    func(context.Context, *model.Config) error
-	Stop       func(context.Context, *model.Config) error
-	LoginDir   string
-	SystemDir  string
+	Store                  *store.Store
+	Runner                 Runner
+	Executable             string
+	Username               string
+	Home                   string
+	UID                    int
+	Stopped                func(context.Context, *model.Config) error
+	Stop                   func(context.Context, *model.Config) error
+	LoginDir               string
+	SystemDir              string
+	SocketVMNetInstallRoot string
+	SocketVMNetRunRoot     string
+	WaitForSocketVMNet     func(context.Context, string) error
 }
 
 type DomainStatus struct {
@@ -65,10 +68,16 @@ type pathInspection struct {
 
 func NewManager(store *store.Store, executable, username, home string, uid int) *Manager {
 	return &Manager{
-		Store: store, Runner: newPlatformRunner(), Executable: executable,
-		Username: username, Home: home, UID: uid,
-		LoginDir:  filepath.Join(home, "Library", "LaunchAgents"),
-		SystemDir: "/Library/LaunchDaemons",
+		Store:                  store,
+		Runner:                 newPlatformRunner(),
+		Executable:             executable,
+		Username:               username,
+		Home:                   home,
+		UID:                    uid,
+		LoginDir:               filepath.Join(home, "Library", "LaunchAgents"),
+		SystemDir:              "/Library/LaunchDaemons",
+		SocketVMNetInstallRoot: socketVMNetInstallRootDefault,
+		SocketVMNetRunRoot:     socketVMNetRunRootDefault,
 	}
 }
 

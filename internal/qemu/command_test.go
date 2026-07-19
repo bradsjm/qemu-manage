@@ -66,6 +66,38 @@ func TestRenderUserNetworkGolden(t *testing.T) {
 	}
 	assertSafeQEMUCommand(t, got)
 }
+func TestRenderUserNetworkSMBFolderCommaSafe(t *testing.T) {
+	config, paths := renderFixture()
+	config.Network.SMBFolder = "/host/share,with-comma"
+	got, err := NewBackend().Render(config, paths, backend.RenderOptions{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if countArg(got.Args, "-netdev") != 1 {
+		t.Fatalf("expected exactly one -netdev, got args: %#v", got.Args)
+	}
+	idx := -1
+	for i, arg := range got.Args {
+		if arg == "-netdev" {
+			idx = i + 1
+			break
+		}
+	}
+	if idx < 0 || idx >= len(got.Args) {
+		t.Fatalf("missing -netdev argument: %#v", got.Args)
+	}
+	netdev := got.Args[idx]
+	if !strings.HasPrefix(netdev, "user,id=net0") {
+		t.Fatalf("netdev prefix mismatch: %q", netdev)
+	}
+	if !strings.Contains(netdev, ",smb=/host/share,,with-comma") {
+		t.Fatalf("netdev missing comma-escaped smb= value: %q", netdev)
+	}
+	if strings.Contains(netdev, ",smbserver=") {
+		t.Fatalf("netdev unexpectedly sets smbserver: %q", netdev)
+	}
+	assertSafeQEMUCommand(t, got)
+}
 
 func TestRenderLegacyEmptyMachineUsesVirt(t *testing.T) {
 	config, paths := renderFixture()

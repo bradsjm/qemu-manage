@@ -97,3 +97,33 @@ func TestRenderRejectsRelativeRoots(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderWatchPathsOnlyForSocketVMNet(t *testing.T) {
+	socketCfg := launchdTestConfig()
+	socketCfg.Autostart.Scope = model.AutostartBoot
+	socketCfg.Network.Mode = model.NetworkSocketVMNet
+	socketCfg.Network.Forwards = nil
+	socketCfg.Network.SocketVMNet = &model.SocketVMNetConfig{
+		ClientPath: "/opt/socket_vmnet/bin/socket_vmnet_client",
+		SocketPath: "/var/run/socket_vmnet.bridged.vlan0",
+		Interface:  "vlan0",
+	}
+	got, err := Render(socketCfg, "/bin/qemu-manage", "/tmp/vm", "/tmp/out", "/tmp/err", "alice", "/Users/alice", "/tmp/data", "/tmp/runtime", "/tmp/log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	watchSnippet := "<key>WatchPaths</key>\n  <array>\n    <string>/var/run/socket_vmnet.bridged.vlan0</string>\n  </array>"
+	if !strings.Contains(string(got), watchSnippet) {
+		t.Fatalf("socket_vmnet boot job missing WatchPaths:\n%s", got)
+	}
+
+	userCfg := launchdTestConfig()
+	userCfg.Autostart.Scope = model.AutostartBoot
+	withoutWatchPaths, err := Render(userCfg, "/bin/qemu-manage", "/tmp/vm", "/tmp/out", "/tmp/err", "alice", "/Users/alice", "/tmp/data", "/tmp/runtime", "/tmp/log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(withoutWatchPaths), "<key>WatchPaths</key>") {
+		t.Fatalf("user-network boot job unexpectedly watches socket path:\n%s", withoutWatchPaths)
+	}
+}

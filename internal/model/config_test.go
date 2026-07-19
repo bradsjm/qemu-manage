@@ -534,9 +534,18 @@ func TestNetworkValidation(t *testing.T) {
 		"user with socket config": func(c *Config) {
 			c.Network.SocketVMNet = &SocketVMNetConfig{ClientPath: "/client", SocketPath: "/socket", Interface: "vlan0"}
 		},
+		"smb relative": func(c *Config) {
+			c.Network.SMBFolder = "relative/share"
+		},
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) { c := validTestConfig(); mutate(&c); requireInvalid(t, c) })
+	}
+
+	userShare := validTestConfig()
+	userShare.Network.SMBFolder = "/absolute/share"
+	if err := userShare.Validate(); err != nil {
+		t.Fatalf("valid user smb_folder rejected: %v", err)
 	}
 
 	distinctListeners := validTestConfig()
@@ -565,6 +574,7 @@ func TestNetworkValidation(t *testing.T) {
 		"forwards": func(c *Config) {
 			c.Network.Forwards = []PortForward{{Protocol: "tcp", HostAddress: "127.0.0.1", HostPort: 1, GuestPort: 1}}
 		},
+		"smb folder":      func(c *Config) { c.Network.SMBFolder = "/absolute/share" },
 		"relative client": func(c *Config) { c.Network.SocketVMNet.ClientPath = "client" },
 		"relative socket": func(c *Config) { c.Network.SocketVMNet.SocketPath = "socket" },
 		"empty interface": func(c *Config) { c.Network.SocketVMNet.Interface = "" },

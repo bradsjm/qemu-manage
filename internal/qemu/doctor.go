@@ -61,6 +61,7 @@ const (
 	qemuInstallInstruction          = "install with: `brew install qemu`"
 	socketVMNetInstallInstruction   = "install with: `brew install socket_vmnet`; start the shared service with: `sudo \"$(brew --prefix)/bin/brew\" services start socket_vmnet`"
 	socketVMNetRootOwnedInstruction = "create a root-owned client copy with: `sudo install -d -o root -g wheel -m 0755 /opt/socket_vmnet/bin && sudo install -o root -g wheel -m 0755 $(brew --prefix socket_vmnet)/bin/socket_vmnet_client /opt/socket_vmnet/bin/socket_vmnet_client` (repeat the second command after Homebrew upgrades)"
+	sambaInstallInstruction         = "install with: `brew install samba` (provides /opt/homebrew/sbin/samba-dot-org-smbd on Apple Silicon, which QEMU's user-network SMB server invokes)"
 )
 
 // Doctor checks the configured QEMU installation and VM artifacts. Relative
@@ -130,7 +131,17 @@ func Doctor(ctx context.Context, cfg model.Config, paths backend.RuntimePaths) [
 			checks = append(checks, socketVMNetSocketCheck(ctx, socket, cfg.Network.SocketVMNet.SocketPath))
 		}
 	}
+	if cfg.Network.Mode == model.NetworkUser && cfg.Network.SMBFolder != "" {
+		checks = append(checks, sambaSMBDCheck())
+	}
 	return checks
+}
+
+func sambaSMBDCheck() Check {
+	if path := DiscoverSMBD(); path != "" {
+		return Check{Name: "samba_smbd", Status: CheckPass, Evidence: path}
+	}
+	return Check{Name: "samba_smbd", Status: CheckFail, Evidence: "QEMU user-network SMB helper not found; " + sambaInstallInstruction}
 }
 
 // RequiredPassed rejects the first failed check. Warnings are advisory.

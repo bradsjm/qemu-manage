@@ -71,12 +71,15 @@ Resources and lifecycle:
 Networking:
   --network VALUE             Valid values: user, socket_vmnet (default: user)
   --forward SPEC              Repeatable proto:IPv4:host-port:guest-port (user only)
+  --share PATH                Export one host folder over SMB (user network only)
   --socket-vmnet-interface NAME
-                               Interface description such as shared or vlan0
-                               (socket_vmnet only)
+                               shared, or a host interface such as en0
+                               (socket_vmnet only; default: shared)
 
-socket_vmnet filesystem paths resolve from QEMU_MANAGE_SOCKET_VMNET_CLIENT and
-QEMU_MANAGE_SOCKET_VMNET_SOCKET first, then from independent discovery.
+Creating with a non-shared socket_vmnet interface automatically installs and
+starts a root-owned bridged socket_vmnet LaunchDaemon after requesting sudo.
+Only socket_vmnet from Homebrew must already be installed. The persisted socket
+and client paths work for both later manual starts and launchd autostart.
 
 Display:
   --vnc                     Enable QEMU VNC
@@ -109,6 +112,18 @@ Relative drive files become absolute external references and must stay readable
 and in place. Double each literal comma in a value as ",,". Omitted format is
 detected; omitted if means virtio; host and QEMU support still govern aio=native.
 
+--share PATH exports one host directory through QEMU's built-in user-network SMB
+server. It is create-only, user-network-only, and accepts a single folder: QEMU
+exposes exactly one fixed share at //10.0.2.4/qemu. Relative paths are normalized
+to absolute. The directory is referenced in place, never copied, and must remain
+readable on the host. QEMU's user-network SMB server invokes a helper at
+/opt/homebrew/sbin/samba-dot-org-smbd; install it with 'brew install samba' or
+create is refused and doctor reports samba_smbd. After create and in
+'qemu-manage status NAME', the exact Linux guest mount is printed:
+
+  sudo mkdir -p /mnt/share
+  sudo mount -t cifs //10.0.2.4/qemu /mnt/share -o username=guest
+
 Examples:
   # Download, decompress, and import Home Assistant OS directly from GitHub.
   qemu-manage create home-assistant \
@@ -131,6 +146,12 @@ Examples:
     --image "$HOME/Images/lab.qcow2" \
     --network socket_vmnet \
     --socket-vmnet-interface shared
+
+  # Provision a persistent bridged daemon for en0, then create the VM.
+  qemu-manage create home-assistant \
+    --image "$HOME/Images/haos_generic-aarch64.qcow2" \
+    --network socket_vmnet \
+    --socket-vmnet-interface en0
 
 NAME must come before options. Next: qemu-manage doctor NAME, then qemu-manage start NAME.
 `},

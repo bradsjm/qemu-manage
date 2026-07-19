@@ -117,7 +117,13 @@ func (a *App) runStatus(ctx context.Context, args []string, stdout io.Writer) er
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(row)
 	}
-	return writeRows([]StatusRow{row}, false, stdout)
+	if err := writeRows([]StatusRow{row}, false, stdout); err != nil {
+		return err
+	}
+	if config.Network.SMBFolder != "" {
+		return writeSMBMountHelp(stdout, config.Network.SMBFolder)
+	}
+	return nil
 }
 
 func (a *App) runList(ctx context.Context, args []string, stdout io.Writer) error {
@@ -192,6 +198,17 @@ func writeRows(rows []StatusRow, jsonOutput bool, stdout io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// writeSMBMountHelp emits the stable SMB host-folder and Linux CIFS mount recipe
+// shared by create and named status output. QEMU's built-in user-network SMB
+// server always exports one [qemu] share at 10.0.2.4, so the recipe is fixed.
+func writeSMBMountHelp(stdout io.Writer, hostPath string) error {
+	if _, err := fmt.Fprintf(stdout, "SMB host folder: %s\n", hostPath); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(stdout, "Linux guest mount: sudo mount -t cifs //10.0.2.4/qemu /mnt/share -o username=guest")
+	return err
 }
 
 func terminalReader(input io.Reader) bool {

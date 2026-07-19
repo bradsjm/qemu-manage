@@ -15,7 +15,7 @@
 - **Serial console** — Connect to any guest with `Ctrl-]` disconnect handling.
 - **Monitor & guest agent** — Use the interactive QEMU human monitor, run one-shot HMP commands, and send strict JSON guest-agent requests with pipe-safe stdout.
 - **VNC passthrough** — Optional VNC with password auth; `qemu-manage vnc NAME` opens it in Screen Sharing with the password on your clipboard.
-- **Networking** — User-mode NAT out of the box; optional `socket_vmnet` for shared or bridged mode without running QEMU as root.
+- **Networking** — User-mode NAT out of the box; optional `socket_vmnet` for shared or bridged mode without running QEMU as root, plus optional user-network SMB host-folder share.
 - **Autostart** — Per-VM launchd jobs at login or boot scope; QEMU stays unprivileged.
 - **Secure by design** — Atomic writes, owner-only file modes, peer-authenticated Unix sockets, immutable-ID lifetime locks, and no central service to attack.
 - **Accelerated hardware** — All AArch64 guests use QEMU's HVF (Hypervisor.framework) native hardware virtualization accelerator for MacOS.
@@ -27,10 +27,12 @@
 - QEMU for AArch64 guests ([`qemu-system-aarch64`](https://formulae.brew.sh/formula/qemu))
 - Only AArch64 guests are supported; no cross-architecture emulation
 - _Optional [`socket_vmnet`](https://github.com/lima-vm/socket_vmnet) for shared or bridged networking_
+- _Optional [`samba`](https://formulae.brew.sh/formula/samba) for the `--share` host-folder SMB export_
 
   ```sh
   brew install qemu
   brew install socket_vmnet
+  brew install samba
   ```
 
   `qemu-manage` resolves `QEMU_MANAGE_SOCKET_VMNET_CLIENT` and
@@ -233,6 +235,36 @@ qemu-manage create lab \
   --usb bus=1,address=2
 ```
 
+### Optional host folder share over SMB
+
+Pass `--share PATH` to expose one host directory through QEMU's built-in
+user-network SMB server. The option is create-only, user-network-only, and
+accepts a single folder because QEMU exports exactly one fixed share named
+`qemu` at `//10.0.2.4/qemu`. Relative paths are normalized to absolute. The
+directory is referenced in place — never copied — and must remain readable on
+the host.
+
+QEMU's user-network SMB server invokes a helper at
+`/opt/homebrew/sbin/samba-dot-org-smbd`, provided by the Homebrew `samba`
+formula. Install it before using `--share`; otherwise `qemu-manage create
+NAME --share PATH` refuses to proceed and `qemu-manage doctor NAME` reports
+the missing `samba_smbd` prerequisite:
+
+```sh
+brew install samba
+```
+
+After create, and again in `qemu-manage status NAME`, `qemu-manage` prints the
+fixed Linux guest mount recipe:
+
+```sh
+sudo mkdir -p /mnt/share
+sudo mount -t cifs //10.0.2.4/qemu /mnt/share -o username=guest
+```
+
+Files written to `/mnt/share` inside the guest appear in the host directory, and
+vice versa. `socket_vmnet` VMs and additional SMB folders are not supported.
+
 ## Networking
 
 VMs use QEMU user-mode networking by default. Port forwards bind explicitly to
@@ -244,43 +276,57 @@ qemu-manage set home-assistant \
   --forward tcp:127.0.0.1:8123:8123
 ```
 
-`socket_vmnet` provides host/shared/bridged networking without running QEMU as
-root. During `create` and explicit `set --network socket_vmnet`, `qemu-manage`
-resolves `QEMU_MANAGE_SOCKET_VMNET_CLIENT` and
-`QEMU_MANAGE_SOCKET_VMNET_SOCKET` first, then falls back to independent
-discovery. The resolved absolute paths are persisted in the VM config, so later
-starts and launchd do not need those shell variables.
+User-network VMs may also expose one host folder over SMB with the create-only
+`--share PATH` option; see [Optional host folder share over SMB](#optional-host-folder-share-over-smb)
+for the syntax, single-folder limit, and guest mount recipe.
 
-If `doctor` warns that the Homebrew client is user-writable, make a root-owned
-copy first:
+`socket_vmnet` provides shared or bridged networking without running QEMU as
+root. Install the Homebrew package first:
 
 ```sh
-sudo install -d -o root -g wheel -m 0755 /opt/socket_vmnet/bin
-sudo install -o root -g wheel -m 0755 \
-  "$(brew --prefix socket_vmnet)/bin/socket_vmnet_client" \
-  /opt/socket_vmnet/bin/socket_vmnet_client
+brew install socket_vmnet
 ```
 
-Then export the desired paths before `create` or explicit reselection:
+For bridged networking, name the macOS host interface during creation.
+`qemu-manage` requests `sudo` to copy the Homebrew daemon and client into the
+root-owned `/opt/socket_vmnet/bin` directory, installs and starts one persistent
+bridged LaunchDaemon for that interface, waits for its Unix socket, and stores
+the resulting paths in the VM configuration:
 
 ```sh
-export QEMU_MANAGE_SOCKET_VMNET_CLIENT=/opt/socket_vmnet/bin/socket_vmnet_client
-export QEMU_MANAGE_SOCKET_VMNET_SOCKET=/opt/homebrew/var/run/socket_vmnet
+qemu-manage create home-assistant \
+  --image "$HOME/Images/haos_generic-aarch64.qcow2" \
+  --network socket_vmnet \
+  --socket-vmnet-interface en0
+```
+
+After creation, both manual starts and login- or boot-scope VM autostart use the
+persisted root-owned client and `/var/run/socket_vmnet.bridged.en0` socket. They
+do not need `sudo` or shell environment variables. QEMU and the VM supervisor
+always run as the VM owner; only the separately installed networking daemon
+runs as root. A bridged VM launchd job also watches for its socket, so it starts
+after the networking daemon becomes ready during boot.
+
+The bridged daemon is shared by every qemu-manage VM using the same host
+interface and remains installed when an individual VM is deleted.
+
+For Homebrew's standard shared network instead, start its service and select
+the `shared` interface:
+
+```sh
+sudo "$(brew --prefix)/bin/brew" services start socket_vmnet
 
 qemu-manage create lab \
   --image "$HOME/Images/lab.qcow2" \
   --network socket_vmnet \
   --socket-vmnet-interface shared
-
-qemu-manage set home-assistant \
-  --network socket_vmnet \
-  --socket-vmnet-interface shared
 ```
 
-On an already-`socket_vmnet` VM, changing only `--socket-vmnet-interface`
-preserves the currently persisted client and socket paths. Repeat
-`--network socket_vmnet` when you want environment or discovery changes to
-refresh the stored paths.
+During shared-network creation and explicit `set --network socket_vmnet`,
+`qemu-manage` resolves `QEMU_MANAGE_SOCKET_VMNET_CLIENT` and
+`QEMU_MANAGE_SOCKET_VMNET_SOCKET` first, then falls back to Homebrew or MacPorts
+discovery. Resolved absolute paths are persisted for later manual and launchd
+starts.
 
 ## Starting and inspecting a VM
 
