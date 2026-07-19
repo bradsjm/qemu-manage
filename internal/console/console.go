@@ -22,15 +22,25 @@ type copyResult struct {
 
 // Connect attaches stdin and stdout to a VM's private Unix console socket.
 func Connect(ctx context.Context, socketPath string, stdin io.Reader, stdout io.Writer) error {
-	return connect(ctx, "console", socketPath, stdin, stdout)
+	return connect(ctx, "console", socketPath, stdin, stdout, nil)
+}
+
+// ConnectWithSetup attaches stdin and stdout after setup has completed.
+func ConnectWithSetup(ctx context.Context, socketPath string, stdin io.Reader, stdout io.Writer, setup func()) error {
+	return connect(ctx, "console", socketPath, stdin, stdout, setup)
 }
 
 // ConnectMonitor attaches stdin and stdout to a VM's private human monitor socket.
 func ConnectMonitor(ctx context.Context, socketPath string, stdin io.Reader, stdout io.Writer) error {
-	return connect(ctx, "monitor", socketPath, stdin, stdout)
+	return connect(ctx, "monitor", socketPath, stdin, stdout, nil)
 }
 
-func connect(ctx context.Context, prefix, socketPath string, stdin io.Reader, stdout io.Writer) error {
+// ConnectMonitorWithSetup attaches stdin and stdout after setup has completed.
+func ConnectMonitorWithSetup(ctx context.Context, socketPath string, stdin io.Reader, stdout io.Writer, setup func()) error {
+	return connect(ctx, "monitor", socketPath, stdin, stdout, setup)
+}
+
+func connect(ctx context.Context, prefix, socketPath string, stdin io.Reader, stdout io.Writer, setup func()) error {
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "unix", socketPath)
 	if err != nil {
@@ -53,7 +63,9 @@ func connect(ctx context.Context, prefix, socketPath string, stdin io.Reader, st
 			return restoreErr
 		}
 	}
-
+	if setup != nil {
+		setup()
+	}
 	results := make(chan copyResult, 2)
 	go copyGuestOutput(prefix, conn, stdout, results)
 	go copyLocalInput(prefix, conn, stdin, results)

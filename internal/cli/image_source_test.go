@@ -65,7 +65,7 @@ func TestRedirectErrorDoesNotExposeURLSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	var progress strings.Builder
-	_, _, err = (&App{HTTPClient: newImageHTTPClient()}).materializeImage(context.Background(), source, t.TempDir(), &progress)
+	_, _, err = (&App{HTTPClient: newImageHTTPClient()}).materializeImage(context.Background(), source, t.TempDir(), &progress, true, false)
 	if err == nil {
 		t.Fatal("redirect to FTP unexpectedly succeeded")
 	}
@@ -195,7 +195,7 @@ func TestMaterializeRemoteImageCompression(t *testing.T) {
 				t.Fatal(err)
 			}
 			var progress strings.Builder
-			path, temporary, err := (&App{HTTPClient: server.Client()}).materializeImage(context.Background(), source, t.TempDir(), &progress)
+			path, temporary, err := (&App{HTTPClient: server.Client()}).materializeImage(context.Background(), source, t.TempDir(), &progress, true, false)
 			if err != nil {
 				t.Fatal(err)
 			}

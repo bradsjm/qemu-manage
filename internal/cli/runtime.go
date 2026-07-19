@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/jedib0t/go-pretty/v6/table"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/jedib0t/go-pretty/v6/progress"
 	"golang.org/x/sys/unix"
 
 	"github.com/bradsjm/qemu-manage/internal/backend"
@@ -74,19 +77,19 @@ func (r *runtimeAdapter) DeleteAllowed(ctx context.Context, config *model.Config
 func (a *App) runRuntimeCommand(ctx context.Context, command string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	switch command {
 	case "start":
-		return a.runStart(ctx, args)
+		return a.runStart(ctx, args, stderr)
 	case "stop":
 		return a.runStop(ctx, args, stderr)
 	case "console":
-		return a.runConsole(ctx, args, stdin, stdout)
+		return a.runConsole(ctx, args, stdin, stdout, stderr)
 	case "monitor":
-		return a.runMonitor(ctx, args, stdin, stdout)
+		return a.runMonitor(ctx, args, stdin, stdout, stderr)
 	case "guest-agent":
 		return a.runGuestAgent(ctx, args, stdout)
 	case "vnc":
 		return a.runVNC(ctx, args, stdout)
 	case "doctor":
-		return a.runDoctor(ctx, args, stdout)
+		return a.runDoctor(ctx, args, stdout, stderr)
 	case "supervise":
 		return a.runSupervise(ctx, args)
 	default:
@@ -94,7 +97,7 @@ func (a *App) runRuntimeCommand(ctx context.Context, command string, args []stri
 	}
 }
 
-func (a *App) runStart(ctx context.Context, args []string) error {
+func (a *App) runStart(ctx context.Context, args []string, stderr io.Writer) error {
 	name, rest, err := nameBeforeFlags("start", args)
 	if err != nil {
 		return err
@@ -131,23 +134,47 @@ func (a *App) runStart(ctx context.Context, args []string) error {
 		paths.SupervisorStdout,
 		paths.SupervisorStderr,
 	)
-	startErr := supervisor.StartProcess(ctx, supervisor.StartOptions{
-		Name:         config.Name,
-		ExpectedID:   config.ID,
-		Executable:   executable,
-		Paths:        paths,
-		Foreground:   *foreground,
-		BootMenu:     *bootMenu,
-		Debug:        a.debug,
-		DebugWriter:  a.debugWriter,
-		ReadyTimeout: supervisorReadyTimeout,
-		RunForeground: func(runCtx context.Context, ready io.Writer) error {
-			return a.Supervisor.Supervise(runCtx, config.Name, config.ID, ready, supervisor.SuperviseOptions{
-				BootMenu:    *bootMenu,
-				DebugWriter: a.debugWriter,
+	ready := make(chan struct{})
+	var readyOnce sync.Once
+	startDone := make(chan error, 1)
+	progressErr := withProgress(stderr, true, a.progressInteractive(stderr), "Starting VM (checking prerequisites and waiting for readiness)", 0, progress.UnitsDefault, func(tracker *progress.Tracker) error {
+		go func() {
+			startDone <- supervisor.StartProcess(ctx, supervisor.StartOptions{
+				Name:         config.Name,
+				ExpectedID:   config.ID,
+				Executable:   executable,
+				Paths:        paths,
+				Foreground:   *foreground,
+				BootMenu:     *bootMenu,
+				Debug:        a.debug,
+				DebugWriter:  a.debugWriter,
+				ReadyTimeout: supervisorReadyTimeout,
+				OnReady: func() {
+					if tracker != nil {
+						tracker.MarkAsDone()
+					}
+					readyOnce.Do(func() { close(ready) })
+				},
+				RunForeground: func(runCtx context.Context, ready io.Writer) error {
+					return a.Supervisor.Supervise(runCtx, config.Name, config.ID, ready, supervisor.SuperviseOptions{
+						BootMenu:    *bootMenu,
+						Debug:       a.debug,
+						DebugWriter: a.debugWriter,
+					})
+				},
 			})
-		},
+		}()
+		select {
+		case err := <-startDone:
+			return err
+		case <-ready:
+			return nil
+		}
 	})
+	if progressErr != nil {
+		return fmt.Errorf("runtime: start %q: %w", name, progressErr)
+	}
+	startErr := <-startDone
 	if startErr != nil {
 		return fmt.Errorf("runtime: start %q: %w", name, startErr)
 	}
@@ -178,10 +205,34 @@ func (a *App) runStop(ctx context.Context, args []string, stderr io.Writer) erro
 			"warning: --force kills QEMU without guest cooperation; guest filesystem or data corruption is possible\n",
 		)
 	}
-	return a.Lifecycle.Stop(ctx, config, *timeout, *force)
+	return withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Stopping VM (waiting for shutdown response)", func() error {
+		return a.Lifecycle.Stop(ctx, config, *timeout, *force)
+	})
+}
+func withConnectionProgress(output io.Writer, interactive bool, message string, connect func(func()) error) error {
+	ready := make(chan struct{})
+	var readyOnce sync.Once
+	done := make(chan error, 1)
+	progressErr := withWaitingProgress(output, true, interactive, message, func() error {
+		go func() {
+			done <- connect(func() {
+				readyOnce.Do(func() { close(ready) })
+			})
+		}()
+		select {
+		case err := <-done:
+			return err
+		case <-ready:
+			return nil
+		}
+	})
+	if progressErr != nil {
+		return progressErr
+	}
+	return <-done
 }
 
-func (a *App) runConsole(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
+func (a *App) runConsole(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	name, rest, err := nameBeforeFlags("console", args)
 	if err != nil {
 		return err
@@ -203,13 +254,12 @@ func (a *App) runConsole(ctx context.Context, args []string, stdin io.Reader, st
 	if status.State != model.RunStateRunning && status.State != model.RunStatePaused {
 		return fmt.Errorf("runtime: VM %q is %s; console requires running or paused", name, status.State)
 	}
-	if err := console.Connect(ctx, a.Store.Paths(config).Console, stdin, stdout); err != nil {
-		return err
-	}
-	return nil
+	return withConnectionProgress(stderr, a.progressInteractive(stderr), "Connecting to VM console", func(setup func()) error {
+		return console.ConnectWithSetup(ctx, a.Store.Paths(config).Console, stdin, stdout, setup)
+	})
 }
 
-func (a *App) runMonitor(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) (err error) {
+func (a *App) runMonitor(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	name, rest, err := nameBeforeFlags("monitor", args)
 	if err != nil {
 		return err
@@ -233,14 +283,23 @@ func (a *App) runMonitor(ctx context.Context, args []string, stdin io.Reader, st
 	}
 	paths := a.Store.Paths(config)
 	if len(rest) == 0 {
-		return console.ConnectMonitor(ctx, paths.Monitor, stdin, stdout)
+		return withConnectionProgress(stderr, a.progressInteractive(stderr), "Connecting to QEMU monitor", func(setup func()) error {
+			return console.ConnectMonitorWithSetup(ctx, paths.Monitor, stdin, stdout, setup)
+		})
 	}
 	if a.DialQMP == nil {
 		return errors.New("runtime: monitor is unavailable")
 	}
-	client, err := a.DialQMP(ctx, paths.QMPCommand)
-	if err != nil {
-		return fmt.Errorf("runtime: monitor: %w", err)
+	var client MonitorClient
+	if err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Connecting to QEMU monitor", func() error {
+		var err error
+		client, err = a.DialQMP(ctx, paths.QMPCommand)
+		if err != nil {
+			return fmt.Errorf("runtime: monitor: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	defer func() {
 		if closeErr := client.Close(); closeErr != nil && err == nil {
@@ -349,7 +408,7 @@ func (a *App) runVNC(ctx context.Context, args []string, stdout io.Writer) error
 	return err
 }
 
-func (a *App) runDoctor(ctx context.Context, args []string, stdout io.Writer) error {
+func (a *App) runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	name := ""
 	if len(args) != 0 && args[0] != "" && args[0][0] != '-' {
 		name, args = args[0], args[1:]
@@ -369,22 +428,34 @@ func (a *App) runDoctor(ctx context.Context, args []string, stdout io.Writer) er
 		config = *loaded
 		paths = backendPaths(a.Store.Paths(loaded))
 	}
-	checks := qemu.Doctor(ctx, config, paths)
+	var checks []qemu.Check
+	collect := func() error {
+		checks = qemu.Doctor(ctx, config, paths)
+		return nil
+	}
 	if *jsonOutput {
+		if err := collect(); err != nil {
+			return err
+		}
 		encoder := json.NewEncoder(stdout)
 		encoder.SetEscapeHTML(false)
 		if err := encoder.Encode(checks); err != nil {
 			return fmt.Errorf("qemu: write doctor JSON: %w", err)
 		}
-		return qemu.RequiredPassed(checks)
-	}
-	if _, err := fmt.Fprintln(stdout, "CHECK\tSTATUS\tEVIDENCE"); err != nil {
-		return fmt.Errorf("qemu: write doctor output: %w", err)
-	}
-	for _, check := range checks {
-		if _, err := fmt.Fprintf(stdout, "%s\t%s\t%s\n", check.Name, check.Status, check.Evidence); err != nil {
-			return fmt.Errorf("qemu: write doctor output: %w", err)
+		if err := qemu.RequiredPassed(checks); err != nil {
+			return &silentError{err: err}
 		}
+		return nil
+	}
+	if err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Running prerequisite checks", collect); err != nil {
+		return err
+	}
+	rows := make([]table.Row, 0, len(checks))
+	for _, check := range checks {
+		rows = append(rows, table.Row{check.Name, check.Status, check.Evidence})
+	}
+	if err := writeTable(stdout, table.Row{"CHECK", "STATUS", "EVIDENCE"}, rows); err != nil {
+		return fmt.Errorf("qemu: write doctor output: %w", err)
 	}
 	return qemu.RequiredPassed(checks)
 }
@@ -420,6 +491,7 @@ func (a *App) runSupervise(ctx context.Context, args []string) error {
 	}
 	return a.Supervisor.Supervise(ctx, name, *expectedID, ready, supervisor.SuperviseOptions{
 		BootMenu:    *bootMenu,
+		Debug:       a.debug,
 		DebugWriter: a.debugWriter,
 	})
 }

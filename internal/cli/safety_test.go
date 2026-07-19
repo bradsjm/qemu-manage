@@ -22,7 +22,7 @@ func TestDeleteInteractiveConfirmation(t *testing.T) {
 		configureAbsentLaunchd(t, a)
 
 		code, stdout, stderr := runSafetyCLIWithInput(a, "y\n", "delete", "home-assistant")
-		if code != 0 || stderr != "" {
+		if code != 0 || !strings.Contains(stderr, "Deleting VM") {
 			t.Fatalf("code=%d stderr=%q stdout=%q", code, stderr, stdout)
 		}
 		for _, want := range []string{"WARNING", "home-assistant", "[y/N]"} {

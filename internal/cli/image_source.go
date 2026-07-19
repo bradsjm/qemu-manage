@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/therootcompany/xz"
 )
 
@@ -96,7 +97,7 @@ func newImageHTTPClient() *http.Client {
 	}
 }
 
-func (a *App) materializeImage(ctx context.Context, source imageSourceSpec, vmDir string, progress io.Writer) (path string, temporary bool, err error) {
+func (a *App) materializeImage(ctx context.Context, source imageSourceSpec, vmDir string, progressOutput io.Writer, progressEnabled, interactive bool) (path string, temporary bool, err error) {
 	if source.remoteURL == nil {
 		if err := requireRegularSource(source.localPath); err != nil {
 			return "", false, fmt.Errorf("source image: %w", err)
@@ -105,78 +106,99 @@ func (a *App) materializeImage(ctx context.Context, source imageSourceSpec, vmDi
 	}
 
 	label := publicURL(source.remoteURL)
-	action := "Downloading"
+	message := "Downloading image"
 	if source.compression != imageUncompressed {
-		action = "Downloading and decompressing"
+		message = "Downloading and decompressing image"
 	}
-	if _, err := fmt.Fprintf(progress, "%s image from %s\n", action, label); err != nil {
-		return "", false, fmt.Errorf("report image download: %w", err)
-	}
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source.remoteURL.String(), nil)
-	if err != nil {
-		return "", false, fmt.Errorf("create image request for %s", label)
-	}
-	request.Header.Set("Accept-Encoding", "identity")
-	request.Header.Set("User-Agent", "qemu-manage/1")
-	client := a.HTTPClient
-	if client == nil {
-		client = newImageHTTPClient()
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		var urlError *url.Error
-		if errors.As(err, &urlError) {
-			err = urlError.Err
+	var destination string
+	err = withProgress(progressOutput, progressEnabled, interactive, message, 0, progress.UnitsBytes, func(tracker *progress.Tracker) error {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, source.remoteURL.String(), nil)
+		if err != nil {
+			return fmt.Errorf("create image request for %s", label)
 		}
-		return "", false, fmt.Errorf("download image from %s: %w", label, err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", false, fmt.Errorf("download image from %s: HTTP %d %s", label, response.StatusCode, http.StatusText(response.StatusCode))
-	}
-	if encoding := response.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
-		return "", false, fmt.Errorf("download image from %s: unsupported HTTP Content-Encoding %q", label, encoding)
-	}
-
-	guardedBody := newImageIdleReader(ctx, response.Body)
-	defer guardedBody.Stop()
-	reader, closeReader, err := decompressedImageReader(guardedBody, source.compression)
-	if err != nil {
-		return "", false, fmt.Errorf("decompress image from %s: %w", label, err)
-	}
-	if closeReader != nil {
-		defer closeReader()
-	}
-
-	destination := filepath.Join(vmDir, downloadedImageFilename)
-	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return "", false, fmt.Errorf("create downloaded image: %w", err)
-	}
-	committed := false
-	defer func() {
-		_ = output.Close()
-		if !committed {
-			_ = os.Remove(destination)
+		request.Header.Set("Accept-Encoding", "identity")
+		request.Header.Set("User-Agent", "qemu-manage/1")
+		client := a.HTTPClient
+		if client == nil {
+			client = newImageHTTPClient()
 		}
-	}()
-	if err := output.Chmod(0o600); err != nil {
-		return "", false, fmt.Errorf("protect downloaded image: %w", err)
+		response, err := client.Do(request)
+		if err != nil {
+			var urlError *url.Error
+			if errors.As(err, &urlError) {
+				err = urlError.Err
+			}
+			return fmt.Errorf("download image from %s: %w", label, err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			return fmt.Errorf("download image from %s: HTTP %d %s", label, response.StatusCode, http.StatusText(response.StatusCode))
+		}
+		if encoding := response.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
+			return fmt.Errorf("download image from %s: unsupported HTTP Content-Encoding %q", label, encoding)
+		}
+		if tracker != nil && response.ContentLength > 0 {
+			tracker.UpdateTotal(response.ContentLength)
+		}
+
+		guardedBody := newImageIdleReader(ctx, response.Body)
+		defer guardedBody.Stop()
+		countedBody := imageProgressReader{reader: guardedBody, tracker: tracker}
+		reader, closeReader, err := decompressedImageReader(countedBody, source.compression)
+		if err != nil {
+			return fmt.Errorf("decompress image from %s: %w", label, err)
+		}
+
+		destination = filepath.Join(vmDir, downloadedImageFilename)
+		output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return fmt.Errorf("create downloaded image: %w", err)
+		}
+		committed := false
+		defer func() {
+			_ = output.Close()
+			if !committed {
+				_ = os.Remove(destination)
+			}
+		}()
+		if err := output.Chmod(0o600); err != nil {
+			return fmt.Errorf("protect downloaded image: %w", err)
+		}
+		if _, err := io.Copy(output, reader); err != nil {
+			return fmt.Errorf("write downloaded image: %w", err)
+		}
+		guardedBody.Stop()
+		if closeReader != nil {
+			if err := closeReader(); err != nil {
+				return fmt.Errorf("close decompressed image: %w", err)
+			}
+		}
+		if err := output.Sync(); err != nil {
+			return fmt.Errorf("sync downloaded image: %w", err)
+		}
+		if err := output.Close(); err != nil {
+			return fmt.Errorf("close downloaded image: %w", err)
+		}
+		committed = true
+		return nil
+	})
+	if err != nil {
+		return "", false, err
 	}
-	_, copyErr := io.Copy(output, reader)
-	guardedBody.Stop()
-	if copyErr != nil {
-		return "", false, fmt.Errorf("write downloaded image: %w", copyErr)
-	}
-	if err := output.Sync(); err != nil {
-		return "", false, fmt.Errorf("sync downloaded image: %w", err)
-	}
-	if err := output.Close(); err != nil {
-		return "", false, fmt.Errorf("close downloaded image: %w", err)
-	}
-	committed = true
 	return destination, true, nil
+}
+
+type imageProgressReader struct {
+	reader  io.Reader
+	tracker *progress.Tracker
+}
+
+func (r imageProgressReader) Read(buffer []byte) (int, error) {
+	n, err := r.reader.Read(buffer)
+	if n > 0 && r.tracker != nil {
+		r.tracker.Increment(int64(n))
+	}
+	return n, err
 }
 
 type imageIdleReader struct {

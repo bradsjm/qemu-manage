@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/jedib0t/go-pretty/v6/table"
 	"io"
 	"os"
 	"sort"
@@ -24,11 +25,11 @@ func (a *App) runInfoCommand(ctx context.Context, command string, args []string,
 	case "showcmd":
 		return a.runShowcmd(args, stdout)
 	case "status":
-		return a.runStatus(ctx, args, stdout)
+		return a.runStatus(ctx, args, stdout, stderr)
 	case "list":
-		return a.runList(ctx, args, stdout)
+		return a.runList(ctx, args, stdout, stderr)
 	case "delete":
-		return a.runDelete(ctx, args, stdin, stdout)
+		return a.runDelete(ctx, args, stdin, stdout, stderr)
 	default:
 		return usageErrorf("unknown information command %q", command)
 	}
@@ -76,7 +77,7 @@ func quotePOSIX(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
-func (a *App) runStatus(ctx context.Context, args []string, stdout io.Writer) error {
+func (a *App) runStatus(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	name, remaining := "", args
 	if len(remaining) != 0 && !strings.HasPrefix(remaining[0], "-") {
 		name, remaining = remaining[0], remaining[1:]
@@ -91,7 +92,7 @@ func (a *App) runStatus(ctx context.Context, args []string, stdout io.Writer) er
 		return usageErrorf("usage: qemu-manage status [NAME] [--json]")
 	}
 	if name == "" {
-		return a.writeStatusRows(ctx, *jsonOutput, stdout)
+		return a.writeStatusRows(ctx, *jsonOutput, stdout, stderr)
 	}
 	config, err := a.Store.Load(name)
 	if err != nil {
@@ -108,7 +109,19 @@ func (a *App) runStatus(ctx context.Context, args []string, stdout io.Writer) er
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(row)
 	}
-	row, err := a.statusRow(ctx, config)
+	var row StatusRow
+	collect := func() error {
+		var collectErr error
+		row, collectErr = a.statusRow(ctx, config)
+		return collectErr
+	}
+	if *jsonOutput {
+		err = collect()
+	} else {
+		err = withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Reading VM status", func() error {
+			return collect()
+		})
+	}
 	if err != nil {
 		return err
 	}
@@ -126,7 +139,7 @@ func (a *App) runStatus(ctx context.Context, args []string, stdout io.Writer) er
 	return nil
 }
 
-func (a *App) runList(ctx context.Context, args []string, stdout io.Writer) error {
+func (a *App) runList(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("list", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	jsonOutput := flags.Bool("json", false, "emit JSON")
@@ -136,32 +149,45 @@ func (a *App) runList(ctx context.Context, args []string, stdout io.Writer) erro
 		}
 		return usageErrorf("usage: qemu-manage list [--json]")
 	}
-	return a.writeStatusRows(ctx, *jsonOutput, stdout)
+	return a.writeStatusRows(ctx, *jsonOutput, stdout, stderr)
 }
 
-func (a *App) writeStatusRows(ctx context.Context, jsonOutput bool, stdout io.Writer) error {
-	entries, err := os.ReadDir(a.Store.DataRoot)
+func (a *App) writeStatusRows(ctx context.Context, jsonOutput bool, stdout, stderr io.Writer) error {
+	var rows []StatusRow
+	collect := func() error {
+		entries, err := os.ReadDir(a.Store.DataRoot)
+		if err != nil {
+			return fmt.Errorf("config: list VMs: %w", err)
+		}
+		rows = make([]StatusRow, 0, len(entries))
+		for _, entry := range entries {
+			if entry.Name() == ".locks" {
+				continue
+			}
+			config, loadErr := a.Store.Load(entry.Name())
+			if loadErr != nil {
+				rows = append(rows, StatusRow{Name: entry.Name(), State: model.RunStateFailed, Error: loadErr.Error()})
+				continue
+			}
+			row, statusErr := a.statusRow(ctx, config)
+			if statusErr != nil {
+				rows = append(rows, StatusRow{Name: config.Name, State: model.RunStateFailed, Error: statusErr.Error()})
+				continue
+			}
+			rows = append(rows, row)
+		}
+		sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
+		return nil
+	}
+	var err error
+	if jsonOutput {
+		err = collect()
+	} else {
+		err = withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Reading VM status", collect)
+	}
 	if err != nil {
-		return fmt.Errorf("config: list VMs: %w", err)
+		return err
 	}
-	rows := make([]StatusRow, 0, len(entries))
-	for _, entry := range entries {
-		if entry.Name() == ".locks" {
-			continue
-		}
-		config, loadErr := a.Store.Load(entry.Name())
-		if loadErr != nil {
-			rows = append(rows, StatusRow{Name: entry.Name(), State: model.RunStateFailed, Error: loadErr.Error()})
-			continue
-		}
-		row, statusErr := a.statusRow(ctx, config)
-		if statusErr != nil {
-			rows = append(rows, StatusRow{Name: config.Name, State: model.RunStateFailed, Error: statusErr.Error()})
-			continue
-		}
-		rows = append(rows, row)
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
 	return writeRows(rows, jsonOutput, stdout)
 }
 
@@ -189,15 +215,11 @@ func writeRows(rows []StatusRow, jsonOutput bool, stdout io.Writer) error {
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(rows)
 	}
-	if _, err := fmt.Fprintln(stdout, "NAME\tSTATE\tRESTART REQUIRED\tERROR"); err != nil {
-		return err
-	}
+	tableRows := make([]table.Row, 0, len(rows))
 	for _, row := range rows {
-		if _, err := fmt.Fprintf(stdout, "%s\t%s\t%t\t%s\n", row.Name, row.State, row.RestartRequired, row.Error); err != nil {
-			return err
-		}
+		tableRows = append(tableRows, table.Row{row.Name, row.State, row.RestartRequired, row.Error})
 	}
-	return nil
+	return writeTable(stdout, table.Row{"NAME", "STATE", "RESTART REQUIRED", "ERROR"}, tableRows)
 }
 
 // writeSMBMountHelp emits the stable SMB host-folder and Linux CIFS mount recipe
@@ -216,7 +238,7 @@ func terminalReader(input io.Reader) bool {
 	return ok && term.IsTerminal(int(file.Fd()))
 }
 
-func (a *App) runDelete(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
+func (a *App) runDelete(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		return usageErrorf("usage: qemu-manage delete NAME [--force]")
 	}
@@ -261,27 +283,29 @@ func (a *App) runDelete(ctx context.Context, args []string, stdin io.Reader, std
 			return err
 		}
 	}
-	return a.Store.Delete(name, func(lockedConfig *model.Config, _ store.Paths) error {
-		if lockedConfig.ID != initialID {
-			return fmt.Errorf("config: VM %q identity changed before deletion; refusing to delete a replacement VM", name)
-		}
-		recovery := fmt.Sprintf("run `qemu-manage autostart disable %s` first", name)
-		if a.Launchd == nil {
-			return fmt.Errorf("launchd: service is unavailable; %s", recovery)
-		}
-		status, err := a.Launchd.Status(ctx, lockedConfig.Name)
-		if err != nil {
-			return fmt.Errorf("launchd: inspect VM %q before deletion: %w; %s", name, err, recovery)
-		}
-		if status.Login.Error != "" {
-			return fmt.Errorf("launchd: inspect login job for VM %q: %s; %s", name, status.Login.Error, recovery)
-		}
-		if status.Boot.Error != "" {
-			return fmt.Errorf("launchd: inspect boot job for VM %q: %s; %s", name, status.Boot.Error, recovery)
-		}
-		if status.Login.FilePresent || status.Login.Loaded || status.Boot.FilePresent || status.Boot.Loaded {
-			return fmt.Errorf("launchd: VM %q still has an autostart plist or loaded job; %s", name, recovery)
-		}
-		return nil
+	return withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Deleting VM", func() error {
+		return a.Store.Delete(name, func(lockedConfig *model.Config, _ store.Paths) error {
+			if lockedConfig.ID != initialID {
+				return fmt.Errorf("config: VM %q identity changed before deletion; refusing to delete a replacement VM", name)
+			}
+			recovery := fmt.Sprintf("run `qemu-manage autostart disable %s` first", name)
+			if a.Launchd == nil {
+				return fmt.Errorf("launchd: service is unavailable; %s", recovery)
+			}
+			status, err := a.Launchd.Status(ctx, lockedConfig.Name)
+			if err != nil {
+				return fmt.Errorf("launchd: inspect VM %q before deletion: %w; %s", name, err, recovery)
+			}
+			if status.Login.Error != "" {
+				return fmt.Errorf("launchd: inspect login job for VM %q: %s; %s", name, status.Login.Error, recovery)
+			}
+			if status.Boot.Error != "" {
+				return fmt.Errorf("launchd: inspect boot job for VM %q: %s; %s", name, status.Boot.Error, recovery)
+			}
+			if status.Login.FilePresent || status.Login.Loaded || status.Boot.FilePresent || status.Boot.Loaded {
+				return fmt.Errorf("launchd: VM %q still has an autostart plist or loaded job; %s", name, recovery)
+			}
+			return nil
+		})
 	})
 }

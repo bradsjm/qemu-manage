@@ -410,7 +410,7 @@ func TestSuperviseBootMenuMetadataAndDebugRedaction(t *testing.T) {
 	var debug bytes.Buffer
 	done := make(chan error, 1)
 	go func() {
-		done <- service.Supervise(context.Background(), cfg.Name, cfg.ID, writer, SuperviseOptions{BootMenu: true, DebugWriter: &debug})
+		done <- service.Supervise(context.Background(), cfg.Name, cfg.ID, writer, SuperviseOptions{BootMenu: true, Debug: true, DebugWriter: &debug})
 	}()
 	select {
 	case <-writer.ready:

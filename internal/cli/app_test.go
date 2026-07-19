@@ -121,12 +121,14 @@ func TestVersionBypassesRootAndInitialization(t *testing.T) {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	for _, want := range []string{
+		"FIELD",
+		"VALUE",
 		"qemu-manage ",
-		"revision: ",
-		"commit time: ",
-		"modified: ",
-		"go version: ",
-		"repository: " + repositoryURL,
+		"revision",
+		"commit time",
+		"modified",
+		"go version",
+		repositoryURL,
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("version output does not contain %q: %q", want, stdout)

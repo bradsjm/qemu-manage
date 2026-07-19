@@ -159,8 +159,8 @@ func TestStatusAndListJSONContracts(t *testing.T) {
 	wantVNC := backend.VNCEndpoint{Host: "127.0.0.1", Port: 5907}
 	a.Runtime = &fakeRuntime{row: StatusRow{State: model.RunStateRunning, RunningConfigSHA256: "different", Backend: "qemu", VNC: &wantVNC}}
 	code, out, stderr := runCLI(a, "status", "zeta", "--json")
-	if code != 0 {
-		t.Fatalf("status failed: %s", stderr)
+	if code != 0 || stderr != "" {
+		t.Fatalf("status failed: stderr=%q", stderr)
 	}
 	var row map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(out), &row); err != nil {
@@ -190,8 +190,8 @@ func TestStatusAndListJSONContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out, stderr = runCLI(a, "list", "--json")
-	if code != 0 {
-		t.Fatalf("list failed: %s", stderr)
+	if code != 0 || stderr != "" {
+		t.Fatalf("list failed: stderr=%q", stderr)
 	}
 	var rows []StatusRow
 	if err := json.Unmarshal([]byte(out), &rows); err != nil {
@@ -389,7 +389,7 @@ func TestMonitorInteractiveUsesMonitorSocket(t *testing.T) {
 		_ = input.Close()
 	}()
 	code := a.Run(context.Background(), []string{"monitor", "vm"}, stdin, stdout, &stderr)
-	if code != 0 || stderr.String() != "" {
+	if code != 0 || !strings.Contains(stderr.String(), "Connecting to QEMU monitor") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	if stdout.String() != "QEMU monitor ready\n" {
@@ -412,7 +412,7 @@ func TestMonitorCommandUsesQMPCommandSocketAndClosesClient(t *testing.T) {
 		return client, nil
 	}
 	code, stdout, stderr := runCLI(a, "monitor", "vm", "info status")
-	if code != 0 || stderr != "" {
+	if code != 0 || !strings.Contains(stderr, "Connecting to QEMU monitor") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if stdout != "status: running\n" {
@@ -785,6 +785,20 @@ func TestVNCCommandRejectsNilViewer(t *testing.T) {
 	}
 }
 
+func TestDoctorHumanUsesTableAndProgress(t *testing.T) {
+	a := testApp(t)
+	code, stdout, stderr := runCLI(a, "doctor")
+	if code != 0 && code != 1 {
+		t.Fatalf("doctor exit code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "CHECK") || !strings.Contains(stdout, "STATUS") || strings.Contains(stdout, "\t") {
+		t.Fatalf("doctor table=%q", stdout)
+	}
+	if !strings.Contains(stderr, "Running prerequisite checks") {
+		t.Fatalf("doctor progress=%q", stderr)
+	}
+}
+
 func TestDoctorEmitsReportAndFailsWhenRequiredChecksFail(t *testing.T) {
 	a := testApp(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -798,6 +812,9 @@ func TestDoctorEmitsReportAndFailsWhenRequiredChecksFail(t *testing.T) {
 	var checks []map[string]any
 	if err := json.Unmarshal([]byte(out.String()), &checks); err != nil {
 		t.Fatalf("doctor did not emit JSON: %v (%q)", err, out.String())
+	}
+	if code != 1 || errOut.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 	if len(checks) == 0 {
 		t.Fatal("doctor emitted no checks")
@@ -815,6 +832,47 @@ func TestStopAndStartMissingServicesAreReported(t *testing.T) {
 	code, _, stderr = runCLI(a, "start", "vm", "--foreground")
 	if code != 1 || !strings.Contains(stderr, "supervisor service is unavailable") {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestStopReportsWaitingProgressUntilSupervisorResponds(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	saveTestConfig(t, a, cfg)
+	a.Lifecycle = lifecycle.NewService(a.Store)
+	release := make(chan struct{})
+	serveUnixSocket(t, a.Store.Paths(cfg).ControlSocket, func(conn net.Conn) error {
+		request, err := supervisor.DecodeRequest(conn)
+		if err != nil {
+			return err
+		}
+		<-release
+		return supervisor.EncodeResponse(conn, &supervisor.Response{
+			Version: supervisor.ProtocolVersion,
+			ID:      request.ID,
+			OK:      true,
+		})
+	})
+	stderr := &signalBuffer{written: make(chan struct{})}
+	done := make(chan int, 1)
+	go func() {
+		done <- a.Run(context.Background(), []string{"stop", "vm"}, strings.NewReader(""), io.Discard, stderr)
+	}()
+	<-stderr.written
+	if !strings.Contains(stderr.String(), "Stopping VM (waiting for shutdown response)") {
+		t.Fatalf("stderr=%q", stderr.String())
+	}
+	select {
+	case code := <-done:
+		t.Fatalf("stop returned before response with code %d", code)
+	default:
+	}
+	close(release)
+	if code := <-done; code != 0 {
+		t.Fatalf("stop exit code=%d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Stopping VM (waiting for shutdown response) done") {
+		t.Fatalf("stop completion missing from stderr=%q", stderr.String())
 	}
 }
 

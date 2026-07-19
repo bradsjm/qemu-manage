@@ -9,8 +9,8 @@ import (
 	"github.com/bradsjm/qemu-manage/internal/backend"
 )
 
-func debugf(output io.Writer, format string, args ...any) {
-	if output == nil {
+func debugf(enabled bool, output io.Writer, format string, args ...any) {
+	if !enabled || output == nil {
 		return
 	}
 	message := fmt.Sprintf(format, args...)

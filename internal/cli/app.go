@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"golang.org/x/term"
 	"io"
 	"net/http"
 	"os"
@@ -62,6 +63,7 @@ type App struct {
 	RunExternal                func(context.Context, string, []string) error
 	HTTPClient                 *http.Client
 	Runtime                    RuntimeService
+	IsTerminalOutput           func(io.Writer) bool
 	IsTerminal                 func(io.Reader) bool
 	LookupEnv                  func(string) (string, bool)
 	DiscoverFirmware           func() (string, string)
@@ -81,13 +83,15 @@ type App struct {
 func NewApp() *App {
 	if os.Geteuid() == 0 {
 		return &App{
-			Geteuid:         os.Geteuid,
-			LookupEnv:       os.LookupEnv,
-			DiscoverMachine: qemu.DiscoverVersionedMachine,
+			Geteuid:          os.Geteuid,
+			IsTerminalOutput: terminalWriter,
+			LookupEnv:        os.LookupEnv,
+			DiscoverMachine:  qemu.DiscoverVersionedMachine,
 		}
 	}
 
 	a := &App{
+		IsTerminalOutput:    terminalWriter,
 		Backends:            backend.NewRegistry(),
 		Geteuid:             os.Geteuid,
 		IsTerminal:          terminalReader,
@@ -143,6 +147,12 @@ func NewApp() *App {
 type usageError struct {
 	message string
 }
+type silentError struct {
+	err error
+}
+
+func (e *silentError) Error() string { return e.err.Error() }
+func (e *silentError) Unwrap() error { return e.err }
 
 func (e *usageError) Error() string { return e.message }
 
@@ -230,6 +240,10 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		writeUsageFailure(stderr, err, args, a.LookupEnv)
 		return 2
 	}
+	var silent *silentError
+	if errors.As(err, &silent) {
+		return 1
+	}
 	fmt.Fprintln(stderr, err)
 	return 1
 }
@@ -295,6 +309,17 @@ func (a *App) debugf(format string, args ...any) {
 		return
 	}
 	writeDebugf(a.debugWriter, format, args...)
+}
+func (a *App) progressInteractive(output io.Writer) bool {
+	if a == nil || a.IsTerminalOutput == nil {
+		return false
+	}
+	return a.IsTerminalOutput(output)
+}
+
+func terminalWriter(output io.Writer) bool {
+	file, ok := output.(*os.File)
+	return ok && term.IsTerminal(int(file.Fd()))
 }
 
 func (a *App) runExternal(ctx context.Context, path string, args []string) error {

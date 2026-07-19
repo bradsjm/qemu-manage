@@ -208,8 +208,8 @@ func TestStatusNamedEmitsSMBMountGuidance(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
 	}
-	if !strings.Contains(stdout, "NAME\tSTATE") {
-		t.Fatalf("status table missing: %q", stdout)
+	if !strings.Contains(stdout, "│ NAME │ STATE") || strings.Contains(stdout, "\t") {
+		t.Fatalf("status table is not aligned go-pretty output: %q", stdout)
 	}
 	for _, want := range []string{
 		"SMB host folder: /srv/vm-share",

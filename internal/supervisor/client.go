@@ -115,6 +115,7 @@ type StartOptions struct {
 	Debug         bool
 	DebugWriter   io.Writer
 	ReadyTimeout  time.Duration
+	OnReady       func()
 	RunForeground func(context.Context, io.Writer) error
 }
 
@@ -203,7 +204,10 @@ func startDetached(ctx context.Context, options StartOptions) error {
 	if err := requireMatchingReady(message, options.ExpectedID); err != nil {
 		return terminateAndReap(process, err)
 	}
-	debugf(options.DebugWriter, "detached supervisor pid=%d ready=true", process.Pid)
+	if options.OnReady != nil {
+		options.OnReady()
+	}
+	debugf(options.Debug, options.DebugWriter, "detached supervisor pid=%d ready=true", process.Pid)
 	if err := process.Release(); err != nil {
 		return terminateAndReap(process, fmt.Errorf("supervisor: release process handle: %w", err))
 	}
@@ -227,6 +231,9 @@ func startForeground(ctx context.Context, options StartOptions) error {
 	}
 	if err := requireMatchingReady(message, options.ExpectedID); err != nil {
 		return finishForegroundFailure(cancel, result, err)
+	}
+	if options.OnReady != nil {
+		options.OnReady()
 	}
 	return <-result
 }

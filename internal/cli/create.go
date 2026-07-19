@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/jedib0t/go-pretty/v6/progress"
 	"io"
 	"math"
 	"os"
@@ -76,7 +77,6 @@ func (v *shareValue) Set(raw string) error {
 
 func (a *App) runCreate(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = stdin
-	_ = stderr
 	defaultFirmwareCode, defaultFirmwareVars := "", ""
 	if a.DiscoverFirmware != nil {
 		defaultFirmwareCode, defaultFirmwareVars = a.DiscoverFirmware()
@@ -341,20 +341,22 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	}
 
 	if err := a.Store.Create(config, func(_ *model.Config, paths store.Paths) error {
-		if err := copyRegularFile(*firmwareCode, filepath.Join(paths.VMDir, config.Firmware.Code), 0o400); err != nil {
+		if err := copyRegularFile(*firmwareCode, filepath.Join(paths.VMDir, config.Firmware.Code), 0o400, stderr, true, a.progressInteractive(stderr), "Copying firmware code"); err != nil {
 			return fmt.Errorf("copy firmware code: %w", err)
 		}
-		if err := copyRegularFile(*firmwareVars, filepath.Join(paths.VMDir, config.Firmware.Variables), 0o600); err != nil {
+		if err := copyRegularFile(*firmwareVars, filepath.Join(paths.VMDir, config.Firmware.Variables), 0o600, stderr, true, a.progressInteractive(stderr), "Copying firmware variables"); err != nil {
 			return fmt.Errorf("copy firmware variables: %w", err)
 		}
 		if installer != nil {
-			if err := copyRegularFile(*iso, filepath.Join(paths.VMDir, installer.Path), 0o400); err != nil {
+			if err := copyRegularFile(*iso, filepath.Join(paths.VMDir, installer.Path), 0o400, stderr, true, a.progressInteractive(stderr), "Copying installer ISO"); err != nil {
 				return fmt.Errorf("copy installer: %w", err)
 			}
 		}
 		diskPath := filepath.Join(paths.VMDir, config.Disks[0].Path)
 		if *image == "" {
-			if err := a.runExternal(ctx, qemuImgPath, []string{"create", "-f", "qcow2", diskPath, strconv.FormatUint(diskBytes, 10)}); err != nil {
+			if err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Creating primary disk", func() error {
+				return a.runExternal(ctx, qemuImgPath, []string{"create", "-f", "qcow2", diskPath, strconv.FormatUint(diskBytes, 10)})
+			}); err != nil {
 				return err
 			}
 			if err := os.Chmod(diskPath, 0o600); err != nil {
@@ -362,11 +364,13 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			}
 			return nil
 		}
-		sourcePath, temporarySource, err := a.materializeImage(ctx, imageSource, paths.VMDir, stderr)
+		sourcePath, temporarySource, err := a.materializeImage(ctx, imageSource, paths.VMDir, stderr, true, a.progressInteractive(stderr))
 		if err != nil {
 			return err
 		}
-		convertErr := a.runExternal(ctx, qemuImgPath, []string{"convert", "-O", "qcow2", sourcePath, diskPath})
+		convertErr := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Converting image", func() error {
+			return a.runExternal(ctx, qemuImgPath, []string{"convert", "-O", "qcow2", sourcePath, diskPath})
+		})
 		if temporarySource {
 			removeErr := os.Remove(sourcePath)
 			if convertErr != nil {
@@ -387,7 +391,9 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			return fmt.Errorf("query converted image virtual size: %w", err)
 		}
 		if virtualSize < diskBytes {
-			if err := a.runExternal(ctx, qemuImgPath, []string{"resize", diskPath, strconv.FormatUint(diskBytes, 10)}); err != nil {
+			if err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Resizing image", func() error {
+				return a.runExternal(ctx, qemuImgPath, []string{"resize", diskPath, strconv.FormatUint(diskBytes, 10)})
+			}); err != nil {
 				return err
 			}
 		}
@@ -724,7 +730,7 @@ func requireRegularSource(path string) error {
 	return nil
 }
 
-func copyRegularFile(source, destination string, mode os.FileMode) error {
+func copyRegularFile(source, destination string, mode os.FileMode, progressOutput io.Writer, progressEnabled, interactive bool, message string) error {
 	input, err := os.Open(source)
 	if err != nil {
 		return err
@@ -748,7 +754,9 @@ func copyRegularFile(source, destination string, mode os.FileMode) error {
 			os.Remove(destination)
 		}
 	}()
-	if _, err := io.Copy(output, input); err != nil {
+	if err := withProgress(progressOutput, progressEnabled, interactive, message, info.Size(), progress.UnitsBytes, func(tracker *progress.Tracker) error {
+		return copyWithProgress(input, output, info.Size(), tracker)
+	}); err != nil {
 		return err
 	}
 	if err := output.Sync(); err != nil {

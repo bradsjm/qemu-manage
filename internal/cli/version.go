@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/jedib0t/go-pretty/v6/table"
 	"io"
 	"runtime"
 	"runtime/debug"
@@ -56,12 +57,13 @@ func currentBuildInfo() buildInfo {
 
 func writeVersion(output io.Writer) error {
 	info := currentBuildInfo()
-	_, err := fmt.Fprintf(output, `qemu-manage %s
-  revision: %s
-  commit time: %s
-  modified: %s
-  go version: %s
-  repository: %s
-`, info.version, info.revision, info.commitTime, info.modified, info.goVersion, repositoryURL)
-	return err
+	rows := []table.Row{
+		{"version", fmt.Sprintf("qemu-manage %s", info.version)},
+		{"revision", info.revision},
+		{"commit time", info.commitTime},
+		{"modified", info.modified},
+		{"go version", info.goVersion},
+		{"repository", repositoryURL},
+	}
+	return writeTable(output, table.Row{"FIELD", "VALUE"}, rows)
 }

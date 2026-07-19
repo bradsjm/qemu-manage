@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/jedib0t/go-pretty/v6/table"
 	"io"
 	"strings"
 
@@ -13,7 +14,6 @@ import (
 )
 
 func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	_ = stderr
 	if len(args) == 0 {
 		return usageErrorf("autostart: missing subcommand")
 	}
@@ -44,10 +44,15 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 		if a.Launchd == nil {
 			return fmt.Errorf("launchd: manager is unavailable")
 		}
-		result, err := a.Launchd.Enable(ctx, name, scope, func(ctx context.Context, config *model.Config) error {
-			paths := a.Store.Paths(config)
-			checks := qemu.Doctor(ctx, *config, backendPaths(paths))
-			return qemu.RequiredPassed(checks)
+		var result launchd.EnableResult
+		err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Updating autostart", func() error {
+			var err error
+			result, err = a.Launchd.Enable(ctx, name, scope, func(ctx context.Context, config *model.Config) error {
+				paths := a.Store.Paths(config)
+				checks := qemu.Doctor(ctx, *config, backendPaths(paths))
+				return qemu.RequiredPassed(checks)
+			})
+			return err
 		})
 		if err != nil {
 			return withLaunchdPrefix(err)
@@ -60,7 +65,10 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 		if a.Launchd == nil {
 			return fmt.Errorf("launchd: manager is unavailable")
 		}
-		if err := a.Launchd.Disable(ctx, name); err != nil {
+		err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Disabling autostart", func() error {
+			return a.Launchd.Disable(ctx, name)
+		})
+		if err != nil {
 			if errors.Is(err, launchd.ErrVMRunning) {
 				return writeAutostartDisableRefusal(stdout, name, err)
 			}
@@ -74,7 +82,12 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 		if a.Launchd == nil {
 			return fmt.Errorf("launchd: manager is unavailable")
 		}
-		report, err := a.Launchd.Status(ctx, name)
+		var report launchd.StatusReport
+		err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Checking autostart", func() error {
+			var err error
+			report, err = a.Launchd.Status(ctx, name)
+			return err
+		})
 		if err != nil {
 			return withLaunchdPrefix(err)
 		}
@@ -133,9 +146,10 @@ func writeAutostartDisableRefusal(output io.Writer, name string, err error) erro
 }
 
 func writeAutostartStatus(output io.Writer, report launchd.StatusReport) error {
-	if _, err := fmt.Fprintf(output, "configured_scope: %s\n", report.ConfiguredScope); err != nil {
+	if err := writeTable(output, table.Row{"SETTING", "VALUE"}, []table.Row{{"configured_scope", report.ConfiguredScope}}); err != nil {
 		return err
 	}
+	rows := make([]table.Row, 0, 2)
 	for _, domain := range []struct {
 		name   string
 		status launchd.DomainStatus
@@ -143,10 +157,7 @@ func writeAutostartStatus(output io.Writer, report launchd.StatusReport) error {
 		{name: "login", status: report.Login},
 		{name: "boot", status: report.Boot},
 	} {
-		if _, err := fmt.Fprintf(output, "%s:\n  file_present: %t\n  file_match: %t\n  loaded: %t\n  error: %q\n",
-			domain.name, domain.status.FilePresent, domain.status.FileMatch, domain.status.Loaded, domain.status.Error); err != nil {
-			return err
-		}
+		rows = append(rows, table.Row{domain.name, domain.status.FilePresent, domain.status.FileMatch, domain.status.Loaded, fmt.Sprintf("%q", domain.status.Error)})
 	}
-	return nil
+	return writeTable(output, table.Row{"DOMAIN", "FILE PRESENT", "FILE MATCH", "LOADED", "ERROR"}, rows)
 }
