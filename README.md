@@ -33,7 +33,9 @@
   brew install socket_vmnet
   ```
 
-_Installation location of socket_vmnet can be configured using environment variables if qemu-manage is not able to find it automatically._
+  `qemu-manage` resolves `QEMU_MANAGE_SOCKET_VMNET_CLIENT` and
+  `QEMU_MANAGE_SOCKET_VMNET_SOCKET` first, then falls back to independent
+  discovery from common Homebrew or MacPorts locations.
 
 ## Installation
 
@@ -84,12 +86,21 @@ Check that QEMU and firmware are discoverable:
 qemu-manage doctor
 ```
 
-Create a VM, start it, connect to its serial console, then shut it down:
+Create a VM, inspect the rendered command, start it with diagnostics, connect to
+its serial console, then shut it down:
 
 ```sh
-qemu-manage create my-vm --cpus 2 --memory 4GiB
+qemu-manage create my-vm \
+  --cpus 2 \
+  --memory 4GiB \
+  --network user \
+  --forward tcp:127.0.0.1:2222:22 \
+  --guest-agent on \
+  --rtc-base utc
+
 qemu-manage doctor my-vm
-qemu-manage start my-vm
+qemu-manage showcmd my-vm
+qemu-manage --debug start my-vm
 qemu-manage status my-vm
 
 # Ctrl-] to disconnect
@@ -98,15 +109,21 @@ qemu-manage console my-vm
 qemu-manage stop my-vm
 ```
 
-Run `qemu-manage COMMAND --help` for command-specific options and examples.
+Run `qemu-manage COMMAND --help` for command-specific options, examples, and
+environment details.
 
 ## Creating a VM
 
-You can create a VM from an HTTP(S) disk image, a local image file, an ARM64 installer ISO, or leave it blank.
+You can create a VM from an HTTP(S) disk image, a local image file, an ARM64
+installer ISO, or leave it blank. New VMs default to user networking, guest
+agent off, RTC base `utc`, and a concrete Arm machine pinned from the selected
+QEMU binary as `virt-N.N`. When VNC is enabled, the default keyboard layout is
+`en-us`.
 
 ### Import from an HTTP(S) URL
 
-Pass a qcow2 or raw URL to `--image`. URLs ending in `.xz` or `.gz` are decompressed while downloading and converted to a managed qcow2 disk:
+Pass a qcow2 or raw URL to `--image`. URLs ending in `.xz` or `.gz` are
+decompressed while downloading and converted to a managed qcow2 disk:
 
 ```sh
 qemu-manage create home-assistant \
@@ -114,12 +131,17 @@ qemu-manage create home-assistant \
   --cpus 2 \
   --memory 4GiB \
   --disk-size 32GiB \
+  --network user \
+  --forward tcp:127.0.0.1:2222:22 \
+  --guest-agent on \
+  --rtc-base utc \
   --restart-policy on-failure
 ```
 
 ### Import a local image
 
-Pass a local qcow2 or raw path to `--image`. The source is copied and converted — the original file is never touched:
+Pass a local qcow2 or raw path to `--image`. The source is copied and converted
+— the original file is never touched:
 
 ```sh
 qemu-manage create appliance \
@@ -131,7 +153,9 @@ qemu-manage create appliance \
 
 ### Install from an ARM64 ISO
 
-Pass a local ISO to `--iso`. The tool creates the qcow2 disk, copies the ISO into managed storage, and boots ISO-first. VNC is useful for graphical installers:
+Pass a local ISO to `--iso`. The tool creates the qcow2 disk, copies the ISO
+into managed storage, and boots ISO-first. VNC is useful for graphical
+installers:
 
 ```sh
 qemu-manage create linux \
@@ -140,14 +164,17 @@ qemu-manage create linux \
   --memory 4GiB \
   --disk-size 64GiB \
   --vnc \
-  --vnc-password "$VNC_PASSWORD"
+  --vnc-password "$VNC_PASSWORD" \
+  --keyboard-layout en-gb
 ```
 
-VNC passwords must be 1–8 UTF-8 bytes; set `VNC_PASSWORD` in your environment before running.
+VNC passwords must be 1–8 UTF-8 bytes; set `VNC_PASSWORD` in your environment
+before running.
 
 ### Blank disk
 
-Omit both `--image` and `--iso` and you get a blank 32 GiB qcow2 disk by default.
+Omit both `--image` and `--iso` and you get a blank 32 GiB qcow2 disk by
+default.
 
 ### Repeatable extra drives
 
@@ -157,7 +184,12 @@ Repeat `--drive` to append extra virtio disks after the managed primary disk:
 --drive file=PATH[,if=virtio][,format=raw|qcow2][,cache=none|writeback|writethrough|directsync|unsafe][,aio=threads|native][,readonly=on|off]
 ```
 
-Relative paths are resolved to absolute external references in the stored config. Double each literal comma in a value as `,,`. `qemu-manage` never copies, resizes, converts, chmods, or deletes those extra drive files, so they must remain readable and in place. Omitted `format` is detected from the file header; omitted `if` means `virtio`. `aio=native` still depends on host and QEMU support.
+Relative paths are resolved to absolute external references in the stored
+config. Double each literal comma in a value as `,,`. `qemu-manage` never
+copies, resizes, converts, chmods, or deletes those extra drive files, so they
+must remain readable and in place. Omitted `format` is detected from the file
+header; omitted `if` means `virtio`. `aio=native` still depends on host and
+QEMU support.
 
 ```sh
 qemu-manage create lab \
@@ -175,7 +207,10 @@ Repeat `--usb` with either exact selector form:
 --usb bus=N,address=N
 ```
 
-Vendor/product is usually the stable choice across replugging. Bus/address can change after the device is unplugged and replugged. Without VNC, up to four USB selections fit; with VNC, up to two fit because QEMU adds a USB keyboard and tablet.
+Vendor/product is usually the stable choice across replugging. Bus/address can
+change after the device is unplugged and replugged. Without VNC, up to four USB
+selections fit; with VNC, up to two fit because QEMU adds a USB keyboard and
+tablet.
 
 ```sh
 qemu-manage create lab \
@@ -184,22 +219,10 @@ qemu-manage create lab \
   --usb bus=1,address=2
 ```
 
-### ISO installation with VNC
-
-After creating the VM, start it, check its status, and connect with VNC:
-
-```sh
-qemu-manage doctor linux
-qemu-manage start linux
-qemu-manage status linux --json    # shows live VNC endpoint
-qemu-manage vnc linux              # opens in Screen Sharing, password on clipboard
-```
-
-VNC binds to `127.0.0.1` when enabled. QEMU selects a free port in the configured range; JSON status reports the live endpoint from the authenticated supervisor. The VM must be running or paused with its current configuration.
-
 ## Networking
 
-VMs use QEMU user-mode networking by default. Port forwards bind explicitly to an IPv4 address:
+VMs use QEMU user-mode networking by default. Port forwards bind explicitly to
+an IPv4 address:
 
 ```sh
 qemu-manage set home-assistant \
@@ -207,7 +230,69 @@ qemu-manage set home-assistant \
   --forward tcp:127.0.0.1:8123:8123
 ```
 
-`socket_vmnet` provides host/shared/bridged networking without running QEMU as root. It requires a separately installed and running helper service — see `qemu-manage set NAME --help` and `qemu-manage doctor NAME` for setup and validation.
+`socket_vmnet` provides host/shared/bridged networking without running QEMU as
+root. During `create` and explicit `set --network socket_vmnet`, `qemu-manage`
+resolves `QEMU_MANAGE_SOCKET_VMNET_CLIENT` and
+`QEMU_MANAGE_SOCKET_VMNET_SOCKET` first, then falls back to independent
+discovery. The resolved absolute paths are persisted in the VM config, so later
+starts and launchd do not need those shell variables.
+
+If `doctor` warns that the Homebrew client is user-writable, make a root-owned
+copy first:
+
+```sh
+sudo install -d -o root -g wheel -m 0755 /opt/socket_vmnet/bin
+sudo install -o root -g wheel -m 0755 \
+  "$(brew --prefix socket_vmnet)/bin/socket_vmnet_client" \
+  /opt/socket_vmnet/bin/socket_vmnet_client
+```
+
+Then export the desired paths before `create` or explicit reselection:
+
+```sh
+export QEMU_MANAGE_SOCKET_VMNET_CLIENT=/opt/socket_vmnet/bin/socket_vmnet_client
+export QEMU_MANAGE_SOCKET_VMNET_SOCKET=/opt/homebrew/var/run/socket_vmnet
+
+qemu-manage create lab \
+  --image "$HOME/Images/lab.qcow2" \
+  --network socket_vmnet \
+  --socket-vmnet-interface shared
+
+qemu-manage set home-assistant \
+  --network socket_vmnet \
+  --socket-vmnet-interface shared
+```
+
+On an already-`socket_vmnet` VM, changing only `--socket-vmnet-interface`
+preserves the currently persisted client and socket paths. Repeat
+`--network socket_vmnet` when you want environment or discovery changes to
+refresh the stored paths.
+
+## Starting and inspecting a VM
+
+Use `showcmd` to inspect the durable QEMU argv without launching anything:
+
+```sh
+qemu-manage showcmd home-assistant
+```
+
+One-shot start overrides such as `--boot-menu` are intentionally absent from
+`showcmd` because they are not persisted.
+
+Start-time diagnostics are enabled only by a leading global flag:
+
+```sh
+qemu-manage --debug start home-assistant --foreground
+```
+
+Use `--boot-menu` when firmware and your console path support interacting with a
+one-shot boot chooser:
+
+```sh
+qemu-manage start linux --boot-menu
+qemu-manage status linux --json    # shows live VNC endpoint when enabled
+qemu-manage vnc linux              # opens in Screen Sharing, password on clipboard
+```
 
 ## Monitor and guest agent
 
@@ -275,8 +360,22 @@ Managed state lives in standard macOS user directories:
 - Logs — `~/Library/Logs/qemu-manage`
 - Control sockets and runtime metadata (ephemeral) — `/tmp/qemu-manage-<uid>`
 
-Override any of these with `QEMU_MANAGE_DATA_ROOT`, `QEMU_MANAGE_RUNTIME_ROOT`, or `QEMU_MANAGE_LOG_ROOT`. Each must be an absolute, owner-controlled directory. The runtime root must stay short enough for macOS Unix-socket path limits. Autostart jobs preserve explicit roots because launchd does not inherit the shell environment.
+Supported environment variables:
 
+- `QEMU_MANAGE_DATA_ROOT` — Override the VM data root with an absolute,
+  owner-controlled directory.
+- `QEMU_MANAGE_RUNTIME_ROOT` — Override the runtime root with an absolute,
+  owner-controlled directory. Keep it short enough for macOS Unix-socket path
+  limits.
+- `QEMU_MANAGE_LOG_ROOT` — Override the log root with an absolute,
+  owner-controlled directory.
+- `QEMU_MANAGE_SOCKET_VMNET_CLIENT` — Override the `socket_vmnet_client`
+  executable path used during explicit `socket_vmnet` resolution.
+- `QEMU_MANAGE_SOCKET_VMNET_SOCKET` — Override the `socket_vmnet` daemon socket
+  path used during explicit `socket_vmnet` resolution.
+
+Autostart jobs preserve explicit roots and persisted `socket_vmnet` paths
+because launchd does not inherit your shell environment.
 Configuration files are strict, versioned JSON with owner-only mode `0600`. Use `qemu-manage config show`, `config validate`, and `config apply` for full configuration management.
 
 > **VNC security note:** An enabled VNC password is stored in plaintext in the config file, and `qemu-manage config show NAME` prints it. VNC transport is not encrypted; binding to an address other than loopback exposes it to the network.

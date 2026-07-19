@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/user"
 	"strconv"
+	"strings"
 
 	"github.com/bradsjm/qemu-manage/internal/backend"
 	"github.com/bradsjm/qemu-manage/internal/launchd"
@@ -62,26 +63,37 @@ type App struct {
 	HTTPClient          *http.Client
 	Runtime             RuntimeService
 	IsTerminal          func(io.Reader) bool
+	LookupEnv           func(string) (string, bool)
 	DiscoverFirmware    func() (string, string)
+	DiscoverMachine     func(context.Context, string) (string, error)
 	DiscoverSocketVMNet func() *model.SocketVMNetConfig
 	OpenVNC             func(context.Context, backend.VNCEndpoint, string) error
 	DialQMP             func(context.Context, string) (MonitorClient, error)
 	CallGuestAgent      func(context.Context, string, qemu.GuestAgentRequest) (json.RawMessage, error)
 
 	initializationError error
+	debug               bool
+	debugWriter         io.Writer
 }
 
 func NewApp() *App {
 	if os.Geteuid() == 0 {
-		return &App{Geteuid: os.Geteuid}
+		return &App{
+			Geteuid:         os.Geteuid,
+			LookupEnv:       os.LookupEnv,
+			DiscoverMachine: qemu.DiscoverVersionedMachine,
+		}
 	}
 
 	a := &App{
-		Backends:         backend.NewRegistry(),
-		Geteuid:          os.Geteuid,
-		IsTerminal:       terminalReader,
-		DiscoverFirmware: qemu.DiscoverFirmware,
-		HTTPClient:       newImageHTTPClient(),
+		Backends:            backend.NewRegistry(),
+		Geteuid:             os.Geteuid,
+		IsTerminal:          terminalReader,
+		LookupEnv:           os.LookupEnv,
+		DiscoverFirmware:    qemu.DiscoverFirmware,
+		DiscoverMachine:     qemu.DiscoverVersionedMachine,
+		DiscoverSocketVMNet: qemu.DiscoverSocketVMNet,
+		HTTPClient:          newImageHTTPClient(),
 		RunExternal: func(ctx context.Context, path string, args []string) error {
 			return exec.CommandContext(ctx, path, args...).Run()
 		},
@@ -139,8 +151,13 @@ func usageErrorf(format string, args ...any) error {
 }
 
 func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	a.debug = false
+	a.debugWriter = nil
+	debugEnabled, args := parseLeadingDebugFlags(args)
+	a.debug = debugEnabled
+	a.debugWriter = stderr
 	if len(args) == 0 {
-		if err := writeHelp(stderr, ""); err != nil {
+		if err := writeHelp(stderr, "", a.LookupEnv); err != nil {
 			fmt.Fprintf(stderr, "write help: %v\n", err)
 			return 1
 		}
@@ -148,10 +165,10 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	}
 	if topic, requested, err := requestedHelp(args); requested {
 		if err != nil {
-			writeUsageFailure(stderr, err, args)
+			writeUsageFailure(stderr, err, args, a.LookupEnv)
 			return 2
 		}
-		if err := writeHelp(stdout, topic); err != nil {
+		if err := writeHelp(stdout, topic, a.LookupEnv); err != nil {
 			fmt.Fprintf(stderr, "write help: %v\n", err)
 			return 1
 		}
@@ -165,6 +182,7 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		fmt.Fprintf(stderr, "config: initialize store: %v\n", a.initializationError)
 		return 1
 	}
+	a.debugf("command=%q data_root=%q runtime_root=%q log_root=%q", args[0], a.Store.DataRoot, a.Store.RuntimeRoot, a.Store.LogRoot)
 
 	var err error
 	switch args[0] {
@@ -198,16 +216,16 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	}
 	var usage *usageError
 	if errors.As(err, &usage) {
-		writeUsageFailure(stderr, err, args)
+		writeUsageFailure(stderr, err, args, a.LookupEnv)
 		return 2
 	}
 	fmt.Fprintln(stderr, err)
 	return 1
 }
 
-func writeUsageFailure(stderr io.Writer, err error, args []string) {
+func writeUsageFailure(stderr io.Writer, err error, args []string, lookupEnv func(string) (string, bool)) {
 	fmt.Fprintf(stderr, "error: %v\n\n", err)
-	if helpErr := writeHelp(stderr, inferHelpTopic(args)); helpErr != nil {
+	if helpErr := writeHelp(stderr, inferHelpTopic(args), lookupEnv); helpErr != nil {
 		fmt.Fprintf(stderr, "write help: %v\n", helpErr)
 	}
 }
@@ -245,4 +263,63 @@ func parseNoPositionals(fs *flag.FlagSet, command string, args []string) error {
 		return usageErrorf("%s: unexpected arguments", command)
 	}
 	return nil
+}
+
+func parseLeadingDebugFlags(args []string) (bool, []string) {
+	debug := false
+	for len(args) > 0 {
+		switch args[0] {
+		case "-d", "--debug":
+			debug = true
+			args = args[1:]
+		default:
+			return debug, args
+		}
+	}
+	return debug, args
+}
+
+func (a *App) debugf(format string, args ...any) {
+	if a == nil || !a.debug || a.debugWriter == nil {
+		return
+	}
+	writeDebugf(a.debugWriter, format, args...)
+}
+
+func (a *App) runExternal(ctx context.Context, path string, args []string) error {
+	a.debugf("external argv=%s", formatQuotedArgv(path, args))
+	if a == nil || a.RunExternal == nil {
+		return errors.New("external command runner is unavailable")
+	}
+	return a.RunExternal(ctx, path, args)
+}
+
+func writeDebugf(output io.Writer, format string, args ...any) {
+	if output == nil {
+		return
+	}
+	message := fmt.Sprintf(format, args...)
+	if !strings.HasSuffix(message, "\n") {
+		message += "\n"
+	}
+	for _, line := range strings.SplitAfter(message, "\n") {
+		if line == "" {
+			continue
+		}
+		if _, err := io.WriteString(output, "debug: "); err != nil {
+			return
+		}
+		if _, err := io.WriteString(output, line); err != nil {
+			return
+		}
+	}
+}
+
+func formatQuotedArgv(path string, args []string) string {
+	quoted := make([]string, 0, len(args)+1)
+	quoted = append(quoted, strconv.Quote(path))
+	for _, arg := range args {
+		quoted = append(quoted, strconv.Quote(arg))
+	}
+	return strings.Join(quoted, " ")
 }

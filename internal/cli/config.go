@@ -39,6 +39,23 @@ func (v *optionalValue[T]) Set(raw string) error {
 
 type forwardValues []model.PortForward
 
+const (
+	socketVMNetClientEnv        = "QEMU_MANAGE_SOCKET_VMNET_CLIENT"
+	socketVMNetSocketEnv        = "QEMU_MANAGE_SOCKET_VMNET_SOCKET"
+	defaultSocketVMNetInterface = "shared"
+	defaultKeyboardLayout       = "en-us"
+	defaultRTCBase              = "utc"
+)
+
+const keyboardLayoutValues = "ar, da, de, de-ch, en-gb, en-us, es, et, fi, fo, fr, fr-be, fr-ca, fr-ch, hr, hu, is, it, ja, lt, lv, mk, nl, nl-be, no, pl, pt, pt-br, ru, sl, sv, th, tr"
+
+var validKeyboardLayouts = map[string]struct{}{
+	"ar": {}, "da": {}, "de": {}, "de-ch": {}, "en-gb": {}, "en-us": {}, "es": {}, "et": {}, "fi": {}, "fo": {},
+	"fr": {}, "fr-be": {}, "fr-ca": {}, "fr-ch": {}, "hr": {}, "hu": {}, "is": {}, "it": {}, "ja": {}, "lt": {},
+	"lv": {}, "mk": {}, "nl": {}, "nl-be": {}, "no": {}, "pl": {}, "pt": {}, "pt-br": {}, "ru": {}, "sl": {},
+	"sv": {}, "th": {}, "tr": {},
+}
+
 func (v *forwardValues) String() string { return "" }
 
 func (v *forwardValues) Set(raw string) error {
@@ -68,6 +85,90 @@ func (v *forwardValues) Set(raw string) error {
 	return nil
 }
 
+func parseOnOff(raw string) (bool, error) {
+	switch raw {
+	case "on":
+		return true, nil
+	case "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("valid values: on, off")
+	}
+}
+
+func parseNetworkMode(raw string) (model.NetworkMode, error) {
+	value := model.NetworkMode(raw)
+	if value != model.NetworkUser && value != model.NetworkSocketVMNet {
+		return "", fmt.Errorf("valid values: user, socket_vmnet")
+	}
+	return value, nil
+}
+
+func parseRTCBase(raw string) (string, error) {
+	if raw != "utc" && raw != "localtime" {
+		return "", fmt.Errorf("valid values: utc, localtime")
+	}
+	return raw, nil
+}
+
+func parseKeyboardLayout(raw string) (string, error) {
+	if _, ok := validKeyboardLayouts[raw]; !ok {
+		return "", fmt.Errorf("valid values: %s", keyboardLayoutValues)
+	}
+	return raw, nil
+}
+
+func parseString(raw string) (string, error) {
+	return raw, nil
+}
+
+func (a *App) resolveSocketVMNetPath(envName, discovered, kind string) (string, error) {
+	if a.LookupEnv != nil {
+		if value, ok := a.LookupEnv(envName); ok && value != "" {
+			if !filepath.IsAbs(value) {
+				return "", usageErrorf("socket_vmnet: %s must be an absolute path", envName)
+			}
+			return filepath.Clean(value), nil
+		}
+	}
+	if discovered != "" {
+		if !filepath.IsAbs(discovered) {
+			return "", usageErrorf("socket_vmnet: discovered %s path must be absolute", kind)
+		}
+		return filepath.Clean(discovered), nil
+	}
+	return "", usageErrorf("socket_vmnet: %s path not found; set %s or install with `brew install socket_vmnet`", kind, envName)
+}
+
+func (a *App) resolveSocketVMNet(interfaceName string) (*model.SocketVMNetConfig, error) {
+	discovered := &model.SocketVMNetConfig{}
+	if a.DiscoverSocketVMNet != nil {
+		if defaults := a.DiscoverSocketVMNet(); defaults != nil {
+			discovered = defaults
+		}
+	}
+	clientPath, err := a.resolveSocketVMNetPath(socketVMNetClientEnv, discovered.ClientPath, "client")
+	if err != nil {
+		return nil, err
+	}
+	socketPath, err := a.resolveSocketVMNetPath(socketVMNetSocketEnv, discovered.SocketPath, "socket")
+	if err != nil {
+		return nil, err
+	}
+	if interfaceName == "" {
+		return nil, usageErrorf("socket_vmnet: interface must be nonempty")
+	}
+	settings := &model.SocketVMNetConfig{
+		ClientPath: clientPath,
+		SocketPath: socketPath,
+		Interface:  interfaceName,
+	}
+	if !filepath.IsAbs(settings.ClientPath) || !filepath.IsAbs(settings.SocketPath) || settings.Interface == "" {
+		return nil, usageErrorf("socket_vmnet: resolved client_path and socket_path must be absolute and interface must be nonempty")
+	}
+	return settings, nil
+}
+
 func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	_ = ctx
 	_ = stdin
@@ -94,32 +195,18 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 	}
 	var timeout optionalValue[int]
 	timeout.parse = parseSetWholeSeconds
-	parseOnOff := func(raw string) (bool, error) {
-		switch raw {
-		case "on":
-			return true, nil
-		case "off":
-			return false, nil
-		default:
-			return false, fmt.Errorf("valid values: on, off")
-		}
-	}
 	var guestAgent optionalValue[bool]
 	guestAgent.parse = parseOnOff
 	var vnc optionalValue[bool]
 	vnc.parse = parseOnOff
 	var networkMode optionalValue[model.NetworkMode]
-	networkMode.parse = func(raw string) (model.NetworkMode, error) {
-		value := model.NetworkMode(raw)
-		if value != model.NetworkUser && value != model.NetworkSocketVMNet {
-			return "", fmt.Errorf("valid values: user, socket_vmnet")
-		}
-		return value, nil
-	}
-	var clientPath, socketPath, interfaceName, vncPassword, vncBind optionalValue[string]
-	for _, value := range []*optionalValue[string]{&clientPath, &socketPath, &interfaceName, &vncPassword, &vncBind} {
-		value.parse = func(raw string) (string, error) { return raw, nil }
-	}
+	networkMode.parse = parseNetworkMode
+	var interfaceName, vncPassword, vncBind, keyboardLayout, rtcBase optionalValue[string]
+	interfaceName.parse = parseString
+	vncPassword.parse = parseString
+	vncBind.parse = parseString
+	keyboardLayout.parse = parseKeyboardLayout
+	rtcBase.parse = parseRTCBase
 	var vncPort, vncPortTo optionalValue[uint16]
 	vncPort.parse = parsePort
 	vncPortTo.parse = parsePort
@@ -137,11 +224,11 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 	flags.Var(&vncBind, "vnc-bind", "VNC bind IPv4 address")
 	flags.Var(&vncPort, "vnc-port", "minimum VNC TCP port")
 	flags.Var(&vncPortTo, "vnc-port-to", "maximum VNC TCP port")
+	flags.Var(&keyboardLayout, "keyboard-layout", "QEMU VNC keyboard layout")
+	flags.Var(&rtcBase, "rtc-base", "QEMU RTC base")
 	flags.Var(&networkMode, "network", "user or socket_vmnet")
 	flags.Var(&forwards, "forward", "proto:IPv4:host-port:guest-port (repeatable)")
 	flags.BoolVar(&clearForwards, "clear-forwards", false, "replace existing forwards")
-	flags.Var(&clientPath, "socket-vmnet-client", "absolute socket_vmnet client path")
-	flags.Var(&socketPath, "socket-vmnet-socket", "absolute socket_vmnet socket path")
 	flags.Var(&interfaceName, "socket-vmnet-interface", "socket_vmnet interface")
 	if err := flags.Parse(args); err != nil {
 		return usageErrorf("set %s: %v", name, err)
@@ -180,11 +267,14 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 	if guestAgent.set {
 		config.GuestAgent.Enabled = guestAgent.value
 	}
-	vncDetailsSet := vncPassword.set || vncBind.set || vncPort.set || vncPortTo.set
+	if rtcBase.set {
+		config.QEMU.RTCBase = rtcBase.value
+	}
+	vncDetailsSet := vncPassword.set || vncBind.set || vncPort.set || vncPortTo.set || keyboardLayout.set
 	switch {
 	case vnc.set && !vnc.value:
 		if vncDetailsSet {
-			return usageErrorf("set %s: --vnc off is incompatible with --vnc-password, --vnc-bind, --vnc-port, and --vnc-port-to", name)
+			return usageErrorf("set %s: --vnc off is incompatible with --vnc-password, --vnc-bind, --vnc-port, --vnc-port-to, and --keyboard-layout", name)
 		}
 		config.VNC = nil
 	case config.VNC == nil:
@@ -196,10 +286,11 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 				return usageErrorf("set %s: --vnc-password is required when enabling VNC", name)
 			}
 			config.VNC = &model.VNCConfig{
-				Bind:     defaultVNCBind,
-				Port:     defaultVNCPort,
-				PortTo:   defaultVNCPortTo,
-				Password: vncPassword.value,
+				Bind:           defaultVNCBind,
+				Port:           defaultVNCPort,
+				PortTo:         defaultVNCPortTo,
+				Password:       vncPassword.value,
+				KeyboardLayout: defaultKeyboardLayout,
 			}
 			if vncBind.set {
 				config.VNC.Bind = vncBind.value
@@ -209,6 +300,9 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 			}
 			if vncPortTo.set {
 				config.VNC.PortTo = vncPortTo.value
+			}
+			if keyboardLayout.set {
+				config.VNC.KeyboardLayout = keyboardLayout.value
 			}
 		}
 	default:
@@ -226,6 +320,9 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 			if vncPortTo.set {
 				updated.PortTo = vncPortTo.value
 			}
+			if keyboardLayout.set {
+				updated.KeyboardLayout = keyboardLayout.value
+			}
 			config.VNC = &updated
 		}
 	}
@@ -236,6 +333,9 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 	}
 	switch targetMode {
 	case model.NetworkUser:
+		if interfaceName.set {
+			return usageErrorf("socket_vmnet fields require --network socket_vmnet")
+		}
 		if config.Network.Mode == model.NetworkSocketVMNet {
 			config.Network.Forwards = nil
 		}
@@ -245,42 +345,32 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 			config.Network.Forwards = nil
 		}
 		config.Network.Forwards = append(config.Network.Forwards, forwards...)
-		if clientPath.set || socketPath.set || interfaceName.set {
-			return usageErrorf("socket_vmnet fields require --network socket_vmnet")
-		}
 	case model.NetworkSocketVMNet:
-		settings := config.Network.SocketVMNet
-		customSocketVMNet := clientPath.set || socketPath.set || interfaceName.set
-		if settings == nil && !customSocketVMNet && a.DiscoverSocketVMNet != nil {
-			if discovered := a.DiscoverSocketVMNet(); discovered != nil {
-				copy := *discovered
-				settings = &copy
-			}
-		}
-		if settings == nil {
-			settings = &model.SocketVMNetConfig{}
-		}
-		if clientPath.set {
-			settings.ClientPath = clientPath.value
-		}
-		if socketPath.set {
-			settings.SocketPath = socketPath.value
-		}
-		if interfaceName.set {
-			settings.Interface = interfaceName.value
-		}
-		if !filepath.IsAbs(settings.ClientPath) || !filepath.IsAbs(settings.SocketPath) || settings.Interface == "" {
-			return usageErrorf(
-				"set %s: socket_vmnet requires --socket-vmnet-client, --socket-vmnet-socket, and --socket-vmnet-interface when defaults cannot be discovered; install with `brew install socket_vmnet`",
-				name,
-			)
-		}
-		config.Network.Mode = model.NetworkSocketVMNet
-		config.Network.SocketVMNet = settings
-		config.Network.Forwards = nil
 		if len(forwards) != 0 {
 			return usageErrorf("--forward is incompatible with socket_vmnet")
 		}
+		switch {
+		case networkMode.set:
+			resolvedInterface := defaultSocketVMNetInterface
+			if interfaceName.set {
+				resolvedInterface = interfaceName.value
+			} else if config.Network.SocketVMNet != nil && config.Network.SocketVMNet.Interface != "" {
+				resolvedInterface = config.Network.SocketVMNet.Interface
+			}
+			settings, err := a.resolveSocketVMNet(resolvedInterface)
+			if err != nil {
+				return err
+			}
+			config.Network.SocketVMNet = settings
+		case config.Network.Mode != model.NetworkSocketVMNet:
+			return usageErrorf("socket_vmnet fields require --network socket_vmnet")
+		case interfaceName.set:
+			updated := *config.Network.SocketVMNet
+			updated.Interface = interfaceName.value
+			config.Network.SocketVMNet = &updated
+		}
+		config.Network.Mode = model.NetworkSocketVMNet
+		config.Network.Forwards = nil
 	}
 	if err := config.Validate(); err != nil {
 		return err

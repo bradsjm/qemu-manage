@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -46,13 +48,13 @@ func TestRootHelpBypassesRootAndInitialization(t *testing.T) {
 			a.initializationError = errors.New("initialization must be bypassed for help")
 
 			help := requireHelpSuccess(t, a, args...)
-			for _, section := range []string{"Options:", "Examples:", "monitor", "guest-agent"} {
+			for _, section := range []string{"Options:", "Environment:", "-d, --debug", "monitor", "guest-agent", "Current: unset"} {
 				if !strings.Contains(help, section) {
 					t.Errorf("root help does not contain %q: %q", section, help)
 				}
 			}
-			if strings.Contains(help, "supervise") {
-				t.Errorf("root help exposes hidden supervise command: %q", help)
+			if strings.Contains(help, "Storage overrides:") {
+				t.Errorf("root help still uses removed storage overrides block: %q", help)
 			}
 		})
 	}
@@ -61,12 +63,55 @@ func TestRootHelpBypassesRootAndInitialization(t *testing.T) {
 func TestCommandAndNestedHelp(t *testing.T) {
 	a := testApp(t)
 	cases := []struct {
-		name string
-		args []string
-		want []string
+		name  string
+		args  []string
+		want  []string
+		avoid []string
 	}{
-		{name: "create before name", args: []string{"create", "--help"}, want: []string{"create NAME", "Repeatable create options:", "--usb vendor=VVVV,product=PPPP", "--usb bus=N,address=N", "--drive file=PATH[,if=virtio][,format=raw|qcow2][,cache=none|writeback|writethrough|directsync|unsafe][,aio=threads|native][,readonly=on|off]", "Examples:"}},
-		{name: "create after name", args: []string{"create", "example", "--help"}, want: []string{"create NAME", "Relative drive files become absolute external references and must stay readable", "Bus/address can change after a device", "Examples:"}},
+		{
+			name: "create before name",
+			args: []string{"create", "--help"},
+			want: []string{
+				"create NAME",
+				"Source and storage:",
+				"Resources and lifecycle:",
+				"Networking:",
+				"Display:",
+				"Guest integration:",
+				"Firmware and executables:",
+				"Repeatable devices and drives:",
+				"--keyboard-layout LAYOUT",
+				"--rtc-base VALUE",
+				"--socket-vmnet-interface NAME",
+			},
+		},
+		{
+			name: "create after name",
+			args: []string{"create", "example", "--help"},
+			want: []string{
+				"create NAME",
+				"Relative drive files become absolute external references and must stay readable",
+				"Bus/address can change after a device",
+				"QEMU_MANAGE_SOCKET_VMNET_CLIENT",
+				"Examples:",
+			},
+		},
+		{
+			name: "set",
+			args: []string{"set", "--help"},
+			want: []string{
+				"set NAME",
+				"Resources and lifecycle:",
+				"Networking:",
+				"Display and guest integration:",
+				"--keyboard-layout LAYOUT",
+				"--rtc-base VALUE",
+				"QEMU_MANAGE_SOCKET_VMNET_CLIENT",
+			},
+			avoid: []string{"--socket-vmnet-client", "--socket-vmnet-socket"},
+		},
+		{name: "start", args: []string{"start", "--help"}, want: []string{"start NAME", "--foreground", "--boot-menu", "not persisted", "showcmd"}},
+		{name: "showcmd", args: []string{"showcmd", "--help"}, want: []string{"showcmd NAME", "--boot-menu", "durable VM configuration"}},
 		{name: "monitor", args: []string{"monitor", "--help"}, want: []string{"monitor NAME", "\"info status\"", "Stdout is only the", "Ctrl-]", "restarted once", "Examples:"}},
 		{name: "guest-agent", args: []string{"guest-agent", "--help"}, want: []string{"guest-agent NAME REQUEST", `{"execute":"guest-info"}`, "set NAME --guest-agent on", "compact JSON return value", "Examples:"}},
 		{name: "config", args: []string{"config", "--help"}, want: []string{"config", "show", "validate", "apply", "Examples:"}},
@@ -83,7 +128,75 @@ func TestCommandAndNestedHelp(t *testing.T) {
 					t.Errorf("help does not contain %q: %q", text, help)
 				}
 			}
+			for _, text := range tc.avoid {
+				if strings.Contains(help, text) {
+					t.Errorf("help unexpectedly contains %q: %q", text, help)
+				}
+			}
 		})
+	}
+}
+
+func TestRootHelpEnvironmentTableQuotesAndOrdersValues(t *testing.T) {
+	lookup := func(name string) (string, bool) {
+		switch name {
+		case "QEMU_MANAGE_DATA_ROOT":
+			return "/tmp/qm data", true
+		case "QEMU_MANAGE_SOCKET_VMNET_CLIENT":
+			return "/opt/socket_vmnet/bin/socket_vmnet_client\nnext", true
+		case "QEMU_MANAGE_SOCKET_VMNET_SOCKET":
+			return "", true
+		default:
+			return "", false
+		}
+	}
+
+	var output bytes.Buffer
+	if err := writeHelp(&output, "", lookup); err != nil {
+		t.Fatalf("writeHelp failed: %v", err)
+	}
+	help := output.String()
+
+	wantOrder := []string{
+		"QEMU_MANAGE_DATA_ROOT",
+		"QEMU_MANAGE_RUNTIME_ROOT",
+		"QEMU_MANAGE_LOG_ROOT",
+		"QEMU_MANAGE_SOCKET_VMNET_CLIENT",
+		"QEMU_MANAGE_SOCKET_VMNET_SOCKET",
+	}
+	last := -1
+	for _, name := range wantOrder {
+		index := strings.Index(help, name)
+		if index < 0 {
+			t.Fatalf("root help missing %q: %q", name, help)
+		}
+		if index <= last {
+			t.Fatalf("root help order is unstable around %q: %q", name, help)
+		}
+		last = index
+	}
+
+	for _, want := range []string{
+		`Current: ` + strconv.Quote("/tmp/qm data"),
+		`Current: ` + strconv.Quote("/opt/socket_vmnet/bin/socket_vmnet_client\nnext"),
+		"QEMU_MANAGE_RUNTIME_ROOT",
+		"QEMU_MANAGE_LOG_ROOT",
+		"QEMU_MANAGE_SOCKET_VMNET_SOCKET",
+		"Current: unset",
+	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("root help missing %q: %q", want, help)
+		}
+	}
+}
+
+func TestRootHelpNilLookupTreatsEnvironmentAsUnset(t *testing.T) {
+	var output bytes.Buffer
+	if err := writeHelp(&output, "", nil); err != nil {
+		t.Fatalf("writeHelp failed: %v", err)
+	}
+	if count := strings.Count(output.String(), "Current: unset"); count != 5 {
+		t.Fatalf("unset count = %d, want 5; help=%q", count, output.String())
 	}
 }
 

@@ -24,7 +24,7 @@ func renderFixture() (*model.Config, backend.RuntimePaths) {
 				{Protocol: "tcp", HostAddress: "127.0.0.1", HostPort: 2222, GuestPort: 22},
 				{Protocol: "udp", HostAddress: "127.0.0.1", HostPort: 5353, GuestPort: 5353},
 			}},
-			QEMU: model.QEMUConfig{Binary: "bin/qemu-system-aarch64"},
+			QEMU: model.QEMUConfig{Binary: "bin/qemu-system-aarch64", Machine: "virt-11.0", RTCBase: "localtime"},
 		}, backend.RuntimePaths{
 			VMDir: "/vms/ha", QMP: "/run/qmp,0.sock", QMPCommand: "/run/qmp-command,0.sock",
 			QGA: "/run/qga.sock", Console: "/run/console.sock", Monitor: "/run/monitor,0.sock",
@@ -34,13 +34,14 @@ func renderFixture() (*model.Config, backend.RuntimePaths) {
 
 func TestRenderUserNetworkGolden(t *testing.T) {
 	config, paths := renderFixture()
-	got, err := NewBackend().Render(config, paths)
+	got, err := NewBackend().Render(config, paths, backend.RenderOptions{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	want := backend.Command{Path: "/vms/ha/bin/qemu-system-aarch64", Args: []string{
-		"-nodefaults", "-display", "none", "-machine", "virt", "-accel", "hvf", "-cpu", "host",
+		"-nodefaults", "-display", "none", "-machine", "virt-11.0", "-accel", "hvf", "-cpu", "host",
 		"-smp", "cpus=4,sockets=1,cores=4,threads=1", "-m", "4096", "-name", "ha,,vm", "-uuid", "123e4567-e89b-42d3-a456-426614174000", "-run-with", "exit-with-parent=on",
+		"-rtc", "base=localtime",
 		"-drive", "if=pflash,unit=0,format=raw,readonly=on,file.locking=off,file.filename=/vms/ha/firmware/code,,uefi.fd",
 		"-drive", "if=pflash,unit=1,format=raw,file.filename=/vms/ha/firmware/vars.fd",
 		"-drive", "if=none,media=disk,id=disk0,file.filename=/vms/ha/disks/root,,one.qcow2,format=qcow2,cache=none,aio=native,discard=unmap,detect-zeroes=unmap",
@@ -66,6 +67,28 @@ func TestRenderUserNetworkGolden(t *testing.T) {
 	assertSafeQEMUCommand(t, got)
 }
 
+func TestRenderLegacyEmptyMachineUsesVirt(t *testing.T) {
+	config, paths := renderFixture()
+	config.QEMU.Machine = ""
+	got, err := NewBackend().Render(config, paths, backend.RenderOptions{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	requireArgSequence(t, got.Args, []string{"-machine", "virt"})
+}
+
+func TestRenderBootMenuAddsOneShotFlag(t *testing.T) {
+	config, paths := renderFixture()
+	got, err := NewBackend().Render(config, paths, backend.RenderOptions{BootMenu: true})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	requireArgSequence(t, got.Args, []string{"-boot", "menu=on"})
+	if count := countArg(got.Args, "-boot"); count != 1 {
+		t.Fatalf("-boot count = %d, want 1", count)
+	}
+}
+
 func TestRenderSocketVMNetGolden(t *testing.T) {
 	config, paths := renderFixture()
 	config.Name = "ha"
@@ -75,12 +98,13 @@ func TestRenderSocketVMNetGolden(t *testing.T) {
 	config.Installer = nil
 	config.GuestAgent.Enabled = false
 	config.Network = model.NetworkConfig{Mode: model.NetworkSocketVMNet, MAC: "02:00:00:00:00:01", SocketVMNet: &model.SocketVMNetConfig{ClientPath: "/opt/socket_vmnet/bin/socket_vmnet_client", SocketPath: "/var/run/socket_vmnet.bridged.vlan0", Interface: "vlan0"}}
-	got, err := NewBackend().Render(config, paths)
+	got, err := NewBackend().Render(config, paths, backend.RenderOptions{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
 	want := backend.Command{Path: "/opt/socket_vmnet/bin/socket_vmnet_client", Args: []string{
-		"/var/run/socket_vmnet.bridged.vlan0", "/vms/ha/bin/qemu-system-aarch64", "-nodefaults", "-display", "none", "-machine", "virt", "-accel", "hvf", "-cpu", "host", "-smp", "cpus=4,sockets=1,cores=4,threads=1", "-m", "4096", "-name", "ha", "-uuid", "123e4567-e89b-42d3-a456-426614174000", "-run-with", "exit-with-parent=on",
+		"/var/run/socket_vmnet.bridged.vlan0", "/vms/ha/bin/qemu-system-aarch64", "-nodefaults", "-display", "none", "-machine", "virt-11.0", "-accel", "hvf", "-cpu", "host", "-smp", "cpus=4,sockets=1,cores=4,threads=1", "-m", "4096", "-name", "ha", "-uuid", "123e4567-e89b-42d3-a456-426614174000", "-run-with", "exit-with-parent=on",
+		"-rtc", "base=localtime",
 		"-drive", "if=pflash,unit=0,format=raw,readonly=on,file.locking=off,file.filename=/fw/code.fd", "-drive", "if=pflash,unit=1,format=raw,file.filename=/fw/vars.fd", "-device", "virtio-rng-pci",
 		"-chardev", "socket,id=console0,path=/run/console.sock,server=on,wait=off,logfile=/logs/serial,,0.log,logappend=on", "-serial", "chardev:console0",
 		"-qmp", "unix:/run/qmp,,0.sock,server=on,wait=off",
@@ -102,7 +126,7 @@ func TestRenderUSBWithoutVNCAddsControllerAndHostDevicesInOrder(t *testing.T) {
 		{VendorID: "1a2b", ProductID: "c3d4"},
 		{HostBus: 7, HostAddress: 9},
 	}
-	got, err := NewBackend().Render(config, paths)
+	got, err := NewBackend().Render(config, paths, backend.RenderOptions{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -117,20 +141,21 @@ func TestRenderUSBWithoutVNCAddsControllerAndHostDevicesInOrder(t *testing.T) {
 	assertSafeQEMUCommand(t, got)
 }
 
-func TestRenderUSBWithVNCReusesController(t *testing.T) {
+func TestRenderUSBWithVNCReusesControllerAndKeyboardLayout(t *testing.T) {
 	config, paths := renderFixture()
 	config.VNC = &model.VNCConfig{
-		Bind:     "127.0.0.1",
-		Port:     5900,
-		PortTo:   5999,
-		Password: "secret12",
+		Bind:           "127.0.0.1",
+		Port:           5900,
+		PortTo:         5999,
+		Password:       "secret12",
+		KeyboardLayout: "en-gb",
 	}
 	config.USB = []model.USBDeviceConfig{
 		{VendorID: "1a2b", ProductID: "c3d4"},
 		{HostBus: 7, HostAddress: 9},
 	}
 	paths.VNCSecret = "/run/vnc,password"
-	got, err := NewBackend().Render(config, paths)
+	got, err := NewBackend().Render(config, paths, backend.RenderOptions{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -141,11 +166,15 @@ func TestRenderUSBWithVNCReusesController(t *testing.T) {
 		"-device", "usb-tablet,bus=usb.0",
 		"-object", "secret,id=vnc-password,file=/run/vnc,,password",
 		"-vnc", "127.0.0.1:0,to=99,password-secret=vnc-password",
+		"-k", "en-gb",
 		"-device", "usb-host,id=usb-host0,bus=usb.0,vendorid=0x1a2b,productid=0xc3d4",
 		"-device", "usb-host,id=usb-host1,bus=usb.0,hostbus=7,hostaddr=9",
 	})
 	if count := strings.Count(strings.Join(got.Args, " "), "nec-usb-xhci,id=usb"); count != 1 {
 		t.Fatalf("controller count = %d, want 1", count)
+	}
+	if count := countArg(got.Args, "-k"); count != 1 {
+		t.Fatalf("-k count = %d, want 1", count)
 	}
 	if strings.Contains(strings.Join(append([]string{got.Path}, got.Args...), " "), config.VNC.Password) {
 		t.Fatalf("command leaked VNC password: %#v", got)
@@ -178,7 +207,7 @@ func TestRenderRequiresAbsolutePrivateMonitorPaths(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			config, paths := renderFixture()
 			tc.mutate(&paths)
-			if _, err := NewBackend().Render(config, paths); err == nil || err.Error() != tc.want {
+			if _, err := NewBackend().Render(config, paths, backend.RenderOptions{}); err == nil || err.Error() != tc.want {
 				t.Fatalf("Render error = %v, want %q", err, tc.want)
 			}
 		})
@@ -193,6 +222,16 @@ func requireArgSequence(t *testing.T, got, want []string) {
 		}
 	}
 	t.Fatalf("args missing sequence\n got: %#v\nwant: %#v", got, want)
+}
+
+func countArg(args []string, want string) int {
+	count := 0
+	for _, arg := range args {
+		if arg == want {
+			count++
+		}
+	}
+	return count
 }
 
 func assertSafeQEMUCommand(t *testing.T, command backend.Command) {

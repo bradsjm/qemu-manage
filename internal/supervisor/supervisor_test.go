@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -71,9 +72,13 @@ func (f *fakeInstance) exit(exit backend.Exit)    { f.exits <- exit; close(f.exi
 type fakeBackend struct {
 	instance *fakeInstance
 	start    func() error
+	render   func(*model.Config, backend.RuntimePaths, backend.RenderOptions) (backend.Command, error)
 }
 
-func (f *fakeBackend) Render(*model.Config, backend.RuntimePaths) (backend.Command, error) {
+func (f *fakeBackend) Render(config *model.Config, paths backend.RuntimePaths, options backend.RenderOptions) (backend.Command, error) {
+	if f.render != nil {
+		return f.render(config, paths, options)
+	}
 	return backend.Command{Path: "/fake/qemu"}, nil
 }
 func (f *fakeBackend) Start(context.Context, *model.Config, backend.RuntimePaths, backend.Command) (backend.Instance, error) {
@@ -120,7 +125,7 @@ func TestSuperviseStatusIncludesVNCEndpoint(t *testing.T) {
 	service, cfg, paths := supervisorFixture(t, instance)
 	writer := &readinessWriter{ready: make(chan struct{})}
 	done := make(chan error, 1)
-	go func() { done <- service.Supervise(context.Background(), cfg.Name, cfg.ID, writer) }()
+	go func() { done <- service.Supervise(context.Background(), cfg.Name, cfg.ID, writer, SuperviseOptions{}) }()
 	select {
 	case <-writer.ready:
 	case err := <-done:
@@ -344,7 +349,7 @@ func TestSuperviseReadinessClearsFailureAndPersistsNormalExit(t *testing.T) {
 	}
 	writer := &readinessWriter{ready: make(chan struct{})}
 	done := make(chan error, 1)
-	go func() { done <- service.Supervise(context.Background(), cfg.Name, cfg.ID, writer) }()
+	go func() { done <- service.Supervise(context.Background(), cfg.Name, cfg.ID, writer, SuperviseOptions{}) }()
 	select {
 	case <-writer.ready:
 	case err := <-done:
@@ -366,6 +371,73 @@ func TestSuperviseReadinessClearsFailureAndPersistsNormalExit(t *testing.T) {
 	}
 	if _, err := os.Stat(paths.ControlSocket); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("control socket remains: %v", err)
+	}
+}
+
+func TestSuperviseBootMenuMetadataAndDebugRedaction(t *testing.T) {
+	instance := newFakeInstance()
+	service, cfg, _ := supervisorFixture(t, instance)
+	lock, err := service.Store.LockName(cfg.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := lock.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded.QEMU.ExtraArgs = []string{"secret-extra-1", "secret-extra-2"}
+	if err := lock.Save(loaded); err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cfg = loaded
+	paths := service.Store.Paths(cfg)
+	rendered := make(chan backend.RenderOptions, 1)
+	registry := backend.NewRegistry()
+	if err := registry.RegisterInstance(string(model.BackendQEMU), &fakeBackend{
+		instance: instance,
+		render: func(_ *model.Config, _ backend.RuntimePaths, options backend.RenderOptions) (backend.Command, error) {
+			rendered <- options
+			return backend.Command{Path: "/fake/qemu", Args: []string{"-nodefaults", "-m", "512", "secret-extra-1", "secret-extra-2"}}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service.Registry = registry
+	writer := &readinessWriter{ready: make(chan struct{})}
+	var debug bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- service.Supervise(context.Background(), cfg.Name, cfg.ID, writer, SuperviseOptions{BootMenu: true, DebugWriter: &debug})
+	}()
+	select {
+	case <-writer.ready:
+	case err := <-done:
+		t.Fatalf("supervisor exited before readiness: %v", err)
+	}
+	options := <-rendered
+	if !options.BootMenu {
+		t.Fatal("boot menu render option was not propagated")
+	}
+	metadata, err := ReadRuntimeMetadata(paths.RuntimeMetadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !metadata.BootMenu {
+		t.Fatalf("runtime metadata boot menu = %t, want true", metadata.BootMenu)
+	}
+	instance.exit(backend.Exit{})
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	output := debug.String()
+	if !strings.Contains(output, "boot_menu=true") || !strings.Contains(output, "extra_args_count=2") {
+		t.Fatalf("debug output = %q", output)
+	}
+	if strings.Contains(output, "secret-extra-1") || strings.Contains(output, "secret-extra-2") {
+		t.Fatalf("debug output leaked extra args: %q", output)
 	}
 }
 
@@ -391,7 +463,7 @@ func TestSuperviseDuplicateLifetimeLockAndPreflightBeforeSocket(t *testing.T) {
 		close(checked)
 		return errors.New("blocked")
 	}
-	err := service.Supervise(context.Background(), cfg.Name, cfg.ID, io.Discard)
+	err := service.Supervise(context.Background(), cfg.Name, cfg.ID, io.Discard, SuperviseOptions{})
 	<-checked
 	if err == nil || !strings.Contains(err.Error(), "blocked") {
 		t.Fatalf("error=%v", err)

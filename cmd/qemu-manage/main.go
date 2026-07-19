@@ -26,6 +26,7 @@ func run() int {
 }
 
 func ownsLifecycleSignals(args []string) bool {
+	args = stripLeadingDebugFlags(args)
 	if len(args) == 0 {
 		return false
 	}
@@ -53,4 +54,16 @@ func ownsLifecycleSignals(args []string) bool {
 		}
 	}
 	return foreground
+}
+
+func stripLeadingDebugFlags(args []string) []string {
+	for len(args) > 0 {
+		switch args[0] {
+		case "-d", "--debug":
+			args = args[1:]
+		default:
+			return args
+		}
+	}
+	return args
 }

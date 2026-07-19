@@ -38,12 +38,13 @@ func TestDiscoverSocketVMNetRequiresInstalledClient(t *testing.T) {
 	if err := os.WriteFile(daemon, []byte("fixture"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got := discoverSocketVMNet([]socketVMNetInstallation{{
+	got := discoverSocketVMNet([]socketVMNetInstallation{{
 		clientPath: filepath.Join(root, "missing-client"),
 		daemonPath: daemon,
 		socketPath: "/var/run/socket_vmnet",
-	}}); got != nil {
-		t.Fatalf("discovered configuration without a client: %+v", got)
+	}})
+	if got == nil || got.ClientPath != "" || got.SocketPath != "/var/run/socket_vmnet" || got.Interface != "shared" {
+		t.Fatalf("unexpected daemon-only discovery: %+v", got)
 	}
 }
 
@@ -52,12 +53,13 @@ func TestDiscoverSocketVMNetDoesNotGuessSocketFromClient(t *testing.T) {
 	if err := os.WriteFile(client, []byte("fixture"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got := discoverSocketVMNet([]socketVMNetInstallation{{
+	got := discoverSocketVMNet([]socketVMNetInstallation{{
 		clientPath: client,
 		daemonPath: filepath.Join(t.TempDir(), "missing-daemon"),
 		socketPath: filepath.Join(t.TempDir(), "missing.sock"),
-	}}); got != nil {
-		t.Fatalf("discovered guessed socket configuration: %+v", got)
+	}})
+	if got == nil || got.ClientPath != client || got.SocketPath != "" || got.Interface != "shared" {
+		t.Fatalf("unexpected client-only discovery: %+v", got)
 	}
 }
 

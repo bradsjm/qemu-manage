@@ -111,6 +111,9 @@ type StartOptions struct {
 	Executable    string
 	Paths         store.Paths
 	Foreground    bool
+	BootMenu      bool
+	Debug         bool
+	DebugWriter   io.Writer
 	ReadyTimeout  time.Duration
 	RunForeground func(context.Context, io.Writer) error
 }
@@ -183,7 +186,8 @@ func startDetached(ctx context.Context, options StartOptions) error {
 		readyWriter.Close()
 		return err
 	}
-	process, err := os.StartProcess(options.Executable, []string{options.Executable, "supervise", options.Name, "--ready-fd", "3", "--expected-id", options.ExpectedID}, &os.ProcAttr{
+	argv := detachedSupervisorArgv(options)
+	process, err := os.StartProcess(options.Executable, argv, &os.ProcAttr{
 		Files: []*os.File{stdin, stdout, stderr, readyWriter},
 		Sys:   processAttributes,
 	})
@@ -199,6 +203,7 @@ func startDetached(ctx context.Context, options StartOptions) error {
 	if err := requireMatchingReady(message, options.ExpectedID); err != nil {
 		return terminateAndReap(process, err)
 	}
+	debugf(options.DebugWriter, "detached supervisor pid=%d ready=true", process.Pid)
 	if err := process.Release(); err != nil {
 		return terminateAndReap(process, fmt.Errorf("supervisor: release process handle: %w", err))
 	}
@@ -224,6 +229,19 @@ func startForeground(ctx context.Context, options StartOptions) error {
 		return finishForegroundFailure(cancel, result, err)
 	}
 	return <-result
+}
+
+func detachedSupervisorArgv(options StartOptions) []string {
+	argv := make([]string, 0, 8)
+	argv = append(argv, options.Executable)
+	if options.Debug {
+		argv = append(argv, "--debug")
+	}
+	argv = append(argv, "supervise", options.Name, "--ready-fd", "3", "--expected-id", options.ExpectedID)
+	if options.BootMenu {
+		argv = append(argv, "--boot-menu")
+	}
+	return argv
 }
 
 func awaitReady(ctx context.Context, reader io.Reader, timeout time.Duration) (ReadyMessage, error) {

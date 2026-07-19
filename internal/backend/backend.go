@@ -38,6 +38,10 @@ type Command struct {
 	Args []string
 }
 
+type RenderOptions struct {
+	BootMenu bool
+}
+
 // VNCEndpoint is the live VNC listener selected by the backend.
 type VNCEndpoint struct {
 	Host string `json:"host"`
@@ -66,7 +70,7 @@ type Instance interface {
 // Backend renders and starts one backend implementation. Start executes the
 // supplied rendered command rather than rendering a second time.
 type Backend interface {
-	Render(*model.Config, RuntimePaths) (Command, error)
+	Render(*model.Config, RuntimePaths, RenderOptions) (Command, error)
 	Start(context.Context, *model.Config, RuntimePaths, Command) (Instance, error)
 }
 

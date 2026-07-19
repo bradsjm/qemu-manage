@@ -35,6 +35,11 @@ func NewService(st *store.Store, registry *backend.Registry) *Service {
 	return &Service{Store: st, Registry: registry, Clock: time.Now, StartTimeout: defaultStartTimeout}
 }
 
+type SuperviseOptions struct {
+	BootMenu    bool
+	DebugWriter io.Writer
+}
+
 type gracefulAttempt struct {
 	done     chan struct{}
 	request  chan struct{}
@@ -63,7 +68,7 @@ type supervisedRun struct {
 	connections  map[*net.UnixConn]bool
 }
 
-func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready io.Writer) (resultErr error) {
+func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready io.Writer, options SuperviseOptions) (resultErr error) {
 	restoreUmask := setUmaskPrivate()
 	defer restoreUmask()
 	if s == nil || s.Store == nil || s.Registry == nil {
@@ -163,6 +168,22 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	}
 	paths = s.Store.Paths(config)
 
+	debugf(
+		options.DebugWriter,
+		"preflight name=%q backend=%q runtime_dir=%q control_socket=%q qmp=%q qmp_command=%q qga=%q console=%q monitor=%q qemu_log=%q serial_log=%q",
+		config.Name,
+		config.Backend,
+		paths.RuntimeDir,
+		paths.ControlSocket,
+		paths.QMP,
+		paths.QMPCommand,
+		paths.QGA,
+		paths.Console,
+		paths.Monitor,
+		paths.QEMULog,
+		paths.SerialLog,
+	)
+
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer signal.Stop(signals)
@@ -193,7 +214,15 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	}
 
 	startedAt := s.now()
-	if err := WriteRuntimeMetadata(paths.RuntimeMetadata, RuntimeMetadata{Version: metadataVersion, ID: config.ID, Name: config.Name, SupervisorPID: os.Getpid(), StartedAt: startedAt}); err != nil {
+	debugf(options.DebugWriter, "runtime metadata started_at=%q boot_menu=%t", startedAt.Format(time.RFC3339Nano), options.BootMenu)
+	if err := WriteRuntimeMetadata(paths.RuntimeMetadata, RuntimeMetadata{
+		Version:       metadataVersion,
+		ID:            config.ID,
+		Name:          config.Name,
+		SupervisorPID: os.Getpid(),
+		StartedAt:     startedAt,
+		BootMenu:      options.BootMenu,
+	}); err != nil {
 		return fmt.Errorf("runtime: write metadata: %w", err)
 	}
 	if file, ok := ready.(*os.File); ok {
@@ -220,10 +249,12 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 		return err
 	}
 	runtimePaths := backendPaths(paths)
-	command, err := implementation.Render(config, runtimePaths)
+	debugf(options.DebugWriter, "backend=%q", config.Backend)
+	command, err := implementation.Render(config, runtimePaths, backend.RenderOptions{BootMenu: options.BootMenu})
 	if err != nil {
 		return fmt.Errorf("qemu: render: %w", err)
 	}
+	debugf(options.DebugWriter, "rendered argv=%s extra_args_count=%d", formatManagedCommand(command, len(config.QEMU.ExtraArgs)), len(config.QEMU.ExtraArgs))
 	instance, err := implementation.Start(startCtx, config, runtimePaths, command)
 	if err != nil {
 		return fmt.Errorf("qemu: start: %w", err)
@@ -247,6 +278,7 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	if err != nil {
 		return fmt.Errorf("config: hash: %w", err)
 	}
+	debugf(options.DebugWriter, "backend_pid=%d backend_state=%q config_hash=%q", instance.PID(), backendState, hash)
 	var vnc *backend.VNCEndpoint
 	if endpoint, ok := instance.VNCEndpoint(); ok {
 		endpoint := endpoint
@@ -283,6 +315,7 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	if closer, ok := ready.(io.Closer); ok {
 		_ = closer.Close()
 	}
+	debugf(options.DebugWriter, "ready id=%q backend_pid=%d", expectedID, instance.PID())
 	run.mu.Unlock()
 
 	serveCtx, cancelServe := context.WithCancel(context.Background())
@@ -349,6 +382,7 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	} else if exitCode != 0 {
 		resultErr = fmt.Errorf("qemu: backend exited with code %d: %s", exitCode, text)
 	}
+	debugf(options.DebugWriter, "terminal exit_code=%d intentional=%t internal_failure=%t forced=%t", exitCode, intentional, internalFailure, forceErr != nil)
 	finalized = true
 	return resultErr
 }

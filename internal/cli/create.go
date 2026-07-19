@@ -64,11 +64,18 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	firmwareVars := flags.String("firmware-vars", defaultFirmwareVars, "AArch64 UEFI variables template (auto-detected)")
 	restartPolicy := flags.String("restart-policy", string(model.RestartNever), "restart policy")
 	shutdownTimeout := flags.String("shutdown-timeout", "180s", "shutdown timeout")
+	network := flags.String("network", string(model.NetworkUser), "network mode")
+	guestAgent := flags.String("guest-agent", "off", "guest agent")
+	socketVMNetInterface := flags.String("socket-vmnet-interface", "", "socket_vmnet interface")
+	rtcBase := flags.String("rtc-base", defaultRTCBase, "QEMU RTC base")
 	vncEnabled := flags.Bool("vnc", false, "enable QEMU VNC")
 	vncPassword := flags.String("vnc-password", "", "QEMU VNC password")
 	vncBind := flags.String("vnc-bind", defaultVNCBind, "VNC bind IPv4 address")
 	vncPort := flags.String("vnc-port", strconv.Itoa(defaultVNCPort), "minimum VNC TCP port")
 	vncPortTo := flags.String("vnc-port-to", strconv.Itoa(defaultVNCPortTo), "maximum VNC TCP port")
+	keyboardLayout := flags.String("keyboard-layout", "", "QEMU VNC keyboard layout")
+	var forwards forwardValues
+	flags.Var(&forwards, "forward", "proto:IPv4:host-port:guest-port (repeatable)")
 	var usbs usbValues
 	flags.Var(&usbs, "usb", "USB passthrough selector")
 	var drives driveValues
@@ -78,6 +85,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	}
 	firmwareCodeExplicit, firmwareVarsExplicit := false, false
 	vncDetailExplicit := false
+	keyboardLayoutExplicit := false
 	flags.Visit(func(option *flag.Flag) {
 		switch option.Name {
 		case "firmware-code":
@@ -86,6 +94,9 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			firmwareVarsExplicit = true
 		case "vnc-password", "vnc-bind", "vnc-port", "vnc-port-to":
 			vncDetailExplicit = true
+		case "keyboard-layout":
+			vncDetailExplicit = true
+			keyboardLayoutExplicit = true
 		}
 	})
 	if firmwareCodeExplicit != firmwareVarsExplicit {
@@ -113,8 +124,20 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	if err != nil {
 		return usageErrorf("create: --shutdown-timeout: %v", err)
 	}
+	networkMode, err := parseNetworkMode(*network)
+	if err != nil {
+		return usageErrorf("create: --network: %v", err)
+	}
+	guestAgentEnabled, err := parseOnOff(*guestAgent)
+	if err != nil {
+		return usageErrorf("create: --guest-agent: %v", err)
+	}
+	rtcBaseValue, err := parseRTCBase(*rtcBase)
+	if err != nil {
+		return usageErrorf("create: --rtc-base: %v", err)
+	}
 	if !*vncEnabled && vncDetailExplicit {
-		return usageErrorf("create: --vnc-password, --vnc-bind, --vnc-port, and --vnc-port-to require --vnc")
+		return usageErrorf("create: --vnc-password, --vnc-bind, --vnc-port, --vnc-port-to, and --keyboard-layout require --vnc")
 	}
 	if *vncEnabled && *vncPassword == "" {
 		return usageErrorf("create: --vnc-password is required when --vnc is set")
@@ -123,6 +146,12 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		return usageErrorf(
 			"create: --firmware-code and --firmware-vars are required when they cannot be auto-detected; install QEMU with `brew install qemu` or provide both paths",
 		)
+	}
+	if networkMode == model.NetworkUser && *socketVMNetInterface != "" {
+		return usageErrorf("create: --socket-vmnet-interface requires --network socket_vmnet")
+	}
+	if networkMode == model.NetworkSocketVMNet && len(forwards) != 0 {
+		return usageErrorf("create: --forward is incompatible with socket_vmnet")
 	}
 	imageSource, err := parseImageSource(*image)
 	if err != nil {
@@ -138,11 +167,19 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		if err != nil {
 			return usageErrorf("create: --vnc-port-to: %v", err)
 		}
+		selectedKeyboardLayout := defaultKeyboardLayout
+		if keyboardLayoutExplicit {
+			selectedKeyboardLayout, err = parseKeyboardLayout(*keyboardLayout)
+			if err != nil {
+				return usageErrorf("create: --keyboard-layout: %v", err)
+			}
+		}
 		vnc = &model.VNCConfig{
-			Bind:     *vncBind,
-			Port:     vncPortValue,
-			PortTo:   vncPortToValue,
-			Password: *vncPassword,
+			Bind:           *vncBind,
+			Port:           vncPortValue,
+			PortTo:         vncPortToValue,
+			Password:       *vncPassword,
+			KeyboardLayout: selectedKeyboardLayout,
 		}
 	}
 	if len(usbs) > usbDeviceLimit(vnc) {
@@ -167,6 +204,13 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	if err != nil {
 		return fmt.Errorf("qemu: %w", err)
 	}
+	machine := "virt"
+	if a.DiscoverMachine != nil {
+		machine, err = a.DiscoverMachine(ctx, qemuPath)
+		if err != nil {
+			return err
+		}
+	}
 	id, err := model.GenerateID()
 	if err != nil {
 		return err
@@ -178,6 +222,21 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	mac, err := model.GenerateMAC()
 	if err != nil {
 		return err
+	}
+
+	networkConfig := model.NetworkConfig{Mode: networkMode, MAC: mac, Forwards: []model.PortForward{}}
+	switch networkMode {
+	case model.NetworkUser:
+		networkConfig.Forwards = append(networkConfig.Forwards, forwards...)
+	case model.NetworkSocketVMNet:
+		interfaceName := *socketVMNetInterface
+		if interfaceName == "" {
+			interfaceName = defaultSocketVMNetInterface
+		}
+		networkConfig.SocketVMNet, err = a.resolveSocketVMNet(interfaceName)
+		if err != nil {
+			return err
+		}
 	}
 
 	primaryBootIndex := 0
@@ -212,11 +271,11 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		Firmware:               model.FirmwareConfig{Code: "firmware-code.fd", Variables: "firmware-vars.fd"},
 		Installer:              installer,
 		Disks:                  disks,
-		Network:                model.NetworkConfig{Mode: model.NetworkUser, MAC: mac, Forwards: []model.PortForward{}},
-		GuestAgent:             model.GuestAgentConfig{},
+		Network:                networkConfig,
+		GuestAgent:             model.GuestAgentConfig{Enabled: guestAgentEnabled},
 		VNC:                    vnc,
 		USB:                    []model.USBDeviceConfig(usbs),
-		QEMU:                   model.QEMUConfig{Binary: qemuPath, ImageTool: qemuImgPath, Machine: "virt", ExtraArgs: []string{}},
+		QEMU:                   model.QEMUConfig{Binary: qemuPath, ImageTool: qemuImgPath, Machine: machine, RTCBase: rtcBaseValue, ExtraArgs: []string{}},
 		Autostart:              model.AutostartConfig{Scope: model.AutostartNone},
 	}
 	if err := config.Validate(); err != nil {
@@ -237,7 +296,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		}
 		diskPath := filepath.Join(paths.VMDir, config.Disks[0].Path)
 		if *image == "" {
-			if err := a.RunExternal(ctx, qemuImgPath, []string{"create", "-f", "qcow2", diskPath, strconv.FormatUint(diskBytes, 10)}); err != nil {
+			if err := a.runExternal(ctx, qemuImgPath, []string{"create", "-f", "qcow2", diskPath, strconv.FormatUint(diskBytes, 10)}); err != nil {
 				return err
 			}
 			if err := os.Chmod(diskPath, 0o600); err != nil {
@@ -249,7 +308,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		if err != nil {
 			return err
 		}
-		convertErr := a.RunExternal(ctx, qemuImgPath, []string{"convert", "-O", "qcow2", sourcePath, diskPath})
+		convertErr := a.runExternal(ctx, qemuImgPath, []string{"convert", "-O", "qcow2", sourcePath, diskPath})
 		if temporarySource {
 			removeErr := os.Remove(sourcePath)
 			if convertErr != nil {
@@ -270,7 +329,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			return fmt.Errorf("query converted image virtual size: %w", err)
 		}
 		if virtualSize < diskBytes {
-			if err := a.RunExternal(ctx, qemuImgPath, []string{"resize", diskPath, strconv.FormatUint(diskBytes, 10)}); err != nil {
+			if err := a.runExternal(ctx, qemuImgPath, []string{"resize", diskPath, strconv.FormatUint(diskBytes, 10)}); err != nil {
 				return err
 			}
 		}

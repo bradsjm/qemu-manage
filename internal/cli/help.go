@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -10,57 +11,36 @@ type helpTopic struct {
 	text string
 }
 
+type helpEnvVar struct {
+	name        string
+	description string
+}
+
+var rootHelpEnvVars = []helpEnvVar{
+	{
+		name:        "QEMU_MANAGE_DATA_ROOT",
+		description: "Absolute owner-controlled VM data directory (default: ~/Library/Application Support/qemu-manage/vms).",
+	},
+	{
+		name:        "QEMU_MANAGE_RUNTIME_ROOT",
+		description: "Absolute owner-controlled runtime directory; keep it short (default: /tmp/qemu-manage-<uid>).",
+	},
+	{
+		name:        "QEMU_MANAGE_LOG_ROOT",
+		description: "Absolute owner-controlled log directory (default: ~/Library/Logs/qemu-manage).",
+	},
+	{
+		name:        "QEMU_MANAGE_SOCKET_VMNET_CLIENT",
+		description: "Absolute root-owned socket_vmnet_client path; otherwise discovered from Homebrew or MacPorts.",
+	},
+	{
+		name:        "QEMU_MANAGE_SOCKET_VMNET_SOCKET",
+		description: "Absolute socket_vmnet daemon socket path; otherwise discovered from Homebrew or MacPorts.",
+	},
+}
+
 var helpTopics = map[string]helpTopic{
-	"": {text: `qemu-manage manages headless QEMU virtual machines on Apple Silicon.
-
-Usage:
-  qemu-manage COMMAND [ARGUMENTS]
-  qemu-manage COMMAND --help
-  qemu-manage help [COMMAND [SUBCOMMAND]]
-
-Options:
-  -h, --help  Show progressive help for the current command
-
-Getting started:
-  1. Install QEMU: brew install qemu
-  2. Check the host: qemu-manage doctor
-  3. Create a VM: qemu-manage create NAME --help
-  4. Check and start it: qemu-manage doctor NAME && qemu-manage start NAME
-
-Commands:
-  create       Create a managed VM from an image, ISO, or blank disk
-  set          Change VM resources, restart behavior, or networking
-  config       Show, validate, or apply the complete JSON configuration
-  showcmd      Print the exact QEMU command without running it
-  start        Start a VM in the background
-  stop         Gracefully stop a VM, or explicitly force it
-  console      Connect to a running VM's serial console
-  monitor      Connect to the QEMU human monitor or run one HMP command
-  guest-agent  Send one JSON request to the guest agent and print its return
-  vnc          Copy the VNC password and open Screen Sharing (macOS)
-  status       Show one VM or all VM runtime states
-  list         List all managed VMs
-  doctor       Check QEMU, firmware, VM files, and networking prerequisites
-  autostart    Manage login or system-boot startup with launchd
-
-Network choices:
-  user          Built into QEMU; simplest setup, with optional port forwards
-  socket_vmnet  Host/shared/bridged networking; requires socket_vmnet
-
-
-Storage overrides:
-  QEMU_MANAGE_DATA_ROOT     Absolute owner-controlled VM data directory
-  QEMU_MANAGE_RUNTIME_ROOT  Absolute owner-controlled runtime directory; keep short
-  QEMU_MANAGE_LOG_ROOT      Absolute owner-controlled log directory
-
-Examples:
-  qemu-manage --help
-  qemu-manage create --help
-  qemu-manage monitor --help
-  qemu-manage guest-agent --help
-
-Run 'qemu-manage COMMAND --help' for options, examples, and next steps.
-`},
+	"": {text: ``},
 	"create": {text: `Create a managed AArch64 VM. Source images and firmware are copied; extra drive files are referenced in place and are not modified.
 
 Usage:
@@ -68,27 +48,54 @@ Usage:
 
 Defaults:
   With neither --image nor --iso, create makes a blank 32GiB qcow2 disk.
-  Networking starts in user mode and the guest agent starts disabled.
+  New VMs start with user networking, the guest agent off, RTC base utc, and a
+  concrete machine pinned from the selected QEMU binary as virt-N.N.
   QEMU and qemu-img are resolved from PATH. Firmware code and variables are
   auto-detected as a matching pair from QEMU's Homebrew or system share files.
   To override firmware discovery, provide --firmware-code and --firmware-vars together.
   HTTP(S) image URLs are downloaded directly. URL paths ending in .xz or .gz
   are decompressed while downloading; partial downloads are removed on failure.
 
-Options:
+Source and storage:
   --image SOURCE           Local path or HTTP(S) URL to qcow2/raw image
   --iso PATH               Copy an installer ISO (default: none)
+  --disk-size SIZE         Primary disk size (default: 32GiB)
+
+Resources and lifecycle:
   --cpus N                 Virtual CPUs (default: 2)
   --memory SIZE            Whole MiB or GiB (default: 2GiB)
-  --disk-size SIZE         Primary disk size (default: 32GiB)
+  --restart-policy VALUE   Valid values: never, on-failure (default: never)
+  --shutdown-timeout D     Positive whole-second duration (default: 180s)
+  --rtc-base VALUE         Valid values: utc, localtime (default: utc)
+
+Networking:
+  --network VALUE             Valid values: user, socket_vmnet (default: user)
+  --forward SPEC              Repeatable proto:IPv4:host-port:guest-port (user only)
+  --socket-vmnet-interface NAME
+                               Interface description such as shared or vlan0
+                               (socket_vmnet only)
+
+socket_vmnet filesystem paths resolve from QEMU_MANAGE_SOCKET_VMNET_CLIENT and
+QEMU_MANAGE_SOCKET_VMNET_SOCKET first, then from independent discovery.
+
+Display:
+  --vnc                     Enable QEMU VNC
+  --vnc-password VALUE      Required with --vnc; 1-8 UTF-8 bytes
+  --vnc-bind IPV4           VNC bind IPv4 address (default: 127.0.0.1)
+  --vnc-port PORT           Minimum VNC TCP port (default: 5900)
+  --vnc-port-to PORT        Maximum VNC TCP port (default: 5999)
+  --keyboard-layout LAYOUT  Valid only with --vnc (default: en-us)
+
+Guest integration:
+  --guest-agent VALUE       Valid values: on, off (default: off)
+
+Firmware and executables:
   --qemu PATH              QEMU executable (default: qemu-system-aarch64 in PATH)
   --qemu-img PATH          qemu-img executable (default: qemu-img in PATH)
   --firmware-code PATH     Override the auto-detected AArch64 UEFI code image
   --firmware-vars PATH     Override the auto-detected UEFI variables template
-  --restart-policy VALUE   Valid values: never, on-failure (default: never)
-  --shutdown-timeout D     Positive whole-second duration (default: 180s)
 
-Repeatable create options:
+Repeatable devices and drives:
   --usb vendor=VVVV,product=PPPP
   --usb bus=N,address=N
   --drive file=PATH[,if=virtio][,format=raw|qcow2][,cache=none|writeback|writethrough|directsync|unsafe][,aio=threads|native][,readonly=on|off]
@@ -103,24 +110,27 @@ and in place. Double each literal comma in a value as ",,". Omitted format is
 detected; omitted if means virtio; host and QEMU support still govern aio=native.
 
 Examples:
-  # Inspect automatically discovered QEMU and firmware paths first.
-  qemu-manage doctor
-
   # Download, decompress, and import Home Assistant OS directly from GitHub.
   qemu-manage create home-assistant \
     --image "https://github.com/home-assistant/operating-system/releases/download/18.0/haos_generic-aarch64-18.0.qcow2.xz" \
     --cpus 2 --memory 4GiB --disk-size 32GiB \
+    --network user --forward tcp:127.0.0.1:2222:22 \
+    --guest-agent on --rtc-base utc \
     --restart-policy on-failure
 
-  # Create a blank disk and boot an installer ISO using detected firmware.
-  qemu-manage create linux --iso "$HOME/Downloads/linux-arm64.iso"
+  # Create a blank disk and boot an installer ISO with VNC and a UK keyboard.
+  qemu-manage create linux \
+    --iso "$HOME/Downloads/linux-arm64.iso" \
+    --vnc --vnc-password "$VNC_PASSWORD" \
+    --keyboard-layout en-gb
 
-  # Add one external drive and two USB selectors.
+  # Use socket_vmnet with environment-or-discovery filesystem paths.
+  export QEMU_MANAGE_SOCKET_VMNET_CLIENT=/opt/socket_vmnet/bin/socket_vmnet_client
+  export QEMU_MANAGE_SOCKET_VMNET_SOCKET=/opt/homebrew/var/run/socket_vmnet
   qemu-manage create lab \
     --image "$HOME/Images/lab.qcow2" \
-    --drive "file=disk.img,if=virtio,cache=none,aio=native" \
-    --usb vendor=1d6b,product=0002 \
-    --usb bus=1,address=2
+    --network socket_vmnet \
+    --socket-vmnet-interface shared
 
 NAME must come before options. Next: qemu-manage doctor NAME, then qemu-manage start NAME.
 `},
@@ -129,31 +139,41 @@ NAME must come before options. Next: qemu-manage doctor NAME, then qemu-manage s
 Usage:
   qemu-manage set NAME OPTION [OPTION ...]
 
-Resource and lifecycle options:
+Resources and lifecycle:
   --cpus N                       Positive virtual CPU count
   --memory SIZE                  Whole MiB or GiB, such as 4096MiB or 4GiB
   --restart-policy VALUE         Valid values: never, on-failure
   --shutdown-timeout DURATION    Positive whole-second duration, such as 180s
-  --guest-agent VALUE            Valid values: on, off
+  --rtc-base VALUE               Valid values: utc, localtime
 
-Network options:
+Networking:
   --network VALUE                Valid values: user, socket_vmnet
   --forward SPEC                 Repeatable proto:IPv4:host-port:guest-port
   --clear-forwards               Remove existing user-network forwards
-  --socket-vmnet-client PATH     Absolute socket_vmnet_client path
-  --socket-vmnet-socket PATH     Absolute socket_vmnet daemon socket path
   --socket-vmnet-interface NAME  Interface description, such as shared or vlan0
+
+Selecting --network socket_vmnet resolves QEMU_MANAGE_SOCKET_VMNET_CLIENT and
+QEMU_MANAGE_SOCKET_VMNET_SOCKET first, then independent discovery. The resolved
+absolute paths are persisted in the VM configuration for later starts and launchd.
+On an already-socket_vmnet VM, changing only --socket-vmnet-interface preserves
+the current persisted client and socket paths; repeat --network socket_vmnet to
+refresh them from environment or discovery.
+
+Display and guest integration:
+  --guest-agent VALUE            Valid values: on, off
+  --vnc VALUE                    Valid values: on, off
+  --vnc-password VALUE           Update the stored VNC password
+  --vnc-bind IPV4                Update the VNC bind IPv4 address
+  --vnc-port PORT                Update the minimum VNC TCP port
+  --vnc-port-to PORT             Update the maximum VNC TCP port
+  --keyboard-layout LAYOUT       Requires existing VNC or --vnc on
 
 Examples:
   # Built-in user networking with Home Assistant available on localhost:8123.
   qemu-manage set home-assistant --network user \
     --forward tcp:127.0.0.1:8123:8123 --guest-agent on
 
-  # Install and start the basic Homebrew socket_vmnet service.
-  brew install socket_vmnet
-  sudo "$(brew --prefix)/bin/brew" services start socket_vmnet
-
-  # Use that shared socket_vmnet service; installed paths are auto-detected.
+  # Use socket_vmnet with discovered defaults or exported overrides.
   qemu-manage set home-assistant --network socket_vmnet
 
   # If doctor warns that the Homebrew client is user-writable, make a root-owned copy.
@@ -161,11 +181,14 @@ Examples:
   sudo install -o root -g wheel -m 0755 \
     "$(brew --prefix socket_vmnet)/bin/socket_vmnet_client" \
     /opt/socket_vmnet/bin/socket_vmnet_client
+  export QEMU_MANAGE_SOCKET_VMNET_CLIENT=/opt/socket_vmnet/bin/socket_vmnet_client
+  export QEMU_MANAGE_SOCKET_VMNET_SOCKET=/opt/homebrew/var/run/socket_vmnet
   qemu-manage set home-assistant \
     --network socket_vmnet \
-    --socket-vmnet-client /opt/socket_vmnet/bin/socket_vmnet_client \
-    --socket-vmnet-socket /opt/homebrew/var/run/socket_vmnet \
     --socket-vmnet-interface shared
+
+  # Update RTC base and the VNC keyboard layout together.
+  qemu-manage set linux --rtc-base localtime --keyboard-layout en-gb
 
 Repeat the second sudo install command after upgrading socket_vmnet with Homebrew.
 NAME must come before options. Next: qemu-manage doctor NAME.
@@ -222,20 +245,29 @@ Examples:
 Usage:
   qemu-manage showcmd NAME
 
+The rendered command comes only from the durable VM configuration. One-shot
+start overrides such as --boot-menu are intentionally not included.
+
 Examples:
   qemu-manage showcmd home-assistant
 `},
 	"start": {text: `Check prerequisites and start a VM under its authenticated supervisor.
 
 Usage:
-  qemu-manage start NAME [--foreground]
+  qemu-manage start NAME [--foreground] [--boot-menu]
 
 Options:
   --foreground  Keep the supervisor attached to this terminal (diagnostics)
+  --boot-menu   Request the firmware boot menu for this start only; requires
+                firmware support plus an interactive console path such as serial
+                console or VNC. The value is not persisted and does not appear
+                in showcmd output.
 
 Examples:
   qemu-manage doctor home-assistant
   qemu-manage start home-assistant
+  qemu-manage --debug start home-assistant --foreground
+  qemu-manage start linux --boot-menu
   qemu-manage status home-assistant
 `},
 	"stop": {text: `Request a graceful guest shutdown through QGA or QMP.
@@ -366,15 +398,19 @@ If doctor reports a user-writable socket_vmnet client:
   sudo install -o root -g wheel -m 0755 \
     "$(brew --prefix socket_vmnet)/bin/socket_vmnet_client" \
     /opt/socket_vmnet/bin/socket_vmnet_client
+  export QEMU_MANAGE_SOCKET_VMNET_CLIENT=/opt/socket_vmnet/bin/socket_vmnet_client
+  export QEMU_MANAGE_SOCKET_VMNET_SOCKET=/opt/homebrew/var/run/socket_vmnet
 
 Then select it with:
-  qemu-manage set NAME --network socket_vmnet \
-    --socket-vmnet-client /opt/socket_vmnet/bin/socket_vmnet_client \
-    --socket-vmnet-socket /opt/homebrew/var/run/socket_vmnet \
-    --socket-vmnet-interface shared
+  qemu-manage create NAME --network socket_vmnet --socket-vmnet-interface shared
+  qemu-manage set NAME --network socket_vmnet --socket-vmnet-interface shared
 
-A named check also verifies copied firmware, disks, configured socket_vmnet paths,
-and whether the helper socket is connectable.
+Environment overrides take precedence over discovery during create and explicit
+socket_vmnet selection. The resolved absolute paths persist in the VM config, so
+later starts and launchd do not need those variables.
+
+A named check also verifies copied firmware, disks, configured machine support,
+configured socket_vmnet paths, and whether the helper socket is connectable.
 `},
 	"autostart": {text: `Manage automatic VM startup through launchd.
 
@@ -518,11 +554,81 @@ func inferHelpTopic(args []string) string {
 	return ""
 }
 
-func writeHelp(output io.Writer, topic string) error {
+func rootHelpText(lookupEnv func(string) (string, bool)) string {
+	var builder strings.Builder
+	builder.WriteString(`qemu-manage manages headless QEMU virtual machines on Apple Silicon.
+
+Usage:
+  qemu-manage [-d|--debug] COMMAND [ARGUMENTS]
+  qemu-manage [-d|--debug] COMMAND --help
+  qemu-manage help [COMMAND [SUBCOMMAND]]
+
+Options:
+  -d, --debug  Emit redacted diagnostic records to stderr for this invocation
+  -h, --help   Show progressive help for the current command
+
+Getting started:
+  1. Install QEMU: brew install qemu
+  2. Check the host: qemu-manage doctor
+  3. Create a VM: qemu-manage create NAME --help
+  4. Check and start it: qemu-manage doctor NAME && qemu-manage start NAME
+
+Commands:
+  create       Create a managed VM from an image, ISO, or blank disk
+  set          Change VM resources, restart behavior, or networking
+  config       Show, validate, or apply the complete JSON configuration
+  showcmd      Print the exact QEMU command without running it
+  start        Start a VM in the background
+  stop         Gracefully stop a VM, or explicitly force it
+  console      Connect to a running VM's serial console
+  monitor      Connect to the QEMU human monitor or run one HMP command
+  guest-agent  Send one JSON request to the guest agent and print its return
+  vnc          Copy the VNC password and open Screen Sharing (macOS)
+  status       Show one VM or all VM runtime states
+  list         List all managed VMs
+  doctor       Check QEMU, firmware, VM files, and networking prerequisites
+  autostart    Manage login or system-boot startup with launchd
+
+Network choices:
+  user          Built into QEMU; simplest setup, with optional port forwards
+  socket_vmnet  Host/shared/bridged networking; requires socket_vmnet
+
+Environment:
+`)
+	for _, variable := range rootHelpEnvVars {
+		current := "unset"
+		if lookupEnv != nil {
+			if value, ok := lookupEnv(variable.name); ok && value != "" {
+				current = strconv.Quote(value)
+			}
+		}
+		fmt.Fprintf(&builder, "  %-33s %s Current: %s\n", variable.name, variable.description, current)
+	}
+	builder.WriteString(`
+Examples:
+  qemu-manage --help
+  qemu-manage create --help
+  qemu-manage --debug doctor
+  qemu-manage help guest-agent
+
+Run 'qemu-manage COMMAND --help' for options, examples, and next steps.
+`)
+	return builder.String()
+}
+
+func writeHelp(output io.Writer, topic string, lookupEnv ...func(string) (string, bool)) error {
 	help, ok := helpTopics[topic]
 	if !ok {
 		return fmt.Errorf("unknown help topic %q", topic)
 	}
-	_, err := io.WriteString(output, help.text)
+	text := help.text
+	if topic == "" {
+		var resolver func(string) (string, bool)
+		if len(lookupEnv) != 0 {
+			resolver = lookupEnv[0]
+		}
+		text = rootHelpText(resolver)
+	}
+	_, err := io.WriteString(output, text)
 	return err
 }

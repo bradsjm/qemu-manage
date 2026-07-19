@@ -183,10 +183,11 @@ func TestCreateVNCDefaultsAndFlagConsistency(t *testing.T) {
 			t.Fatal("VNC config was not persisted")
 		}
 		if *cfg.VNC != (model.VNCConfig{
-			Bind:     defaultVNCBind,
-			Port:     defaultVNCPort,
-			PortTo:   defaultVNCPortTo,
-			Password: "secret",
+			Bind:           defaultVNCBind,
+			Port:           defaultVNCPort,
+			PortTo:         defaultVNCPortTo,
+			Password:       "secret",
+			KeyboardLayout: defaultKeyboardLayout,
 		}) {
 			t.Fatalf("unexpected persisted VNC config: %+v", *cfg.VNC)
 		}
@@ -252,6 +253,7 @@ func TestSetSocketVMNetUsesCompleteDiscoveredDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	want.Interface = "shared"
 	if cfg.Network.Mode != model.NetworkSocketVMNet || cfg.Network.SocketVMNet == nil || *cfg.Network.SocketVMNet != *want {
 		t.Fatalf("discovered socket_vmnet defaults were not persisted: %+v", cfg.Network)
 	}
@@ -260,31 +262,23 @@ func TestSetSocketVMNetUsesCompleteDiscoveredDefaults(t *testing.T) {
 	}
 }
 
-func TestSetPartialExplicitSocketVMNetDoesNotMixDiscovery(t *testing.T) {
-	a := testApp(t)
-	saveTestConfig(t, a, testConfig("vm"))
-	a.DiscoverSocketVMNet = func() *model.SocketVMNetConfig {
-		return &model.SocketVMNetConfig{
-			ClientPath: "/discovered/client",
-			SocketPath: "/discovered/socket",
-			Interface:  "discovered0",
-		}
-	}
+func TestSetRejectsRemovedSocketVMNetPathFlags(t *testing.T) {
+	for _, flag := range []string{"--socket-vmnet-client", "--socket-vmnet-socket"} {
+		t.Run(flag, func(t *testing.T) {
+			a := testApp(t)
+			saveTestConfig(t, a, testConfig("vm"))
 
-	exit, _, stderr := runCLI(a, "set", "vm", "--network", "socket_vmnet", "--socket-vmnet-client", "/explicit/client")
-	if exit != 2 {
-		t.Fatalf("partial setup exited %d, want usage exit 2; stderr=%q", exit, stderr)
-	}
-	for _, text := range []string{"set vm", "--socket-vmnet-client", "--socket-vmnet-socket", "--socket-vmnet-interface"} {
-		if !strings.Contains(stderr, text) {
-			t.Errorf("usage error %q does not identify %q", stderr, text)
-		}
-	}
-	cfg, err := a.Store.Load("vm")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Network.Mode != model.NetworkUser || cfg.Network.SocketVMNet != nil {
-		t.Fatalf("failed partial setup mutated persisted network: %+v", cfg.Network)
+			exit, _, stderr := runCLI(a, "set", "vm", flag, "/explicit/path")
+			if exit != 2 || !strings.Contains(stderr, "flag provided but not defined") || !strings.Contains(stderr, strings.TrimPrefix(flag, "-")) {
+				t.Fatalf("removed flag exit=%d stderr=%q", exit, stderr)
+			}
+			cfg, err := a.Store.Load("vm")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Network.Mode != model.NetworkUser || cfg.Network.SocketVMNet != nil {
+				t.Fatalf("rejected flag mutated persisted network: %+v", cfg.Network)
+			}
+		})
 	}
 }

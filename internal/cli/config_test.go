@@ -13,6 +13,13 @@ import (
 func TestSetForwardsGuestAgentAndNetworkTransitions(t *testing.T) {
 	a := testApp(t)
 	cfg := testConfig("vm")
+	a.DiscoverSocketVMNet = func() *model.SocketVMNetConfig {
+		return &model.SocketVMNetConfig{
+			ClientPath: "/opt/socket_vmnet/client",
+			SocketPath: "/var/run/socket_vmnet",
+			Interface:  "shared",
+		}
+	}
 	saveTestConfig(t, a, cfg)
 	code, _, stderr := runCLI(a, "set", "vm", "--guest-agent", "on", "--forward", "tcp:127.0.0.1:2222:22", "--forward", "udp:127.0.0.1:5353:53")
 	if code != 0 {
@@ -33,7 +40,7 @@ func TestSetForwardsGuestAgentAndNetworkTransitions(t *testing.T) {
 	if len(got.Network.Forwards) != 1 || got.Network.Forwards[0].HostPort != 8443 {
 		t.Fatalf("forwards were not replaced: %+v", got.Network.Forwards)
 	}
-	code, _, stderr = runCLI(a, "set", "vm", "--network", "socket_vmnet", "--socket-vmnet-client", "/opt/socket_vmnet/client", "--socket-vmnet-socket", "/var/run/socket_vmnet", "--socket-vmnet-interface", "vlan0")
+	code, _, stderr = runCLI(a, "set", "vm", "--network", "socket_vmnet", "--socket-vmnet-interface", "vlan0")
 	if code != 0 {
 		t.Fatalf("bridge transition failed: %s", stderr)
 	}
@@ -81,10 +88,11 @@ func TestSetVNCTransitions(t *testing.T) {
 		t.Fatal("VNC config was not enabled")
 	}
 	if *got.VNC != (model.VNCConfig{
-		Bind:     defaultVNCBind,
-		Port:     defaultVNCPort,
-		PortTo:   defaultVNCPortTo,
-		Password: "secret",
+		Bind:           defaultVNCBind,
+		Port:           defaultVNCPort,
+		PortTo:         defaultVNCPortTo,
+		Password:       "secret",
+		KeyboardLayout: defaultKeyboardLayout,
 	}) {
 		t.Fatalf("unexpected enabled VNC config: %+v", *got.VNC)
 	}
@@ -95,10 +103,11 @@ func TestSetVNCTransitions(t *testing.T) {
 	}
 	got, _ = a.Store.Load("vm")
 	if *got.VNC != (model.VNCConfig{
-		Bind:     "0.0.0.0",
-		Port:     5905,
-		PortTo:   defaultVNCPortTo,
-		Password: "secret",
+		Bind:           "0.0.0.0",
+		Port:           5905,
+		PortTo:         defaultVNCPortTo,
+		Password:       "secret",
+		KeyboardLayout: defaultKeyboardLayout,
 	}) {
 		t.Fatalf("VNC update did not preserve omitted fields: %+v", *got.VNC)
 	}
@@ -109,10 +118,11 @@ func TestSetVNCTransitions(t *testing.T) {
 	}
 	got, _ = a.Store.Load("vm")
 	if *got.VNC != (model.VNCConfig{
-		Bind:     "0.0.0.0",
-		Port:     5905,
-		PortTo:   defaultVNCPortTo,
-		Password: "secret",
+		Bind:           "0.0.0.0",
+		Port:           5905,
+		PortTo:         defaultVNCPortTo,
+		Password:       "secret",
+		KeyboardLayout: defaultKeyboardLayout,
 	}) {
 		t.Fatalf("failed disable mutated enabled VNC config: %+v", *got.VNC)
 	}

@@ -112,3 +112,4 @@ Tests use only the standard `testing` package and remain in-package to exercise 
 - Add bug regressions at the lowest shared owner. Do not weaken valid security assertions to make tests pass.
 - Platform tests generally run everywhere and skip only where OS semantics genuinely differ. Production platform code belongs behind build tags with compilable unsupported stubs.
 - Automated tests fake QEMU, launchctl, and sudo. Changes to real process execution, QEMU rendering/lifecycle, launchd, console handling, or `socket_vmnet` also require a disposable AArch64 VM smoke test on Apple Silicon; never use a production VM for destructive checks.
+- Use `https://github.com/home-assistant/operating-system/releases/download/18.0/haos_generic-aarch64-18.0.qcow2.xz` as the smoke testing image.

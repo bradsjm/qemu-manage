@@ -19,7 +19,12 @@ func testApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &App{Store: s, Geteuid: func() int { return 501 }}
+	return &App{
+		Store:           s,
+		Geteuid:         func() int { return 501 },
+		LookupEnv:       func(string) (string, bool) { return "", false },
+		DiscoverMachine: func(context.Context, string) (string, error) { return "virt-11.0", nil },
+	}
 }
 
 func testConfig(name string) *model.Config {

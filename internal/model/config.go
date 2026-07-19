@@ -131,16 +131,18 @@ type GuestAgentConfig struct {
 }
 
 type VNCConfig struct {
-	Bind     string `json:"bind"`
-	Port     uint16 `json:"port"`
-	PortTo   uint16 `json:"port_to"`
-	Password string `json:"password"`
+	Bind           string `json:"bind"`
+	Port           uint16 `json:"port"`
+	PortTo         uint16 `json:"port_to"`
+	Password       string `json:"password"`
+	KeyboardLayout string `json:"keyboard_layout,omitempty"`
 }
 
 type QEMUConfig struct {
 	Binary    string   `json:"binary"`
 	ImageTool string   `json:"image_tool"`
 	Machine   string   `json:"machine"`
+	RTCBase   string   `json:"rtc_base,omitempty"`
 	ExtraArgs []string `json:"extra_args"`
 }
 
@@ -149,12 +151,21 @@ type AutostartConfig struct {
 }
 
 var (
-	idPattern     = regexp.MustCompile(`^[0-9a-f]{32}$`)
-	namePattern   = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
-	serialPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
-	macPattern    = regexp.MustCompile(`^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$`)
-	usbIDPattern  = regexp.MustCompile(`^[0-9a-f]{4}$`)
+	idPattern      = regexp.MustCompile(`^[0-9a-f]{32}$`)
+	namePattern    = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$`)
+	serialPattern  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	macPattern     = regexp.MustCompile(`^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$`)
+	usbIDPattern   = regexp.MustCompile(`^[0-9a-f]{4}$`)
+	machinePattern = regexp.MustCompile(`^virt-[1-9][0-9]*\.[0-9]+$`)
 )
+
+var keyboardLayouts = map[string]struct{}{
+	"ar": {}, "da": {}, "de": {}, "de-ch": {}, "en-gb": {}, "en-us": {}, "es": {}, "et": {},
+	"fi": {}, "fo": {}, "fr": {}, "fr-be": {}, "fr-ca": {}, "fr-ch": {}, "hr": {}, "hu": {},
+	"is": {}, "it": {}, "ja": {}, "lt": {}, "lv": {}, "mk": {}, "nl": {}, "nl-be": {},
+	"no": {}, "pl": {}, "pt": {}, "pt-br": {}, "ru": {}, "sl": {}, "sv": {}, "th": {},
+	"tr": {},
+}
 
 func validateRawJSONUnicode(data []byte) error {
 	if !utf8.Valid(data) {
@@ -313,8 +324,11 @@ func (c *Config) Validate() error {
 	if c.Firmware.Code == "" || c.Firmware.Variables == "" {
 		return configError("firmware code and variables paths are required")
 	}
-	if c.QEMU.Machine != "" && c.QEMU.Machine != "virt" {
-		return configError("qemu machine must be empty or %q", "virt")
+	if !validMachineType(c.QEMU.Machine) {
+		return configError("qemu machine must be empty, %q, or match %q", "virt", machinePattern.String())
+	}
+	if !validRTCBase(c.QEMU.RTCBase) {
+		return configError("qemu rtc_base must be empty, %q, or %q", "utc", "localtime")
 	}
 	for _, arg := range c.QEMU.ExtraArgs {
 		if forbiddenQEMUArg(arg) {
@@ -510,7 +524,22 @@ func validateVNC(vnc *VNCConfig) error {
 	if strings.IndexByte(vnc.Password, 0) >= 0 {
 		return configError("vnc password must not contain NUL")
 	}
+	if vnc.KeyboardLayout != "" && !validKeyboardLayout(vnc.KeyboardLayout) {
+		return configError("vnc keyboard_layout %q is invalid", vnc.KeyboardLayout)
+	}
 	return nil
+}
+func validKeyboardLayout(layout string) bool {
+	_, ok := keyboardLayouts[layout]
+	return ok
+}
+
+func validMachineType(machine string) bool {
+	return machine == "" || machine == "virt" || machinePattern.MatchString(machine)
+}
+
+func validRTCBase(base string) bool {
+	return base == "" || base == "utc" || base == "localtime"
 }
 
 var managerOwnedQEMUOptions = map[string]struct{}{
@@ -520,7 +549,7 @@ var managerOwnedQEMUOptions = map[string]struct{}{
 	"netdev": {}, "nic": {}, "net": {}, "display": {}, "nographic": {}, "vga": {}, "nodefaults": {},
 	"name": {}, "uuid": {}, "boot": {}, "bios": {}, "readconfig": {}, "writeconfig": {}, "set": {},
 	"global": {}, "incoming": {}, "snapshot": {}, "S": {}, "preconfig": {}, "no-shutdown": {}, "action": {},
-	"vnc": {}, "object": {},
+	"vnc": {}, "object": {}, "k": {}, "rtc": {},
 }
 
 func forbiddenQEMUArg(arg string) bool {

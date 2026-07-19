@@ -28,6 +28,7 @@ type RuntimeMetadata struct {
 	Name          string    `json:"name"`
 	SupervisorPID int       `json:"supervisor_pid"`
 	StartedAt     time.Time `json:"started_at"`
+	BootMenu      bool      `json:"boot_menu,omitempty"`
 }
 
 type LastExitMetadata struct {

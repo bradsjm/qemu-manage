@@ -25,7 +25,7 @@ func NewBackend() *Backend {
 }
 
 // Render produces the complete, deterministic argv used to start QEMU.
-func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths) (backend.Command, error) {
+func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths, options backend.RenderOptions) (backend.Command, error) {
 	if config == nil {
 		return backend.Command{}, fmt.Errorf("qemu: config is nil")
 	}
@@ -42,7 +42,7 @@ func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths) (back
 	args := []string{
 		"-nodefaults",
 		"-display", "none",
-		"-machine", "virt",
+		"-machine", effectiveMachine(config.QEMU.Machine),
 		"-accel", "hvf",
 		"-cpu", "host",
 		"-smp", fmt.Sprintf("cpus=%d,sockets=1,cores=%d,threads=1", config.CPUs, config.CPUs),
@@ -50,6 +50,12 @@ func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths) (back
 		"-name", keyval(config.Name),
 		"-uuid", config.UUID,
 		"-run-with", "exit-with-parent=on",
+	}
+	if config.QEMU.RTCBase != "" {
+		args = append(args, "-rtc", "base="+config.QEMU.RTCBase)
+	}
+	if options.BootMenu {
+		args = append(args, "-boot", "menu=on")
 	}
 
 	code := backend.ResolvePath(paths.VMDir, config.Firmware.Code)
@@ -107,6 +113,9 @@ func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths) (back
 			"-object", "secret,id=vnc-password,file="+keyval(paths.VNCSecret),
 			"-vnc", fmt.Sprintf("%s:%d,to=%d,password-secret=vnc-password", config.VNC.Bind, int(config.VNC.Port)-5900, int(config.VNC.PortTo)-5900),
 		)
+		if config.VNC.KeyboardLayout != "" {
+			args = append(args, "-k", config.VNC.KeyboardLayout)
+		}
 	} else if len(config.USB) != 0 {
 		args = append(args, "-device", "nec-usb-xhci,id=usb")
 	}
@@ -197,4 +206,11 @@ func validateSocketVMNet(network model.NetworkConfig) (*model.SocketVMNetConfig,
 		return nil, fmt.Errorf("qemu: socket_vmnet interface must not be empty")
 	}
 	return bridge, nil
+}
+
+func effectiveMachine(configured string) string {
+	if configured == "" {
+		return "virt"
+	}
+	return configured
 }

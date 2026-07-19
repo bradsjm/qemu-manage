@@ -101,6 +101,7 @@ func (a *App) runStart(ctx context.Context, args []string) error {
 	}
 	flags := quietFlagSet("start")
 	foreground := flags.Bool("foreground", false, "")
+	bootMenu := flags.Bool("boot-menu", false, "")
 	if err := parseNoPositionals(flags, "start", rest); err != nil {
 		return err
 	}
@@ -122,15 +123,29 @@ func (a *App) runStart(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	a.debugf(
+		"start name=%q foreground=%t boot_menu=%t supervisor_stdout=%q supervisor_stderr=%q",
+		config.Name,
+		*foreground,
+		*bootMenu,
+		paths.SupervisorStdout,
+		paths.SupervisorStderr,
+	)
 	startErr := supervisor.StartProcess(ctx, supervisor.StartOptions{
 		Name:         config.Name,
 		ExpectedID:   config.ID,
 		Executable:   executable,
 		Paths:        paths,
 		Foreground:   *foreground,
+		BootMenu:     *bootMenu,
+		Debug:        a.debug,
+		DebugWriter:  a.debugWriter,
 		ReadyTimeout: supervisorReadyTimeout,
 		RunForeground: func(runCtx context.Context, ready io.Writer) error {
-			return a.Supervisor.Supervise(runCtx, config.Name, config.ID, ready)
+			return a.Supervisor.Supervise(runCtx, config.Name, config.ID, ready, supervisor.SuperviseOptions{
+				BootMenu:    *bootMenu,
+				DebugWriter: a.debugWriter,
+			})
 		},
 	})
 	if startErr != nil {
@@ -382,6 +397,7 @@ func (a *App) runSupervise(ctx context.Context, args []string) error {
 	flags := quietFlagSet("supervise")
 	readyFD := flags.Int("ready-fd", -1, "")
 	expectedID := flags.String("expected-id", "", "")
+	bootMenu := flags.Bool("boot-menu", false, "")
 	if err := parseNoPositionals(flags, "supervise", rest); err != nil {
 		return err
 	}
@@ -402,7 +418,10 @@ func (a *App) runSupervise(ctx context.Context, args []string) error {
 		writeReadyFailure(ready, *expectedID, err)
 		return err
 	}
-	return a.Supervisor.Supervise(ctx, name, *expectedID, ready)
+	return a.Supervisor.Supervise(ctx, name, *expectedID, ready, supervisor.SuperviseOptions{
+		BootMenu:    *bootMenu,
+		DebugWriter: a.debugWriter,
+	})
 }
 
 func (a *App) loadQEMUConfig(name string) (*model.Config, error) {

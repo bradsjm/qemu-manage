@@ -253,6 +253,32 @@ func TestDecodeRejectsUnknownAndTrailingJSON(t *testing.T) {
 	}
 }
 
+func TestDecodeCompatibilityAllowsMissingOptionalKeyboardAndRTC(t *testing.T) {
+	config := validTestConfig()
+	config.VNC = validTestVNC()
+	data, err := CanonicalJSON(&config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(`"keyboard_layout"`)) {
+		t.Fatalf("canonical JSON unexpectedly included keyboard_layout: %s", data)
+	}
+	if bytes.Contains(data, []byte(`"rtc_base"`)) {
+		t.Fatalf("canonical JSON unexpectedly included rtc_base: %s", data)
+	}
+	decoded, err := DecodeBytes(data)
+	if err != nil {
+		t.Fatalf("DecodeBytes: %v", err)
+	}
+	roundTrip, err := CanonicalJSON(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(roundTrip, data) {
+		t.Fatalf("canonical round trip mismatch\n got: %s\nwant: %s", roundTrip, data)
+	}
+}
+
 func TestVNCValidationAndHashStability(t *testing.T) {
 	disabled := validTestConfig()
 	if err := disabled.Validate(); err != nil {
@@ -286,6 +312,16 @@ func TestVNCValidationAndHashStability(t *testing.T) {
 			}
 		})
 	}
+	for _, layout := range []string{"", "en-us", "fr-ca"} {
+		t.Run("valid layout "+layout, func(t *testing.T) {
+			c := cloneTestConfig(t, disabled)
+			c.VNC = validTestVNC()
+			c.VNC.KeyboardLayout = layout
+			if err := c.Validate(); err != nil {
+				t.Fatalf("valid keyboard layout %q rejected: %v", layout, err)
+			}
+		})
+	}
 
 	for name, mutate := range map[string]func(*Config){
 		"bind hostname":    func(c *Config) { c.VNC.Bind = "localhost" },
@@ -298,6 +334,7 @@ func TestVNCValidationAndHashStability(t *testing.T) {
 		"password invalid UTF-8": func(c *Config) {
 			c.VNC.Password = string([]byte{0xff})
 		},
+		"layout invalid": func(c *Config) { c.VNC.KeyboardLayout = "en_US" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := cloneTestConfig(t, disabled)
@@ -378,6 +415,7 @@ func TestValidationEnumsRangesAndArchitecture(t *testing.T) {
 		"firmware code":      func(c *Config) { c.Firmware.Code = "" },
 		"firmware variables": func(c *Config) { c.Firmware.Variables = "" },
 		"machine":            func(c *Config) { c.QEMU.Machine = "q35" },
+		"rtc base":           func(c *Config) { c.QEMU.RTCBase = "gmt" },
 		"autostart":          func(c *Config) { c.Autostart.Scope = "system" },
 	}
 	for name, mutate := range mutations {
@@ -407,11 +445,23 @@ func TestValidationEnumsRangesAndArchitecture(t *testing.T) {
 			t.Fatalf("timeout %d: %v", timeout, err)
 		}
 	}
-	for _, machine := range []string{"", "virt"} {
+	for _, machine := range []string{"", "virt", "virt-11.0", "virt-123.45"} {
 		c := validTestConfig()
 		c.QEMU.Machine = machine
 		if err := c.Validate(); err != nil {
 			t.Fatalf("machine %q: %v", machine, err)
+		}
+	}
+	for _, machine := range []string{"virt-0.1", "virt-11", "virt-11.x"} {
+		c := validTestConfig()
+		c.QEMU.Machine = machine
+		requireInvalid(t, c)
+	}
+	for _, base := range []string{"", "utc", "localtime"} {
+		c := validTestConfig()
+		c.QEMU.RTCBase = base
+		if err := c.Validate(); err != nil {
+			t.Fatalf("rtc_base %q: %v", base, err)
 		}
 	}
 	boundary := validTestConfig()
@@ -603,7 +653,7 @@ func TestValidateApplyImmutableFieldsAndScope(t *testing.T) {
 }
 
 func TestManagerOwnedQEMUOptionsRejected(t *testing.T) {
-	options := []string{"qmp", "monitor", "mon", "chardev", "serial", "daemonize", "pidfile", "run-with", "accel", "machine", "M", "cpu", "smp", "m", "drive", "blockdev", "device", "hda", "hdb", "hdc", "hdd", "fda", "fdb", "cdrom", "netdev", "nic", "net", "display", "nographic", "vga", "nodefaults", "name", "uuid", "boot", "bios", "readconfig", "writeconfig", "set", "global", "incoming", "snapshot", "S", "preconfig", "no-shutdown", "action", "vnc", "object"}
+	options := []string{"qmp", "monitor", "mon", "chardev", "serial", "daemonize", "pidfile", "run-with", "accel", "machine", "M", "cpu", "smp", "m", "drive", "blockdev", "device", "hda", "hdb", "hdc", "hdd", "fda", "fdb", "cdrom", "netdev", "nic", "net", "display", "nographic", "vga", "nodefaults", "name", "uuid", "boot", "bios", "readconfig", "writeconfig", "set", "global", "incoming", "snapshot", "S", "preconfig", "no-shutdown", "action", "vnc", "object", "k", "rtc"}
 	for _, option := range options {
 		for _, arg := range []string{"-" + option, "-" + option + "=value", "--" + option, "--" + option + "=value"} {
 			t.Run(strings.ReplaceAll(arg, "/", "_"), func(t *testing.T) { c := validTestConfig(); c.QEMU.ExtraArgs = []string{arg}; requireInvalid(t, c) })

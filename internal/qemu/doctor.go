@@ -68,17 +68,19 @@ const (
 // are resolved through PATH instead.
 func Doctor(ctx context.Context, cfg model.Config, paths backend.RuntimePaths) []Check {
 	qemuPath, qemuPathErr := resolveExecutable(paths.VMDir, cfg.QEMU.Binary, "qemu-system-aarch64")
-	checks := make([]Check, 0, 10)
+	checks := make([]Check, 0, 11)
 	checks = append(checks, executableCheck("qemu_binary", qemuPath, qemuPathErr))
 
 	if qemuPathErr != nil {
 		checks = append(checks,
 			Check{Name: "qemu_version", Status: CheckFail, Evidence: "qemu binary unavailable; version probe not run"},
+			Check{Name: "machine", Status: CheckFail, Evidence: "qemu binary unavailable; -machine help probe not run"},
 			Check{Name: "hvf", Status: CheckFail, Evidence: "qemu binary unavailable; -accel help probe not run"},
 			Check{Name: "run_with_parent", Status: CheckFail, Evidence: "qemu binary unavailable; -run-with help probe not run"},
 		)
 	} else {
 		checks = append(checks, checkVersion(ctx, qemuPath))
+		checks = append(checks, capabilityCheck(ctx, qemuPath, "machine", []string{"-machine", "help"}, effectiveMachine(cfg.QEMU.Machine)))
 		checks = append(checks, capabilityCheck(ctx, qemuPath, "hvf", []string{"-accel", "help"}, "hvf"))
 		checks = append(checks, capabilityCheck(ctx, qemuPath, "run_with_parent", []string{"-run-with", "help"}, "exit-with-parent"))
 	}
@@ -200,15 +202,34 @@ func checkVersion(ctx context.Context, binary string) Check {
 	if err != nil {
 		return Check{Name: "qemu_version", Status: CheckFail, Evidence: err.Error()}
 	}
-	match := qemuVersionPattern.FindStringSubmatch(output)
-	if match == nil {
+	version, ok := parseQEMUVersion(output)
+	if !ok {
 		return Check{Name: "qemu_version", Status: CheckFail, Evidence: "unrecognized version output: " + output}
 	}
-	version := strings.Join(match[1:4], ".")
-	if version == "11.0.0" {
+	if version.String() == "11.0.0" {
 		return Check{Name: "qemu_version", Status: CheckFail, Evidence: "QEMU 11.0.0 has a known macOS AArch64 HVF regression; upgrade with: `brew upgrade qemu` (11.0.1 fixes this regression)"}
 	}
-	return Check{Name: "qemu_version", Status: CheckPass, Evidence: "QEMU " + version}
+	return Check{Name: "qemu_version", Status: CheckPass, Evidence: "QEMU " + version.String()}
+}
+
+func DiscoverVersionedMachine(ctx context.Context, binary string) (string, error) {
+	output, err := probe(ctx, binary, "--version")
+	if err != nil {
+		return "", fmt.Errorf("qemu: probe version: %w", err)
+	}
+	version, ok := parseQEMUVersion(output)
+	if !ok {
+		return "", fmt.Errorf("qemu: unrecognized version output: %s", output)
+	}
+	machine := version.Machine()
+	help, err := probe(ctx, binary, "-machine", "help")
+	if err != nil {
+		return "", fmt.Errorf("qemu: probe machine help: %w", err)
+	}
+	if !probeHasToken(help, machine) {
+		return "", fmt.Errorf("qemu: machine type %q is absent from -machine help", machine)
+	}
+	return machine, nil
 }
 
 type probeTimeoutError struct {
@@ -219,16 +240,43 @@ func (err probeTimeoutError) Error() string {
 	return err.message
 }
 
+type qemuVersion struct {
+	Major string
+	Minor string
+	Patch string
+}
+
+func (version qemuVersion) String() string {
+	return strings.Join([]string{version.Major, version.Minor, version.Patch}, ".")
+}
+
+func (version qemuVersion) Machine() string {
+	return "virt-" + version.Major + "." + version.Minor
+}
+
+func parseQEMUVersion(output string) (qemuVersion, bool) {
+	match := qemuVersionPattern.FindStringSubmatch(output)
+	if match == nil {
+		return qemuVersion{}, false
+	}
+	return qemuVersion{Major: match[1], Minor: match[2], Patch: match[3]}, true
+}
+
+func probeHasToken(output, token string) bool {
+	for _, field := range strings.Fields(output) {
+		field = strings.Trim(field, " ,:()[]")
+		if field == token || strings.HasPrefix(field, token+"=") {
+			return true
+		}
+	}
+	return false
+}
+
 func capabilityCheck(ctx context.Context, binary, name string, args []string, capability string) Check {
 	output, err := probe(ctx, binary, args...)
 	var timeoutErr probeTimeoutError
-	if !errors.As(err, &timeoutErr) {
-		for _, field := range strings.Fields(output) {
-			field = strings.Trim(field, " ,:()[]")
-			if field == capability || strings.HasPrefix(field, capability+"=") {
-				return Check{Name: name, Status: CheckPass, Evidence: capability + " is supported"}
-			}
-		}
+	if !errors.As(err, &timeoutErr) && probeHasToken(output, capability) {
+		return Check{Name: name, Status: CheckPass, Evidence: capability + " is supported"}
 	}
 	if err != nil {
 		return Check{Name: name, Status: CheckFail, Evidence: err.Error()}

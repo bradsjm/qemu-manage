@@ -91,9 +91,10 @@ func discoverFirmware(installations []firmwareInstallation) (code, variables str
 	return "", ""
 }
 
-// DiscoverSocketVMNet returns a complete shared-network configuration. Client
-// and daemon discovery are independent so a hardened client copied to /opt can
-// continue using a Homebrew or MacPorts daemon socket.
+// DiscoverSocketVMNet returns the strongest discoverable shared-network
+// configuration. Client and daemon discovery are independent so a hardened
+// client copied to /opt can continue using a Homebrew or MacPorts daemon
+// socket, or vice versa.
 func DiscoverSocketVMNet() *model.SocketVMNetConfig {
 	return discoverSocketVMNet(socketVMNetInstallations)
 }
@@ -106,20 +107,23 @@ func discoverSocketVMNet(installations []socketVMNetInstallation) *model.SocketV
 			break
 		}
 	}
-	if clientPath == "" {
-		return nil
-	}
 
+	socketPath := ""
 	for _, installation := range installations {
 		if executableAvailable(installation.daemonPath) {
-			return &model.SocketVMNetConfig{
-				ClientPath: clientPath,
-				SocketPath: installation.socketPath,
-				Interface:  "shared",
-			}
+			socketPath = installation.socketPath
+			break
 		}
 	}
-	return nil
+
+	if clientPath == "" && socketPath == "" {
+		return nil
+	}
+	return &model.SocketVMNetConfig{
+		ClientPath: clientPath,
+		SocketPath: socketPath,
+		Interface:  "shared",
+	}
 }
 
 func executableAvailable(path string) bool {
