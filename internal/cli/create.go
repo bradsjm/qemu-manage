@@ -773,6 +773,7 @@ func requireSharedDirectory(path string) error {
 	}
 	return nil
 }
+
 // requireSMBDDefault is the default QEMU smbd helper check used when App does
 // not inject its own. It returns nil when QEMU's user-network SMB server will
 // be able to launch smbd; otherwise an actionable error pointing at the

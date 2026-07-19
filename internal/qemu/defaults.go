@@ -98,6 +98,7 @@ func discoverFirmware(installations []firmwareInstallation) (code, variables str
 func DiscoverSocketVMNet() *model.SocketVMNetConfig {
 	return discoverSocketVMNet(socketVMNetInstallations)
 }
+
 // smbdInstallations lists the absolute smbd helper paths QEMU's slirp SMB
 // server probes on Darwin, in priority order. Homebrew QEMU looks for the
 // samba-dot-org-smbd symlink that the Homebrew samba formula installs to avoid
