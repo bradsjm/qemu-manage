@@ -1,6 +1,10 @@
 # qemu-manage
 
-`qemu-manage` is a small command-line manager for headless QEMU virtual machines on Apple Silicon Macs. It manages VM configuration, lifecycle, serial consoles, networking, and launchd autostart without a persistent central daemon.
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Coding Harness](https://img.shields.io/badge/coding_harness-oh--my--pi/gpt--5.6-orange)](https://opencode.ai/)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/bradsjm/qemu-manage)
+
+`qemu-manage` is a small command-line manager for headless QEMU virtual machines on Apple Silicon Macs. It manages VM configuration, lifecycle, serial consoles, networking, and launchd autostart without a persistent central daemon. It was built primarily to make it easier to manage QEMU for running Home Assistant in my Mac Mini M4 using a bridged network.
 
 ## Requirements
 
@@ -69,16 +73,54 @@ Inspect QEMU and firmware discovery before creating a VM:
 qemu-manage doctor
 ```
 
-Create a VM from an existing ARM64 qcow2 image:
+### Common VM creation workflows
+
+#### Import an HTTP(S) disk image
+
+Pass an HTTP(S) URL to `--image` to download and import an ARM64 qcow2 or raw image directly. URL paths ending in `.xz` or `.gz` are decompressed while downloading, and the source is converted to a managed qcow2 disk:
 
 ```sh
 qemu-manage create home-assistant \
-  --image "$HOME/Downloads/haos_generic-aarch64.qcow2" \
+  --image "https://github.com/home-assistant/operating-system/releases/download/18.0/haos_generic-aarch64-18.0.qcow2.xz" \
   --cpus 2 \
   --memory 4GiB \
   --disk-size 32GiB \
   --restart-policy on-failure
+```
 
+#### Import a local disk image
+
+Use a local qcow2 or raw image when it is already on the Mac:
+
+```sh
+qemu-manage create appliance \
+  --image "$HOME/Downloads/appliance-aarch64.qcow2" \
+  --cpus 2 \
+  --memory 4GiB \
+  --disk-size 32GiB
+```
+
+Source images are copied and converted; the original local file is not modified.
+
+#### Install from an ARM64 ISO
+
+Pass a local installer ISO to `--iso`. `qemu-manage` creates the primary qcow2 disk, copies the ISO into managed storage, and boots the ISO before the disk. VNC is useful for graphical installers; set `VNC_PASSWORD` to a password of 1–8 UTF-8 bytes before running this example:
+
+```sh
+qemu-manage create linux \
+  --iso "$HOME/Downloads/linux-arm64.iso" \
+  --cpus 4 \
+  --memory 4GiB \
+  --disk-size 64GiB \
+  --vnc \
+  --vnc-password "$VNC_PASSWORD"
+```
+
+For advanced workflows, omitting both `--image` and `--iso` creates a blank 32GiB qcow2 disk by default.
+
+After creating a VM, validate its files and host requirements before starting it:
+
+```sh
 qemu-manage doctor home-assistant
 qemu-manage showcmd home-assistant
 qemu-manage start home-assistant
@@ -91,11 +133,10 @@ Connect to the guest's serial console and press `Ctrl-]` to disconnect:
 qemu-manage console home-assistant
 ```
 
-For installation or diagnostics, opt into password-protected VNC:
+For an ISO installation using VNC:
 
 ```sh
-qemu-manage create linux --iso "$HOME/Downloads/linux-arm64.iso" \
-  --vnc --vnc-password "$VNC_PASSWORD"
+qemu-manage doctor linux
 qemu-manage start linux
 qemu-manage status linux --json
 qemu-manage vnc linux
@@ -154,7 +195,32 @@ Set `QEMU_MANAGE_DATA_ROOT`, `QEMU_MANAGE_RUNTIME_ROOT`, or `QEMU_MANAGE_LOG_ROO
 
 VM configuration files are owner-only mode `0600`. An enabled VNC password is stored there in plaintext and `qemu-manage config show NAME` prints it. VNC password authentication accepts only 1–8 UTF-8 bytes. VNC transport is not encrypted; binding to an address other than loopback exposes it to that network.
 
+## Architecture
+
+`qemu-manage` is a single binary with no central daemon. `internal/cli` dispatches commands and wires the model, secure store, lifecycle services, QEMU backend, console, and launchd integration:
+
+```mermaid
+flowchart LR
+    User["User"] --> Binary["cmd/qemu-manage"]
+    Launchd["launchd job"] --> Binary
+    Binary --> CLI["internal/cli<br/>dispatch and wiring"]
+
+    CLI --> Config["internal/model + internal/store<br/>desired config, secure files, locks"]
+    CLI --> Lifecycle["internal/lifecycle + internal/console<br/>status, stop, serial console"]
+    CLI -->|"start re-execs as supervise"| Supervisor["internal/supervisor<br/>one per running VM"]
+    Lifecycle -->|"authenticated Unix socket"| Supervisor
+    Launchd -->|"same supervisor path"| Supervisor
+
+    Supervisor --> Backend["internal/backend + internal/qemu<br/>argv, QMP, optional QGA"]
+    Backend --> QEMU["unprivileged QEMU child"]
+    Supervisor --> Runtime["runtime metadata<br/>control socket + lifetime lock"]
+```
+
+Each running VM has one supervisor that owns one QEMU child, its immutable-ID lifetime lock, runtime metadata, and authenticated control socket. Manual starts and launchd autostart use the same supervisor path. Durable JSON stores desired configuration only; live state comes from the supervisor and QEMU control protocols.
+
 ## Development
+
+Developed using Code assistance from [Oh My Pi](https://omp.sh/) harness with GPT 5.6.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for local checks and contribution expectations. Security reports are handled according to [SECURITY.md](SECURITY.md).
 
