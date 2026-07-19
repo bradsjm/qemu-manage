@@ -40,7 +40,7 @@ internal/cli -> model, store, backend/qemu, supervisor, lifecycle,
 
 ## Development Commands
 
-Use standard Go tooling; the repository has no Makefile, task runner, scripts directory, or CI workflow.
+Use standard Go tooling; the repository has no Makefile, task runner, or scripts directory. Continuous integration and tagged releases are defined under .github/workflows/.
 
 ```sh
 # Format source
@@ -61,6 +61,15 @@ brew install qemu
 ```
 
 Use `go mod tidy` only when dependency imports change, and keep `go.mod` and `go.sum` synchronized. For command discovery, run `./qemu-manage --help` or `./qemu-manage COMMAND --help`.
+
+## Release & Distribution
+
+- Prepare `CHANGELOG.md` and bump all versioned installation examples in `README.md` before creating the tag.
+- Push only `vMAJOR.MINOR.PATCH` tags. `.github/workflows/release.yml` rejects prerelease/build suffixes and publishes `qemu-manage_<version>_darwin_arm64.tar.gz` plus `checksums.txt`.
+- Wait for the Release workflow and GitHub release to succeed before touching the tap; never point the formula at an unpublished asset or invent a checksum.
+- A release is incomplete until `bradsjm/homebrew-tap/Formula/qemu-manage.rb` is updated manually. Replace `version`, the release `url`, and `sha256` copied verbatim from the published `checksums.txt`; preserve the leading `v` in the release URL directory and omit it from the archive filename.
+- In the tap checkout, run `brew style bradsjm/tap/qemu-manage`, `brew audit --strict --online bradsjm/tap/qemu-manage`, `brew reinstall --build-from-source --verbose bradsjm/tap/qemu-manage`, `brew test bradsjm/tap/qemu-manage`, and verify `qemu-manage --version` before committing and pushing the formula update.
+- Keep the tap update manual. Do not add cross-repository credentials or mutate `bradsjm/homebrew-tap` from `.github/workflows/release.yml`.
 
 ## Code Conventions & Common Patterns
 

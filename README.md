@@ -39,6 +39,16 @@
 
 ## Installation
 
+### Homebrew
+
+Install the prebuilt Apple Silicon binary from the project's personal tap:
+
+```sh
+brew install bradsjm/tap/qemu-manage
+```
+
+The formula installs QEMU as a dependency. Optional `socket_vmnet` networking remains a separate installation.
+
 ### GitHub release
 
 Download the latest archive from [GitHub Releases](https://github.com/bradsjm/qemu-manage/releases/latest). Archives are unsigned and target Apple Silicon only. macOS may ask you to approve the binary in Privacy & Security.
