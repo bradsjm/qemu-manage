@@ -18,20 +18,22 @@
 - **Networking** — User-mode NAT out of the box; optional `socket_vmnet` for shared or bridged mode without running QEMU as root.
 - **Autostart** — Per-VM launchd jobs at login or boot scope; QEMU stays unprivileged.
 - **Secure by design** — Atomic writes, owner-only file modes, peer-authenticated Unix sockets, immutable-ID lifetime locks, and no central service to attack.
+- **Accelerated hardware** — All AArch64 guests use QEMU's HVF (Hypervisor.framework) native hardware virtualization accelerator for MacOS.
 
 ## Requirements
 
 - Apple Silicon Mac running macOS 13 or newer
 - Go 1.25+ to build from source (or use a prebuilt release)
-- QEMU for AArch64 guests:
+- QEMU for AArch64 guests ([`qemu-system-aarch64`](https://formulae.brew.sh/formula/qemu))
+- Only AArch64 guests are supported; no cross-architecture emulation
+- _Optional [`socket_vmnet`](https://github.com/lima-vm/socket_vmnet) for shared or bridged networking_
 
   ```sh
   brew install qemu
+  brew install socket_vmnet
   ```
 
-- Optional [`socket_vmnet`](https://github.com/lima-vm/socket_vmnet) for shared or bridged networking
-
-All guests use QEMU's HVF accelerator. There is no silent fallback to cross-architecture emulation or TCG.
+_Installation location of socket_vmnet can be configured using environment variables if qemu-manage is not able to find it automatically._
 
 ## Installation
 
