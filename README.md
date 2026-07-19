@@ -439,7 +439,7 @@ Supported environment variables:
 
 Autostart jobs preserve explicit roots and persisted `socket_vmnet` paths
 because launchd does not inherit your shell environment.
-Configuration files are strict, versioned JSON with owner-only mode `0600`. Use `qemu-manage config show`, `config validate`, and `config apply` for full configuration management.
+Configuration files are strict, versioned JSON with owner-only mode `0600`. Use `qemu-manage config show`, `config validate`, and `config apply` for full configuration management. Generated `config.json` files begin with `$schema` pointing to the repository’s raw [`schema.json`](https://raw.githubusercontent.com/bradsjm/qemu-manage/main/schema.json), so compatible editors can validate them automatically. `qemu-manage config validate` remains the authoritative full validator because some cross-field and cross-item semantics are described but cannot be enforced portably by JSON Schema.
 
 > **VNC security note:** An enabled VNC password is stored in plaintext in the config file, and `qemu-manage config show NAME` prints it. VNC transport is not encrypted; binding to an address other than loopback exposes it to the network.
 

@@ -17,6 +17,14 @@ import (
 )
 
 const SchemaVersion = 1
+const ConfigSchemaURL = "https://raw.githubusercontent.com/bradsjm/qemu-manage/main/schema.json"
+
+var encodedConfigSchemaURL = json.RawMessage(`"` + ConfigSchemaURL + `"`)
+
+type configDocument struct {
+	Schema json.RawMessage `json:"$schema,omitempty"`
+	Config
+}
 
 type Backend string
 
@@ -265,10 +273,6 @@ func Decode(r io.Reader) (*Config, error) {
 	if err := decoder.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("config: decode: %w", err)
 	}
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, errors.New("config: top-level value must be an object")
-	}
 	var trailing json.RawMessage
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
@@ -276,17 +280,26 @@ func Decode(r io.Reader) (*Config, error) {
 		}
 		return nil, fmt.Errorf("config: trailing data: %w", err)
 	}
-
-	var config Config
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, errors.New("config: top-level value must be an object")
+	}
+	var document configDocument
 	strict := json.NewDecoder(bytes.NewReader(raw))
 	strict.DisallowUnknownFields()
-	if err := strict.Decode(&config); err != nil {
+	if err := strict.Decode(&document); err != nil {
 		return nil, fmt.Errorf("config: decode: %w", err)
 	}
-	if err := config.Validate(); err != nil {
+	if document.Schema != nil {
+		var schemaURL *string
+		if err := json.Unmarshal(document.Schema, &schemaURL); err != nil || schemaURL == nil || *schemaURL != ConfigSchemaURL {
+			return nil, configError("$schema must be %q", ConfigSchemaURL)
+		}
+	}
+	if err := document.Config.Validate(); err != nil {
 		return nil, err
 	}
-	return &config, nil
+	return &document.Config, nil
 }
 
 func DecodeBytes(data []byte) (*Config, error) { return Decode(bytes.NewReader(data)) }
@@ -623,7 +636,7 @@ func CanonicalJSON(config *Config) ([]byte, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	data, err := json.MarshalIndent(config, "", "  ")
+	data, err := json.MarshalIndent(configDocument{Schema: encodedConfigSchemaURL, Config: *config}, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("config: encode: %w", err)
 	}
@@ -633,11 +646,14 @@ func CanonicalJSON(config *Config) ([]byte, error) {
 func CanonicalBytes(config *Config) ([]byte, error) { return CanonicalJSON(config) }
 
 func ConfigSHA256(config *Config) ([sha256.Size]byte, error) {
-	data, err := CanonicalJSON(config)
-	if err != nil {
+	if err := config.Validate(); err != nil {
 		return [sha256.Size]byte{}, err
 	}
-	return sha256.Sum256(data), nil
+	data, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return [sha256.Size]byte{}, fmt.Errorf("config: encode: %w", err)
+	}
+	return sha256.Sum256(append(data, '\n')), nil
 }
 
 func Hash(config *Config) (string, error) {

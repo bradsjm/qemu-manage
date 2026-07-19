@@ -61,6 +61,14 @@ func TestCreateUsesDiscoveredFirmwareWhenFlagsAreOmitted(t *testing.T) {
 		t.Fatalf("unexpected persisted firmware config: %+v", cfg.Firmware)
 	}
 	vmDir := filepath.Join(a.Store.DataRoot, "vm")
+	configData, err := os.ReadFile(filepath.Join(vmDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "{\n  \"$schema\": \"" + model.ConfigSchemaURL + "\",\n"
+	if !strings.HasPrefix(string(configData), prefix) {
+		t.Fatalf("config.json lacks schema annotation prefix: %s", configData)
+	}
 	for _, check := range []struct {
 		name     string
 		want     string

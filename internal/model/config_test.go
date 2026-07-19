@@ -81,6 +81,10 @@ func TestCanonicalRoundTripAndHashStability(t *testing.T) {
 	if first[len(first)-1] != '\n' {
 		t.Fatal("canonical JSON lacks final newline")
 	}
+	const schemaPrefix = "{\n  \"$schema\": \"" + ConfigSchemaURL + "\""
+	if !bytes.HasPrefix(first, []byte(schemaPrefix)) {
+		t.Fatalf("canonical JSON lacks schema annotation prefix: %s", first)
+	}
 	decoded, err := Decode(bytes.NewReader(first))
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +135,7 @@ func TestCanonicalCompatibilityOmitsUSBAndDiskOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const want = "{\n" +
+	const wantConfig = "{\n" +
 		"  \"schema_version\": 1,\n" +
 		"  \"id\": \"0123456789abcdef0123456789abcdef\",\n" +
 		"  \"name\": \"compat\",\n" +
@@ -173,17 +177,18 @@ func TestCanonicalCompatibilityOmitsUSBAndDiskOptions(t *testing.T) {
 		"    \"scope\": \"none\"\n" +
 		"  }\n" +
 		"}\n"
-	if string(data) != want {
-		t.Fatalf("canonical JSON changed\n got:\n%s\nwant:\n%s", data, want)
+	wantDocument := strings.Replace(wantConfig, "{\n", "{\n  \"$schema\": \""+ConfigSchemaURL+"\",\n", 1)
+	if string(data) != wantDocument {
+		t.Fatalf("canonical JSON changed\n got:\n%s\nwant:\n%s", data, wantDocument)
 	}
-	if strings.Contains(want, "\"usb\"") || strings.Contains(want, "\"cache\"") || strings.Contains(want, "\"aio\"") {
+	if strings.Contains(wantConfig, "\"usb\"") || strings.Contains(wantConfig, "\"cache\"") || strings.Contains(wantConfig, "\"aio\"") {
 		t.Fatal("expected fixture unexpectedly contains omitted fields")
 	}
 	hash, err := Hash(&config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256.Sum256([]byte(want))
+	sum := sha256.Sum256([]byte(wantConfig))
 	if hash != hex.EncodeToString(sum[:]) {
 		t.Fatalf("hash=%q want=%q", hash, hex.EncodeToString(sum[:]))
 	}
@@ -248,6 +253,41 @@ func TestDecodeRejectsUnknownAndTrailingJSON(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if _, err := DecodeBytes(input); err == nil {
 				t.Fatal("Decode succeeded")
+			}
+		})
+	}
+}
+
+func TestDecodeSchemaAnnotationCompatibility(t *testing.T) {
+	legacy, err := json.Marshal(validTestConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := validTestConfig()
+	annotated, err := CanonicalJSON(&config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, input := range map[string][]byte{"legacy": legacy, "annotated": annotated} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeBytes(input); err != nil {
+				t.Fatalf("Decode failed: %v", err)
+			}
+		})
+	}
+	for name, value := range map[string]string{
+		"different URL": `"https://example.com/schema.json"`,
+		"empty string":  `""`,
+		"null":          `null`,
+		"number":        `42`,
+		"object":        `{}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := bytes.Replace(legacy, []byte("{"), []byte(`{"$schema":`+value+`,`), 1)
+			_, err := DecodeBytes(input)
+			want := `config: $schema must be "` + ConfigSchemaURL + `"`
+			if err == nil || err.Error() != want {
+				t.Fatalf("Decode error = %v, want %q", err, want)
 			}
 		})
 	}
