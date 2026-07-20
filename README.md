@@ -47,6 +47,7 @@
 
 - **VM lifecycle** — Create, start, stop, and inspect VMs with straightforward commands.
 - **Disk import** — Pull images from HTTP(S) URLs (auto-decompresses `.xz`/`.gz`), copy local qcow2/raw images, or boot installer ISOs.
+- **Cloud-init support** — Automatically creates ISO images with cloud-init configuration and injects them into VM boot parameters.
 - **Serial logs & console** — Print the active bounded serial log verbatim or connect to any guest serial console interactively.
 - **Monitor & guest agent support** — Use the interactive QEMU human monitor, run one-shot HMP commands, and send strict JSON guest-agent requests with pipe-safe stdout.
 - **Prometheus metrics and REST API** — Exposes VM metrics via a dedicated HTTP endpoint for monitoring with Prometheus, and a REST API with ping, health and configutation information (see [API documentation](API.md)).
