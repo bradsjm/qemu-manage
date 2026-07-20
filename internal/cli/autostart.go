@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/jedib0t/go-pretty/v6/table"
 	"io"
 	"strings"
 
@@ -26,6 +25,7 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 	if err != nil {
 		return err
 	}
+	stdoutInteractive := a.progressInteractive(stdout)
 
 	switch subcommand {
 	case "enable":
@@ -45,7 +45,7 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 			return fmt.Errorf("launchd: manager is unavailable")
 		}
 		var result launchd.EnableResult
-		err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Updating autostart", func() error {
+		err := withWaitingProgress(stderr, true, a.liveProgressInteractive(stderr), fmt.Sprintf("Updating %s autostart for %s VM", scope, name), fmt.Sprintf("Completed %s autostart update for %s VM", scope, name), func() error {
 			var err error
 			result, err = a.Launchd.Enable(ctx, name, scope, func(ctx context.Context, config *model.Config) error {
 				paths := a.Store.Paths(config)
@@ -57,7 +57,7 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 		if err != nil {
 			return withLaunchdPrefix(err)
 		}
-		return writeAutostartEnableStatus(stdout, name, result)
+		return writeAutostartEnableStatus(stdout, stdoutInteractive, name, result)
 	case "disable":
 		if len(remaining) != 0 {
 			return usageErrorf("autostart disable: unexpected arguments")
@@ -65,16 +65,16 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 		if a.Launchd == nil {
 			return fmt.Errorf("launchd: manager is unavailable")
 		}
-		err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Disabling autostart", func() error {
+		err := withWaitingProgress(stderr, true, a.liveProgressInteractive(stderr), fmt.Sprintf("Disabling autostart for %s VM", name), fmt.Sprintf("Disabled autostart for %s VM", name), func() error {
 			return a.Launchd.Disable(ctx, name)
 		})
 		if err != nil {
 			if errors.Is(err, launchd.ErrVMRunning) {
-				return writeAutostartDisableRefusal(stdout, name, err)
+				return writeAutostartDisableRefusal(stdout, stdoutInteractive, name, err)
 			}
 			return withLaunchdPrefix(err)
 		}
-		return writeAutostartDisableStatus(stdout, name)
+		return writeAutostartDisableStatus(stdout, stdoutInteractive, name)
 	case "status":
 		if len(remaining) != 0 {
 			return usageErrorf("autostart status: unexpected arguments")
@@ -83,7 +83,7 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 			return fmt.Errorf("launchd: manager is unavailable")
 		}
 		var report launchd.StatusReport
-		err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Checking autostart", func() error {
+		err := withWaitingProgress(stderr, true, a.liveProgressInteractive(stderr), fmt.Sprintf("Checking autostart for %s VM", name), fmt.Sprintf("Loaded autostart status for %s VM", name), func() error {
 			var err error
 			report, err = a.Launchd.Status(ctx, name)
 			return err
@@ -91,7 +91,7 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 		if err != nil {
 			return withLaunchdPrefix(err)
 		}
-		return writeAutostartStatus(stdout, report)
+		return writeAutostartStatus(stdout, stdoutInteractive, report)
 	default:
 		panic("unreachable")
 	}
@@ -104,52 +104,52 @@ func withLaunchdPrefix(err error) error {
 	return fmt.Errorf("launchd: %w", err)
 }
 
-func writeAutostartEnableStatus(output io.Writer, name string, result launchd.EnableResult) error {
+func writeAutostartEnableStatus(output io.Writer, interactive bool, name string, result launchd.EnableResult) error {
 	if result.AlreadyEnabled {
-		if _, err := fmt.Fprintf(output, "Autostart already enabled for %q at %s.\n", name, result.Scope); err != nil {
+		if err := writeMessage(output, interactive, messageInfo, fmt.Sprintf("Autostart already enabled for %q at %s.", name, result.Scope)); err != nil {
 			return err
 		}
-	} else if _, err := fmt.Fprintf(output, "Autostart enabled for %q at %s.\n", name, result.Scope); err != nil {
+	} else if err := writeMessage(output, interactive, messageSuccess, fmt.Sprintf("Autostart enabled for %q at %s.", name, result.Scope)); err != nil {
 		return err
 	}
 	if result.Loaded {
-		if _, err := fmt.Fprintln(output, "VM is already loaded; its current state was not changed."); err != nil {
+		if err := writeMessage(output, interactive, messageInfo, "VM is already loaded; its current state was not changed."); err != nil {
 			return err
 		}
-	} else if _, err := fmt.Fprintln(output, "VM state unchanged."); err != nil {
+	} else if err := writeMessage(output, interactive, messageInfo, "VM state unchanged."); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(output, "Start when ready: qemu-manage start %s\n", name); err != nil {
-		return err
-	}
-	return nil
-}
-
-func writeAutostartDisableStatus(output io.Writer, name string) error {
-	if _, err := fmt.Fprintf(output, "Autostart disabled for %q.\n", name); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintln(output, "VM state unchanged."); err != nil {
+	if err := writeMessage(output, interactive, messageInfo, fmt.Sprintf("Start when ready: qemu-manage start %s", name)); err != nil {
 		return err
 	}
 	return nil
 }
 
-func writeAutostartDisableRefusal(output io.Writer, name string, err error) error {
-	if _, writeErr := fmt.Fprintf(output, "Autostart was not changed for %q because the VM is running.\n", name); writeErr != nil {
+func writeAutostartDisableStatus(output io.Writer, interactive bool, name string) error {
+	if err := writeMessage(output, interactive, messageSuccess, fmt.Sprintf("Autostart disabled for %q.", name)); err != nil {
+		return err
+	}
+	if err := writeMessage(output, interactive, messageInfo, "VM state unchanged."); err != nil {
+		return err
+	}
+	return nil
+}
+
+func writeAutostartDisableRefusal(output io.Writer, interactive bool, name string, err error) error {
+	if writeErr := writeMessage(output, interactive, messageWarning, fmt.Sprintf("Autostart was not changed for %q because the VM is running.", name)); writeErr != nil {
 		return writeErr
 	}
-	if _, writeErr := fmt.Fprintf(output, "Stop when ready: qemu-manage stop %s\n", name); writeErr != nil {
+	if writeErr := writeMessage(output, interactive, messageInfo, fmt.Sprintf("Stop when ready: qemu-manage stop %s", name)); writeErr != nil {
 		return writeErr
 	}
 	return err
 }
 
-func writeAutostartStatus(output io.Writer, report launchd.StatusReport) error {
-	if err := writeTable(output, table.Row{"SETTING", "VALUE"}, []table.Row{{"configured_scope", report.ConfiguredScope}}); err != nil {
+func writeAutostartStatus(output io.Writer, interactive bool, report launchd.StatusReport) error {
+	if err := writeTable(output, interactive, []string{"SETTING", "VALUE"}, [][]string{{"configured_scope", string(report.ConfiguredScope)}}); err != nil {
 		return err
 	}
-	rows := make([]table.Row, 0, 2)
+	rows := make([][]string, 0, 2)
 	for _, domain := range []struct {
 		name   string
 		status launchd.DomainStatus
@@ -157,7 +157,13 @@ func writeAutostartStatus(output io.Writer, report launchd.StatusReport) error {
 		{name: "login", status: report.Login},
 		{name: "boot", status: report.Boot},
 	} {
-		rows = append(rows, table.Row{domain.name, domain.status.FilePresent, domain.status.FileMatch, domain.status.Loaded, fmt.Sprintf("%q", domain.status.Error)})
+		rows = append(rows, []string{
+			domain.name,
+			fmt.Sprintf("%t", domain.status.FilePresent),
+			fmt.Sprintf("%t", domain.status.FileMatch),
+			fmt.Sprintf("%t", domain.status.Loaded),
+			fmt.Sprintf("%q", domain.status.Error),
+		})
 	}
-	return writeTable(output, table.Row{"DOMAIN", "FILE PRESENT", "FILE MATCH", "LOADED", "ERROR"}, rows)
+	return writeTable(output, interactive, []string{"DOMAIN", "FILE PRESENT", "FILE MATCH", "LOADED", "ERROR"}, rows)
 }

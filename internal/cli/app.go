@@ -25,6 +25,7 @@ import (
 	"github.com/bradsjm/qemu-manage/internal/qemu"
 	"github.com/bradsjm/qemu-manage/internal/store"
 	"github.com/bradsjm/qemu-manage/internal/supervisor"
+	"github.com/pterm/pterm"
 )
 
 // PlatformUser captures the invoking platform account used for ownership-aware
@@ -90,10 +91,12 @@ type App struct {
 	OpenVNC                    func(context.Context, backend.VNCEndpoint, string) error
 	DialQMP                    func(context.Context, string) (MonitorClient, error)
 	CallGuestAgent             func(context.Context, string, qemu.GuestAgentRequest) (json.RawMessage, error)
+	Confirm                    func(string) (bool, error)
 
 	initializationError error
 	debug               bool
 	debugWriter         io.Writer
+	debugLogger         *pterm.Logger
 }
 
 // NewApp constructs an App wired to the host's default collaborators.
@@ -104,6 +107,9 @@ func NewApp() *App {
 			IsTerminalOutput: terminalWriter,
 			LookupEnv:        os.LookupEnv,
 			DiscoverMachine:  qemu.DiscoverVersionedMachine,
+			Confirm: func(prompt string) (bool, error) {
+				return pterm.DefaultInteractiveConfirm.WithDefaultValue(false).Show(prompt)
+			},
 		}
 	}
 
@@ -126,6 +132,9 @@ func NewApp() *App {
 			return qemu.NewQMPClientContext(ctx, path)
 		},
 		CallGuestAgent: qemu.GuestAgentCommand,
+		Confirm: func(prompt string) (bool, error) {
+			return pterm.DefaultInteractiveConfirm.WithDefaultValue(false).Show(prompt)
+		},
 	}
 
 	var storeErr error
@@ -182,15 +191,23 @@ func usageErrorf(format string, args ...any) error {
 func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	a.debug = false
 	a.debugWriter = nil
+	a.debugLogger = nil
 	debugEnabled, args := parseLeadingDebugFlags(args)
+	stderrInteractive := a.progressInteractive(stderr)
+	stderr = newPresentationWriter(stderr, stderrInteractive)
 	a.debug = debugEnabled
-	a.debugWriter = stderr
+	a.debugWriter = ptermWriter(stderr, stderrInteractive)
+	level := pterm.LogLevelDisabled
+	if debugEnabled {
+		level = pterm.LogLevelDebug
+	}
+	a.debugLogger = pterm.DefaultLogger.WithWriter(a.debugWriter).WithTime(false).WithLevel(level)
 	if len(args) > 0 && args[0] == "--version" {
 		if len(args) != 1 {
 			writeUsageFailure(stderr, usageErrorf("--version does not accept arguments"), args, a.LookupEnv)
 			return 2
 		}
-		if err := writeVersion(stdout); err != nil {
+		if err := writeVersion(stdout, a.progressInteractive(stdout)); err != nil {
 			fmt.Fprintf(stderr, "write version: %v\n", err)
 			return 1
 		}
@@ -324,12 +341,15 @@ func parseLeadingDebugFlags(args []string) (bool, []string) {
 }
 
 func (a *App) debugf(format string, args ...any) {
-	if a == nil || !a.debug || a.debugWriter == nil {
+	if a == nil || a.debugLogger == nil {
 		return
 	}
-	writeDebugf(a.debugWriter, format, args...)
+	a.debugLogger.Debug(fmt.Sprintf(format, args...))
 }
 func (a *App) progressInteractive(output io.Writer) bool {
+	if carrier, ok := output.(terminalOutputCarrier); ok {
+		return carrier.terminalOutputInteractive()
+	}
 	if a == nil || a.IsTerminalOutput == nil {
 		return false
 	}
@@ -347,27 +367,6 @@ func (a *App) runExternal(ctx context.Context, path string, args []string) error
 		return errors.New("external command runner is unavailable")
 	}
 	return a.RunExternal(ctx, path, args)
-}
-
-func writeDebugf(output io.Writer, format string, args ...any) {
-	if output == nil {
-		return
-	}
-	message := fmt.Sprintf(format, args...)
-	if !strings.HasSuffix(message, "\n") {
-		message += "\n"
-	}
-	for _, line := range strings.SplitAfter(message, "\n") {
-		if line == "" {
-			continue
-		}
-		if _, err := io.WriteString(output, "debug: "); err != nil {
-			return
-		}
-		if _, err := io.WriteString(output, line); err != nil {
-			return
-		}
-	}
 }
 
 func formatQuotedArgv(path string, args []string) string {

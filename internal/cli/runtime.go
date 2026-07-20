@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/jedib0t/go-pretty/v6/table"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jedib0t/go-pretty/v6/progress"
+	"github.com/pterm/pterm"
 	"golang.org/x/sys/unix"
 
 	"github.com/bradsjm/qemu-manage/internal/backend"
@@ -175,40 +174,48 @@ func (a *App) stopVM(ctx context.Context, config *model.Config, timeout time.Dur
 	if effectiveTimeout < time.Second || effectiveTimeout > time.Hour || effectiveTimeout%time.Second != 0 {
 		return &lifecycle.InvalidStopTimeoutError{Timeout: effectiveTimeout}
 	}
-	if force {
-		_, _ = fmt.Fprintln(stderr, "Stopping VM: Requesting forced kill...")
-		_, _ = fmt.Fprintln(
+
+	var startMessage string
+	switch {
+	case force:
+		startMessage = fmt.Sprintf("Stopping %s VM — requesting forced kill", config.Name)
+		_ = writeMessage(
 			stderr,
-			"warning: --force kills QEMU without guest cooperation; guest filesystem or data corruption is possible",
+			a.progressInteractive(stderr),
+			messageWarning,
+			"--force kills QEMU without guest cooperation; guest filesystem or data corruption is possible",
 		)
-	} else if config.GuestAgent.Enabled {
-		_, _ = fmt.Fprintln(stderr, "Stopping VM: Sending guest shutdown command...")
-	} else {
-		_, _ = fmt.Fprintln(stderr, "Stopping VM: Sending shutdown command...")
+	case config.GuestAgent.Enabled:
+		startMessage = fmt.Sprintf("Stopping %s VM — sending guest shutdown command", config.Name)
+	default:
+		startMessage = fmt.Sprintf("Stopping %s VM — sending shutdown command", config.Name)
 	}
 
+	status := startLiveStatus(stderr, true, a.liveProgressInteractive(stderr), startMessage)
 	acknowledged := false
 	forcing := false
 	err := a.Lifecycle.StopWithProgress(ctx, config, timeout, force, func(progress supervisor.StopProgress) {
 		switch progress {
 		case supervisor.StopProgressAcknowledged:
 			acknowledged = true
-			_, _ = fmt.Fprintf(stderr, "Stopping VM: Shutdown command acknowledged; waiting up to %d seconds...\n", int(effectiveTimeout/time.Second))
+			status.Update(fmt.Sprintf("Stopping %s VM — shutdown acknowledged; waiting up to %d seconds", config.Name, int(effectiveTimeout/time.Second)))
 		case supervisor.StopProgressForcing:
 			forcing = true
-			_, _ = fmt.Fprintln(stderr, "Stopping VM: Forcing kill...")
+			status.Update(fmt.Sprintf("Stopping %s VM — forcing kill", config.Name))
 		}
 	})
 	if err != nil {
+		status.Fail("Failed to stop " + config.Name + " VM: " + err.Error())
 		return err
 	}
+
 	switch {
 	case forcing:
-		_, _ = fmt.Fprintln(stderr, "Stopping VM: Forced kill complete")
+		status.Warning(config.Name + " VM was force-killed")
 	case acknowledged:
-		_, _ = fmt.Fprintln(stderr, "Stopping VM: VM shut down on its own; complete")
+		status.Success(config.Name + " VM stopped cleanly")
 	default:
-		_, _ = fmt.Fprintln(stderr, "Stopping VM: VM was already stopped; complete")
+		status.Info(config.Name + " VM was already stopped")
 	}
 	return nil
 }
@@ -239,82 +246,103 @@ func (a *App) startVM(ctx context.Context, config *model.Config, foreground, boo
 		paths.SupervisorStdout,
 		paths.SupervisorStderr,
 	)
+
+	status := startLiveStatus(
+		stderr,
+		true,
+		a.liveProgressInteractive(stderr),
+		fmt.Sprintf("Starting %s VM — checking prerequisites and waiting for readiness", config.Name),
+	)
 	ready := make(chan struct{})
 	var readyOnce sync.Once
 	startDone := make(chan error, 1)
-	progressErr := withProgress(stderr, true, a.progressInteractive(stderr), "Starting VM (checking prerequisites and waiting for readiness)", 0, progress.UnitsDefault, func(tracker *progress.Tracker) error {
-		go func() {
-			startDone <- supervisor.StartProcess(ctx, supervisor.StartOptions{
-				Name:         config.Name,
-				ExpectedID:   config.ID,
-				Executable:   executable,
-				Paths:        paths,
-				Foreground:   foreground,
-				BootMenu:     bootMenu,
-				Debug:        a.debug,
-				DebugWriter:  a.debugWriter,
-				ReadyTimeout: supervisorReadyTimeout,
-				OnReady: func() {
-					if tracker != nil {
-						tracker.MarkAsDone()
-					}
-					readyOnce.Do(func() { close(ready) })
-				},
-				RunForeground: func(runCtx context.Context, ready io.Writer) error {
-					return a.Supervisor.Supervise(runCtx, config.Name, config.ID, ready, supervisor.SuperviseOptions{
-						BootMenu:    bootMenu,
-						Debug:       a.debug,
-						DebugWriter: a.debugWriter,
-					})
-				},
-			})
-		}()
-		select {
-		case err := <-startDone:
-			return err
-		case <-ready:
-			return nil
-		}
-	})
-	if progressErr != nil {
-		return fmt.Errorf("runtime: start %q: %w", config.Name, progressErr)
-	}
-	startErr := <-startDone
-	if startErr != nil {
-		return fmt.Errorf("runtime: start %q: %w", config.Name, startErr)
+	go func() {
+		startDone <- supervisor.StartProcess(ctx, supervisor.StartOptions{
+			Name:         config.Name,
+			ExpectedID:   config.ID,
+			Executable:   executable,
+			Paths:        paths,
+			Foreground:   foreground,
+			BootMenu:     bootMenu,
+			Debug:        a.debug,
+			DebugWriter:  a.debugWriter,
+			ReadyTimeout: supervisorReadyTimeout,
+			OnReady: func() {
+				readyOnce.Do(func() { close(ready) })
+			},
+			RunForeground: func(runCtx context.Context, ready io.Writer) error {
+				return a.Supervisor.Supervise(runCtx, config.Name, config.ID, ready, supervisor.SuperviseOptions{
+					BootMenu:    bootMenu,
+					Debug:       a.debug,
+					DebugWriter: a.debugWriter,
+				})
+			},
+		})
+	}()
+	if err := awaitVMStart(config.Name, status, ready, startDone); err != nil {
+		return fmt.Errorf("runtime: start %q: %w", config.Name, err)
 	}
 	return nil
 }
-func withConnectionProgress(output io.Writer, interactive bool, message string, connect func(func()) error) error {
+
+func awaitVMStart(vmName string, status *liveStatus, ready <-chan struct{}, startDone <-chan error) error {
+	startMessage := fmt.Sprintf("Starting %s VM — checking prerequisites and waiting for readiness", vmName)
+	successMessage := vmName + " VM is ready"
+
+	failStart := func(err error) error {
+		status.Fail(startMessage + " failed: " + err.Error())
+		return err
+	}
+	waitForReady := func() {
+		<-ready
+		status.Success(successMessage)
+	}
+
+	select {
+	case err := <-startDone:
+		if err != nil {
+			return failStart(err)
+		}
+		waitForReady()
+		return nil
+	default:
+	}
+
+	select {
+	case err := <-startDone:
+		if err != nil {
+			return failStart(err)
+		}
+		waitForReady()
+		return nil
+	case <-ready:
+		status.Success(successMessage)
+		return <-startDone
+	}
+}
+
+func withConnectionProgress(output io.Writer, interactive bool, startMessage, successMessage string, connect func(func()) error) error {
+	status := startLiveStatus(output, true, interactive, startMessage)
 	ready := make(chan struct{})
 	var readyOnce sync.Once
 	done := make(chan error, 1)
-	completed := false
-	progressErr := withWaitingProgress(output, true, interactive, message, func() error {
-		// Dial in the background so the progress spinner can wait for either early
-		// readiness or terminal failure.
-		go func() {
-			done <- connect(func() {
-				readyOnce.Do(func() { close(ready) })
-			})
-		}()
-		// Stop the waiting progress as soon as setup reports the connection is ready;
-		// the full interactive session continues until connect returns.
-		select {
-		case err := <-done:
-			completed = true
+	go func() {
+		done <- connect(func() {
+			status.Success(successMessage)
+			readyOnce.Do(func() { close(ready) })
+		})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			status.Fail(startMessage + " failed: " + err.Error())
 			return err
-		case <-ready:
-			return nil
 		}
-	})
-	if progressErr != nil {
-		return progressErr
-	}
-	if completed {
+		status.Success(successMessage)
 		return nil
+	case <-ready:
+		return <-done
 	}
-	return <-done
 }
 
 func (a *App) runConsole(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -353,16 +381,22 @@ func (a *App) runConsole(ctx context.Context, args []string, stdin io.Reader, st
 			)
 		}
 	}
-	return withConnectionProgress(stderr, a.progressInteractive(stderr), "Connecting to VM console", func(setup func()) error {
-		return console.ConnectWithSetup(ctx, paths.Console, stdin, stdout, func() {
-			setup()
-			if replay != nil {
-				if _, copyErr := io.Copy(stdout, replay); copyErr != nil {
-					a.debugf("console replay unavailable: %v", copyErr)
+	return withConnectionProgress(
+		stderr,
+		a.liveProgressInteractive(stderr),
+		fmt.Sprintf("Connecting to %s VM console", name),
+		fmt.Sprintf("Connected to %s VM console; press Ctrl-] to disconnect", name),
+		func(setup func()) error {
+			return console.ConnectWithSetup(ctx, paths.Console, stdin, stdout, func() {
+				setup()
+				if replay != nil {
+					if _, copyErr := io.Copy(stdout, replay); copyErr != nil {
+						a.debugf("console replay unavailable: %v", copyErr)
+					}
 				}
-			}
-		})
-	})
+			})
+		},
+	)
 }
 
 // openActiveSerialLog opens the current serial log after re-validating that the
@@ -476,9 +510,15 @@ func (a *App) runMonitor(ctx context.Context, args []string, stdin io.Reader, st
 	}
 	paths := a.Store.Paths(config)
 	if len(rest) == 0 {
-		return withConnectionProgress(stderr, a.progressInteractive(stderr), "Connecting to QEMU monitor", func(setup func()) error {
-			return console.ConnectMonitorWithSetup(ctx, paths.Monitor, stdin, stdout, setup)
-		})
+		return withConnectionProgress(
+			stderr,
+			a.liveProgressInteractive(stderr),
+			fmt.Sprintf("Connecting to QEMU monitor for %s VM", name),
+			fmt.Sprintf("Connected to QEMU monitor for %s VM", name),
+			func(setup func()) error {
+				return console.ConnectMonitorWithSetup(ctx, paths.Monitor, stdin, stdout, setup)
+			},
+		)
 	}
 	if a.DialQMP == nil {
 		return errors.New("runtime: monitor is unavailable")
@@ -486,14 +526,21 @@ func (a *App) runMonitor(ctx context.Context, args []string, stdin io.Reader, st
 	var client MonitorClient
 	// Dial QMP first so one-shot monitor commands fail before entering the control
 	// path.
-	if err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Connecting to QEMU monitor", func() error {
-		var err error
-		client, err = a.DialQMP(ctx, paths.QMPCommand)
-		if err != nil {
-			return fmt.Errorf("runtime: monitor: %w", err)
-		}
-		return nil
-	}); err != nil {
+	if err := withWaitingProgress(
+		stderr,
+		true,
+		a.liveProgressInteractive(stderr),
+		fmt.Sprintf("Connecting to QEMU monitor for %s VM", name),
+		fmt.Sprintf("Connected to QEMU monitor for %s VM", name),
+		func() error {
+			var err error
+			client, err = a.DialQMP(ctx, paths.QMPCommand)
+			if err != nil {
+				return fmt.Errorf("runtime: monitor: %w", err)
+			}
+			return nil
+		},
+	); err != nil {
 		return err
 	}
 	// Always close the QMP client after the command path finishes.
@@ -602,8 +649,10 @@ func (a *App) runVNC(ctx context.Context, args []string, stdout io.Writer) error
 	if err := a.OpenVNC(ctx, endpoint, config.VNC.Password); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(stdout, "VNC password copied to clipboard; opening vnc://%s:%d\n", endpoint.Host, endpoint.Port)
-	return err
+	if err := writeMessage(stdout, a.progressInteractive(stdout), messageInfo, "VNC password copied to clipboard"); err != nil {
+		return err
+	}
+	return writeMessage(stdout, a.progressInteractive(stdout), messageSuccess, fmt.Sprintf("Opening vnc://%s:%d", endpoint.Host, endpoint.Port))
 }
 
 func (a *App) runDoctor(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -645,17 +694,41 @@ func (a *App) runDoctor(ctx context.Context, args []string, stdout, stderr io.Wr
 		}
 		return nil
 	}
-	if err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Running prerequisite checks", collect); err != nil {
+	startMessage := "Running host prerequisite checks"
+	successMessage := "Completed host prerequisite checks"
+	if name != "" {
+		startMessage = fmt.Sprintf("Running prerequisite checks for %s VM", name)
+		successMessage = fmt.Sprintf("Completed prerequisite checks for %s VM", name)
+	}
+	if err := withWaitingProgress(stderr, true, a.liveProgressInteractive(stderr), startMessage, successMessage, collect); err != nil {
 		return err
 	}
-	rows := make([]table.Row, 0, len(checks))
+	rows := make([][]string, 0, len(checks))
+	interactive := a.progressInteractive(stdout)
 	for _, check := range checks {
-		rows = append(rows, table.Row{check.Name, check.Status, check.Evidence})
+		rows = append(rows, []string{check.Name, displayCheckStatus(check.Status, interactive), check.Evidence})
 	}
-	if err := writeTable(stdout, table.Row{"CHECK", "STATUS", "EVIDENCE"}, rows); err != nil {
+	if err := writeTable(stdout, interactive, []string{"CHECK", "STATUS", "EVIDENCE"}, rows); err != nil {
 		return fmt.Errorf("qemu: write doctor output: %w", err)
 	}
 	return qemu.RequiredPassed(checks)
+}
+
+func displayCheckStatus(status qemu.CheckStatus, interactive bool) string {
+	text := string(status)
+	if !interactive {
+		return text
+	}
+	switch status {
+	case qemu.CheckPass:
+		return applyStyle(pterm.NewStyle(pterm.FgLightGreen), text)
+	case qemu.CheckWarn:
+		return applyStyle(pterm.NewStyle(pterm.FgLightYellow), text)
+	case qemu.CheckFail:
+		return applyStyle(pterm.NewStyle(pterm.FgLightRed), text)
+	default:
+		return text
+	}
 }
 
 func (a *App) runSupervise(ctx context.Context, args []string) error {

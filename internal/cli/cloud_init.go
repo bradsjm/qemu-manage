@@ -21,6 +21,7 @@ type cloudInitMetadata struct {
 
 func (a *App) createCloudInitSeed(
 	ctx context.Context,
+	vmName string,
 	userDataPath string,
 	destination string,
 	instanceID string,
@@ -37,7 +38,16 @@ func (a *App) createCloudInitSeed(
 		}
 	}()
 
-	if err := copyRegularFile(userDataPath, filepath.Join(stagingDirectory, "user-data"), 0o600, progressOutput, true, interactive, "Copying cloud-init user-data"); err != nil {
+	if err := copyRegularFile(
+		userDataPath,
+		filepath.Join(stagingDirectory, "user-data"),
+		0o600,
+		progressOutput,
+		true,
+		interactive,
+		fmt.Sprintf("Copying cloud-init user-data for %s VM", vmName),
+		fmt.Sprintf("Copied cloud-init user-data for %s VM", vmName),
+	); err != nil {
 		return fmt.Errorf("cloud-init: copy user-data: %w", err)
 	}
 	metadata, err := json.Marshal(cloudInitMetadata{InstanceID: instanceID})
@@ -50,9 +60,16 @@ func (a *App) createCloudInitSeed(
 	}
 
 	args := []string{"makehybrid", "-o", destination, stagingDirectory, "-iso", "-joliet", "-default-volume-name", "cidata"}
-	if err := withWaitingProgress(progressOutput, true, interactive, "Creating cloud-init seed", func() error {
-		return a.runExternal(ctx, hdiutilPath, args)
-	}); err != nil {
+	if err := withWaitingProgress(
+		progressOutput,
+		true,
+		interactive,
+		fmt.Sprintf("Creating cloud-init seed for %s VM", vmName),
+		fmt.Sprintf("Created cloud-init seed for %s VM", vmName),
+		func() error {
+			return a.runExternal(ctx, hdiutilPath, args)
+		},
+	); err != nil {
 		return fmt.Errorf("cloud-init: create seed ISO: %w", err)
 	}
 	if err := os.Chmod(destination, 0o400); err != nil {

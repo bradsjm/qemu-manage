@@ -1,19 +1,19 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/jedib0t/go-pretty/v6/table"
 	"io"
 	"os"
 	"sort"
 	"strings"
 
 	"golang.org/x/term"
+
+	"github.com/pterm/pterm"
 
 	"github.com/bradsjm/qemu-manage/internal/backend"
 	"github.com/bradsjm/qemu-manage/internal/model"
@@ -149,9 +149,16 @@ func (a *App) runStatus(ctx context.Context, args []string, stdout, stderr io.Wr
 	if *jsonOutput {
 		err = collect()
 	} else {
-		err = withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Reading VM status", func() error {
-			return collect()
-		})
+		err = withWaitingProgress(
+			stderr,
+			true,
+			a.liveProgressInteractive(stderr),
+			fmt.Sprintf("Reading status for %s VM", name),
+			fmt.Sprintf("Loaded status for %s VM", name),
+			func() error {
+				return collect()
+			},
+		)
 	}
 	if err != nil {
 		return err
@@ -161,7 +168,7 @@ func (a *App) runStatus(ctx context.Context, args []string, stdout, stderr io.Wr
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(row)
 	}
-	if err := writeRows([]StatusRow{row}, false, stdout); err != nil {
+	if err := writeRows([]StatusRow{row}, false, stdout, a.progressInteractive(stdout)); err != nil {
 		return err
 	}
 	if config.Network.SMBFolder != "" {
@@ -214,12 +221,12 @@ func (a *App) writeStatusRows(ctx context.Context, jsonOutput bool, stdout, stde
 	if jsonOutput {
 		err = collect()
 	} else {
-		err = withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Reading VM status", collect)
+		err = withWaitingProgress(stderr, true, a.liveProgressInteractive(stderr), "Reading status for all VMs", "Loaded status for all VMs", collect)
 	}
 	if err != nil {
 		return err
 	}
-	return writeRows(rows, jsonOutput, stdout)
+	return writeRows(rows, jsonOutput, stdout, a.progressInteractive(stdout))
 }
 
 func (a *App) statusRow(ctx context.Context, config *model.Config) (StatusRow, error) {
@@ -240,17 +247,52 @@ func (a *App) statusRow(ctx context.Context, config *model.Config) (StatusRow, e
 	return row, nil
 }
 
-func writeRows(rows []StatusRow, jsonOutput bool, stdout io.Writer) error {
+func displayRunState(state model.RunState, interactive bool) string {
+	text := string(state)
+	if !interactive {
+		return text
+	}
+
+	switch state {
+	case model.RunStateRunning:
+		return pterm.LightGreen(text)
+	case model.RunStatePaused:
+		return pterm.LightYellow(text)
+	case model.RunStateStarting, model.RunStateStopping:
+		return pterm.LightCyan(text)
+	case model.RunStateStopped:
+		return pterm.Gray(text)
+	case model.RunStateFailed:
+		return pterm.LightRed(text)
+	default:
+		return text
+	}
+}
+
+func displayRestartRequired(required, interactive bool) string {
+	text := fmt.Sprintf("%t", required)
+	if interactive && required {
+		return pterm.LightYellow(text)
+	}
+	return text
+}
+
+func writeRows(rows []StatusRow, jsonOutput bool, stdout io.Writer, interactive bool) error {
 	if jsonOutput {
 		encoder := json.NewEncoder(stdout)
 		encoder.SetEscapeHTML(false)
 		return encoder.Encode(rows)
 	}
-	tableRows := make([]table.Row, 0, len(rows))
+	tableRows := make([][]string, 0, len(rows))
 	for _, row := range rows {
-		tableRows = append(tableRows, table.Row{row.Name, row.State, row.RestartRequired, row.Error})
+		tableRows = append(tableRows, []string{
+			row.Name,
+			displayRunState(row.State, interactive),
+			displayRestartRequired(row.RestartRequired, interactive),
+			row.Error,
+		})
 	}
-	return writeTable(stdout, table.Row{"NAME", "STATE", "RESTART REQUIRED", "ERROR"}, tableRows)
+	return writeTable(stdout, interactive, []string{"NAME", "STATE", "RESTART REQUIRED", "ERROR"}, tableRows)
 }
 
 // writeSMBMountHelp emits the stable SMB host-folder and Linux CIFS mount recipe
@@ -295,28 +337,25 @@ func (a *App) runDelete(ctx context.Context, args []string, stdin io.Reader, std
 		return fmt.Errorf("launchd: VM %q has autostart scope %q; run `qemu-manage autostart disable %s` first", name, config.Autostart.Scope, name)
 	}
 	if !*force {
-		if a.IsTerminal == nil || !a.IsTerminal(stdin) {
+		stdoutInteractive := a.progressInteractive(stdout)
+		if a.IsTerminal == nil || !a.IsTerminal(stdin) || !stdoutInteractive {
 			return fmt.Errorf("config: deleting %q noninteractively requires --force; this permanently removes its managed disks, firmware, and configuration", name)
 		}
-		if _, err := fmt.Fprintf(
-			stdout,
-			"WARNING: Permanently delete VM %q, including its managed disks, firmware, and configuration? [y/N] ",
-			name,
-		); err != nil {
+		if err := writeMessage(stdout, stdoutInteractive, messageWarning, fmt.Sprintf("Deleting %s VM permanently removes its managed disks, firmware, and configuration.", name)); err != nil {
 			return err
 		}
-		answer, readErr := bufio.NewReader(stdin).ReadString('\n')
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			return fmt.Errorf("config: read deletion confirmation: %w", readErr)
+		if a.Confirm == nil {
+			return errors.New("config: deletion confirmation is unavailable")
 		}
-		switch strings.ToLower(strings.TrimSpace(answer)) {
-		case "y", "yes":
-		default:
-			_, err := fmt.Fprintln(stdout, "Deletion cancelled.")
-			return err
+		confirmed, confirmErr := a.Confirm(fmt.Sprintf("Permanently delete %s VM?", name))
+		if confirmErr != nil {
+			return fmt.Errorf("config: read deletion confirmation: %w", confirmErr)
+		}
+		if !confirmed {
+			return writeMessage(stdout, stdoutInteractive, messageInfo, "Deletion cancelled.")
 		}
 	}
-	return withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Deleting VM", func() error {
+	return withWaitingProgress(stderr, true, a.liveProgressInteractive(stderr), fmt.Sprintf("Deleting %s VM and its managed files", name), fmt.Sprintf("Deleted %s VM and its managed files", name), func() error {
 		return a.Store.Delete(name, func(lockedConfig *model.Config, _ store.Paths) error {
 			if lockedConfig.ID != initialID {
 				return fmt.Errorf("config: VM %q identity changed before deletion; refusing to delete a replacement VM", name)

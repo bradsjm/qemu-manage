@@ -399,7 +399,7 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 	}
 	if config.Autostart.Scope != model.AutostartNone &&
 		(oldRestartPolicy != config.RestartPolicy || oldShutdownTimeoutSeconds != config.ShutdownTimeoutSeconds) {
-		warnStaleAutostart(stderr, name, config.Autostart.Scope)
+		warnStaleAutostart(stderr, a.progressInteractive(stderr), name, config.Autostart.Scope)
 	}
 	return nil
 }
@@ -470,7 +470,7 @@ func (a *App) runConfig(ctx context.Context, subcommand string, args []string, s
 		if current.Autostart.Scope != model.AutostartNone &&
 			(current.RestartPolicy != replacement.RestartPolicy ||
 				current.ShutdownTimeoutSeconds != replacement.ShutdownTimeoutSeconds) {
-			warnStaleAutostart(stderr, args[0], current.Autostart.Scope)
+			warnStaleAutostart(stderr, a.progressInteractive(stderr), args[0], current.Autostart.Scope)
 		}
 		return nil
 	default:
@@ -478,13 +478,18 @@ func (a *App) runConfig(ctx context.Context, subcommand string, args []string, s
 	}
 }
 
-func warnStaleAutostart(stderr io.Writer, name string, scope model.AutostartScope) {
-	fmt.Fprintf(
+func warnStaleAutostart(stderr io.Writer, interactive bool, name string, scope model.AutostartScope) {
+	_ = writeMessage(
 		stderr,
-		"warning: launchd configuration is stale; run %q, %q, then %q\n",
-		"qemu-manage stop "+name,
-		"qemu-manage autostart disable "+name,
-		"qemu-manage autostart enable "+name+" --scope "+string(scope),
+		interactive,
+		messageWarning,
+		fmt.Sprintf(
+			"launchd configuration for %s is stale; run %q, %q, then %q",
+			name,
+			"qemu-manage stop "+name,
+			"qemu-manage autostart disable "+name,
+			"qemu-manage autostart enable "+name+" --scope "+string(scope),
+		),
 	)
 }
 

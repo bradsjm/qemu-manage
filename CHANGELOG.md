@@ -6,9 +6,13 @@ All notable changes to qemu-manage are documented in this file.
 ## [Unreleased]
 
 ### Added
-
 - `qemu-manage restart NAME` convenience command that stops and starts a VM in sequence, accepting the stop-phase (`--timeout`, `--force`) and start-phase (`--boot-menu`, `--foreground`) options together; a stop failure aborts before the start is attempted.
+- Added output abstraction layer with presentation writers, ANSI stripping, and animated spinners
 
+### Changed
+- Replaced go-pretty with pterm as the unified terminal output library
+- Rewrote progress bars with custom pterm-styled byte-level bars and waiting helpers
+- Switched table rendering to pterm with conditional ANSI stripping for redirected output
 ## [0.5.0] - 2026-07-20
 
 ### Added

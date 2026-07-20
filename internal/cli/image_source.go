@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jedib0t/go-pretty/v6/progress"
 	"github.com/therootcompany/xz"
 )
 
@@ -101,7 +100,14 @@ func newImageHTTPClient() *http.Client {
 	}
 }
 
-func (a *App) materializeImage(ctx context.Context, source imageSourceSpec, vmDir string, progressOutput io.Writer, progressEnabled, interactive bool) (path string, temporary bool, err error) {
+func (a *App) materializeImage(
+	ctx context.Context,
+	vmName string,
+	source imageSourceSpec,
+	vmDir string,
+	progressOutput io.Writer,
+	progressEnabled, interactive bool,
+) (path string, temporary bool, err error) {
 	if source.remoteURL == nil {
 		if err := requireRegularSource(source.localPath); err != nil {
 			return "", false, fmt.Errorf("source image: %w", err)
@@ -110,43 +116,45 @@ func (a *App) materializeImage(ctx context.Context, source imageSourceSpec, vmDi
 	}
 
 	label := publicURL(source.remoteURL)
-	message := "Downloading image"
-	if source.compression != imageUncompressed {
-		message = "Downloading and decompressing image"
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source.remoteURL.String(), nil)
+	if err != nil {
+		return "", false, fmt.Errorf("create image request for %s", label)
 	}
-	var destination string
-	err = withProgress(progressOutput, progressEnabled, interactive, message, 0, progress.UnitsBytes, func(tracker *progress.Tracker) error {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, source.remoteURL.String(), nil)
-		if err != nil {
-			return fmt.Errorf("create image request for %s", label)
-		}
-		request.Header.Set("Accept-Encoding", "identity")
-		request.Header.Set("User-Agent", "qemu-manage/1")
-		client := a.HTTPClient
-		if client == nil {
-			client = newImageHTTPClient()
-		}
-		response, err := client.Do(request)
-		if err != nil {
-			var urlError *url.Error
-			if errors.As(err, &urlError) {
-				err = urlError.Err
-			}
-			return fmt.Errorf("download image from %s: %w", label, err)
-		}
-		defer response.Body.Close()
-		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			return fmt.Errorf("download image from %s: HTTP %d %s", label, response.StatusCode, http.StatusText(response.StatusCode))
-		}
-		if encoding := response.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
-			return fmt.Errorf("download image from %s: unsupported HTTP Content-Encoding %q", label, encoding)
-		}
-		if tracker != nil && response.ContentLength > 0 {
-			tracker.UpdateTotal(response.ContentLength)
-		}
+	request.Header.Set("Accept-Encoding", "identity")
+	request.Header.Set("User-Agent", "qemu-manage/1")
 
+	client := a.HTTPClient
+	if client == nil {
+		client = newImageHTTPClient()
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		var urlError *url.Error
+		if errors.As(err, &urlError) {
+			err = urlError.Err
+		}
+		return "", false, fmt.Errorf("download image from %s: %w", label, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return "", false, fmt.Errorf("download image from %s: HTTP %d %s", label, response.StatusCode, http.StatusText(response.StatusCode))
+	}
+	if encoding := response.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
+		return "", false, fmt.Errorf("download image from %s: unsupported HTTP Content-Encoding %q", label, encoding)
+	}
+
+	startMessage := fmt.Sprintf("Downloading image for %s VM from %s", vmName, label)
+	successMessage := fmt.Sprintf("Downloaded image for %s VM", vmName)
+	if source.compression != imageUncompressed {
+		startMessage = fmt.Sprintf("Downloading and decompressing image for %s VM from %s", vmName, label)
+		successMessage = fmt.Sprintf("Downloaded and decompressed image for %s VM", vmName)
+	}
+
+	var destination string
+	err = withByteProgress(progressOutput, progressEnabled, interactive, startMessage, successMessage, response.ContentLength, func(tracker byteProgress) error {
 		guardedBody := newImageIdleReader(ctx, response.Body)
 		defer guardedBody.Stop()
+
 		countedBody := imageProgressReader{reader: guardedBody, tracker: tracker}
 		reader, closeReader, err := decompressedImageReader(countedBody, source.compression)
 		if err != nil {
@@ -196,13 +204,13 @@ func (a *App) materializeImage(ctx context.Context, source imageSourceSpec, vmDi
 // progress tracker.
 type imageProgressReader struct {
 	reader  io.Reader
-	tracker *progress.Tracker
+	tracker byteProgress
 }
 
 func (r imageProgressReader) Read(buffer []byte) (int, error) {
 	n, err := r.reader.Read(buffer)
 	if n > 0 && r.tracker != nil {
-		r.tracker.Increment(int64(n))
+		r.tracker.Add(n)
 	}
 	return n, err
 }

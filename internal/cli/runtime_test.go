@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pterm/pterm"
+
 	"github.com/bradsjm/qemu-manage/internal/backend"
 	"github.com/bradsjm/qemu-manage/internal/launchd"
 	"github.com/bradsjm/qemu-manage/internal/lifecycle"
@@ -723,6 +725,9 @@ func TestConsoleReplaysActiveTailBeforeLiveOutputOnlyForTerminal(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 			}
+			if !strings.Contains(stderr.String(), "vm VM console") {
+				t.Fatalf("stderr=%q", stderr.String())
+			}
 			if stdout.String() != tt.wantStdout {
 				t.Fatalf("stdout = %q, want %q", stdout.String(), tt.wantStdout)
 			}
@@ -781,7 +786,7 @@ func TestMonitorInteractiveUsesMonitorSocket(t *testing.T) {
 		_ = input.Close()
 	}()
 	code := a.Run(context.Background(), []string{"monitor", "vm"}, stdin, stdout, &stderr)
-	if code != 0 || !strings.Contains(stderr.String(), "Connecting to QEMU monitor") {
+	if code != 0 || !strings.Contains(stderr.String(), "QEMU monitor for vm VM") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	if stdout.String() != "QEMU monitor ready\n" {
@@ -804,7 +809,7 @@ func TestMonitorCommandUsesQMPCommandSocketAndClosesClient(t *testing.T) {
 		return client, nil
 	}
 	code, stdout, stderr := runCLI(a, "monitor", "vm", "info status")
-	if code != 0 || !strings.Contains(stderr, "Connecting to QEMU monitor") {
+	if code != 0 || !strings.Contains(stderr, "QEMU monitor for vm VM") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if stdout != "status: running\n" {
@@ -1116,7 +1121,7 @@ func TestVNCAdmissionRejectsDisabledStoppedMissingEndpointAndStaleConfig(t *test
 	})
 }
 
-func TestVNCCommandMapsWildcardHostAndPrintsSafeOutput(t *testing.T) {
+func TestVNCCommandMapsWildcardHostAndReportsSideEffects(t *testing.T) {
 	a := testApp(t)
 	cfg := testConfig("vm")
 	cfg.VNC = &model.VNCConfig{Bind: "127.0.0.1", Port: 5900, PortTo: 5909, Password: "secret"}
@@ -1147,9 +1152,10 @@ func TestVNCCommandMapsWildcardHostAndPrintsSafeOutput(t *testing.T) {
 	if gotPassword != "secret" {
 		t.Fatalf("password = %q, want secret", gotPassword)
 	}
-	wantOutput := "VNC password copied to clipboard; opening vnc://127.0.0.1:5905\n"
-	if stdout != wantOutput {
-		t.Fatalf("stdout = %q, want %q", stdout, wantOutput)
+	for _, want := range []string{"VNC password copied to clipboard", "Opening vnc://127.0.0.1:5905"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout = %q, want substring %q", stdout, want)
+		}
 	}
 	if strings.Contains(stdout, "secret") || strings.Contains(stderr, "secret") {
 		t.Fatalf("password leaked to output: stdout=%q stderr=%q", stdout, stderr)
@@ -1177,17 +1183,128 @@ func TestVNCCommandRejectsNilViewer(t *testing.T) {
 	}
 }
 
-func TestDoctorHumanUsesTableAndProgress(t *testing.T) {
+func TestVNCCommandPropagatesStdoutWriteFailure(t *testing.T) {
 	a := testApp(t)
-	code, stdout, stderr := runCLI(a, "doctor")
-	if code != 0 && code != 1 {
-		t.Fatalf("doctor exit code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	cfg := testConfig("vm")
+	cfg.VNC = &model.VNCConfig{Bind: "127.0.0.1", Port: 5900, PortTo: 5900, Password: "secret"}
+	saveTestConfig(t, a, cfg)
+	hash, err := model.Hash(cfg)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(stdout, "CHECK") || !strings.Contains(stdout, "STATUS") || strings.Contains(stdout, "\t") {
-		t.Fatalf("doctor table=%q", stdout)
+	a.Runtime = &fakeRuntime{row: StatusRow{
+		State:               model.RunStateRunning,
+		RunningConfigSHA256: hash,
+		VNC:                 &backend.VNCEndpoint{Host: "127.0.0.1", Port: 5901},
+	}}
+	a.OpenVNC = func(context.Context, backend.VNCEndpoint, string) error { return nil }
+	wantErr := errors.New("write failed")
+	err = a.runVNC(context.Background(), []string{"vm"}, errorWriter{err: wantErr})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
 	}
-	if !strings.Contains(stderr, "Running prerequisite checks") {
-		t.Fatalf("doctor progress=%q", stderr)
+}
+
+func TestDisplayCheckStatus(t *testing.T) {
+	tests := []struct {
+		status qemu.CheckStatus
+		want   string
+	}{
+		{status: qemu.CheckPass, want: applyStyle(pterm.NewStyle(pterm.FgLightGreen), "pass")},
+		{status: qemu.CheckWarn, want: applyStyle(pterm.NewStyle(pterm.FgLightYellow), "warn")},
+		{status: qemu.CheckFail, want: applyStyle(pterm.NewStyle(pterm.FgLightRed), "fail")},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.status), func(t *testing.T) {
+			if got := displayCheckStatus(tc.status, false); got != string(tc.status) {
+				t.Fatalf("noninteractive=%q, want %q", got, tc.status)
+			}
+			if got := displayCheckStatus(tc.status, true); got != tc.want {
+				t.Fatalf("interactive=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDoctorHumanRedirectedPreservesCellsAndMessages(t *testing.T) {
+	a := testApp(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var humanOut bytes.Buffer
+	var humanErr bytes.Buffer
+	code := a.Run(ctx, []string{"doctor"}, strings.NewReader(""), &humanOut, &humanErr)
+	if code != 1 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, humanOut.String(), humanErr.String())
+	}
+	if strings.Contains(humanOut.String(), "\x1b[") || strings.Contains(humanErr.String(), "\x1b[") {
+		t.Fatalf("doctor redirected output contained ANSI: stdout=%q stderr=%q", humanOut.String(), humanErr.String())
+	}
+	for _, want := range []string{"CHECK", "STATUS", "EVIDENCE", "Running host prerequisite checks", "Completed host prerequisite checks"} {
+		if !strings.Contains(humanOut.String()+humanErr.String(), want) {
+			t.Fatalf("combined output missing %q: stdout=%q stderr=%q", want, humanOut.String(), humanErr.String())
+		}
+	}
+
+	var jsonOut bytes.Buffer
+	var jsonErr bytes.Buffer
+	jsonCode := a.Run(ctx, []string{"doctor", "--json"}, strings.NewReader(""), &jsonOut, &jsonErr)
+	if jsonCode != 1 || jsonErr.Len() != 0 {
+		t.Fatalf("json code=%d stdout=%q stderr=%q", jsonCode, jsonOut.String(), jsonErr.String())
+	}
+	var checks []qemu.Check
+	if err := json.Unmarshal(jsonOut.Bytes(), &checks); err != nil {
+		t.Fatalf("doctor did not emit JSON: %v (%q)", err, jsonOut.String())
+	}
+	if len(checks) == 0 {
+		t.Fatal("doctor emitted no checks")
+	}
+	for _, check := range checks {
+		for _, cell := range []string{check.Name, string(check.Status), check.Evidence} {
+			if cell == "" {
+				continue
+			}
+			if !strings.Contains(humanOut.String(), cell) {
+				t.Fatalf("doctor table missing cell %q: %q", cell, humanOut.String())
+			}
+		}
+	}
+}
+
+func TestDoctorNamedUsesNamedProgressMessage(t *testing.T) {
+	a := testApp(t)
+	saveTestConfig(t, a, testConfig("vm"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := a.Run(ctx, []string{"doctor", "vm"}, strings.NewReader(""), &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"Running prerequisite checks for vm VM", "Completed prerequisite checks for vm VM"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr = %q, want substring %q", stderr.String(), want)
+		}
+	}
+	if strings.Contains(stdout.String(), "\x1b[") || strings.Contains(stderr.String(), "\x1b[") {
+		t.Fatalf("doctor redirected output contained ANSI: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestDoctorHumanPropagatesWriterError(t *testing.T) {
+	a := testApp(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	wantErr := errors.New("write failed")
+	err := a.runDoctor(ctx, nil, errorWriter{err: wantErr}, io.Discard)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+	if !strings.Contains(err.Error(), "qemu: write doctor output") {
+		t.Fatalf("error = %v, want wrapped doctor output failure", err)
 	}
 }
 
@@ -1225,6 +1342,148 @@ func TestStopAndStartMissingServicesAreReported(t *testing.T) {
 	if code != 1 || !strings.Contains(stderr, "supervisor service is unavailable") {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
 	}
+}
+
+func TestAwaitVMStart(t *testing.T) {
+	const vmName = "home-assistant"
+	startMessage := "Starting " + vmName + " VM — checking prerequisites and waiting for readiness"
+
+	t.Run("prebuffered nil result after ready", func(t *testing.T) {
+		ready := make(chan struct{})
+		close(ready)
+		startDone := make(chan error, 1)
+		startDone <- nil
+		stderr := &stagedBuffer{writes: make(chan struct{}, 2)}
+		status := startLiveStatus(stderr, true, false, startMessage)
+		<-stderr.writes
+
+		if err := awaitVMStart(vmName, status, ready, startDone); err != nil {
+			t.Fatalf("awaitVMStart error=%v", err)
+		}
+		<-stderr.writes
+		if got := stderr.String(); !strings.Contains(got, vmName+" VM is ready") {
+			t.Fatalf("stderr=%q", got)
+		}
+	})
+
+	t.Run("prebuffered error result fails immediately", func(t *testing.T) {
+		sentinel := errors.New("start failed")
+		ready := make(chan struct{})
+		startDone := make(chan error, 1)
+		startDone <- sentinel
+		stderr := &stagedBuffer{writes: make(chan struct{}, 2)}
+		status := startLiveStatus(stderr, true, false, startMessage)
+		<-stderr.writes
+
+		err := awaitVMStart(vmName, status, ready, startDone)
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("awaitVMStart error=%v, want %v", err, sentinel)
+		}
+		<-stderr.writes
+		if got := stderr.String(); !strings.Contains(got, sentinel.Error()) {
+			t.Fatalf("stderr=%q", got)
+		}
+	})
+
+	t.Run("ready first still returns later start error", func(t *testing.T) {
+		sentinel := errors.New("foreground exited")
+		ready := make(chan struct{})
+		startDone := make(chan error, 1)
+		stderr := &stagedBuffer{writes: make(chan struct{}, 2)}
+		status := startLiveStatus(stderr, true, false, startMessage)
+		<-stderr.writes
+
+		done := make(chan error, 1)
+		go func() {
+			done <- awaitVMStart(vmName, status, ready, startDone)
+		}()
+
+		close(ready)
+		<-stderr.writes
+		select {
+		case err := <-done:
+			t.Fatalf("awaitVMStart returned before start result: %v", err)
+		default:
+		}
+
+		startDone <- sentinel
+		if err := <-done; !errors.Is(err, sentinel) {
+			t.Fatalf("awaitVMStart error=%v, want %v", err, sentinel)
+		}
+	})
+
+	t.Run("foreground lifetime blocks after readiness until start returns", func(t *testing.T) {
+		ready := make(chan struct{})
+		startDone := make(chan error, 1)
+		stderr := &stagedBuffer{writes: make(chan struct{}, 2)}
+		status := startLiveStatus(stderr, true, false, startMessage)
+		<-stderr.writes
+
+		done := make(chan error, 1)
+		go func() {
+			done <- awaitVMStart(vmName, status, ready, startDone)
+		}()
+
+		close(ready)
+		<-stderr.writes
+		select {
+		case err := <-done:
+			t.Fatalf("awaitVMStart returned before foreground completion: %v", err)
+		default:
+		}
+
+		startDone <- nil
+		if err := <-done; err != nil {
+			t.Fatalf("awaitVMStart error=%v", err)
+		}
+	})
+}
+
+func TestWithConnectionProgressLifecycleAndErrors(t *testing.T) {
+	t.Run("setup resolves before session exit and preserves later error", func(t *testing.T) {
+		sentinel := errors.New("session ended")
+		stderr := &stagedBuffer{writes: make(chan struct{}, 2)}
+		release := make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			done <- withConnectionProgress(stderr, false, "Connecting to console", "Connected to console", func(setup func()) error {
+				setup()
+				<-release
+				return sentinel
+			})
+		}()
+
+		<-stderr.writes
+		<-stderr.writes
+		select {
+		case err := <-done:
+			t.Fatalf("withConnectionProgress returned before session end: %v", err)
+		default:
+		}
+
+		close(release)
+		if err := <-done; !errors.Is(err, sentinel) {
+			t.Fatalf("withConnectionProgress error=%v, want %v", err, sentinel)
+		}
+		if got := stderr.String(); !strings.Contains(got, "Connected to console") {
+			t.Fatalf("stderr=%q", got)
+		}
+	})
+
+	t.Run("terminal failure before setup preserves original error", func(t *testing.T) {
+		sentinel := errors.New("connect failed")
+		var stderr bytes.Buffer
+
+		err := withConnectionProgress(&stderr, false, "Connecting to console", "Connected to console", func(func()) error {
+			return sentinel
+		})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("withConnectionProgress error=%v, want %v", err, sentinel)
+		}
+		if got := stderr.String(); !strings.Contains(got, sentinel.Error()) {
+			t.Fatalf("stderr=%q", got)
+		}
+	})
 }
 
 func TestStopReportsAuthenticatedShutdownProgress(t *testing.T) {
@@ -1278,6 +1537,9 @@ func TestStopReportsAuthenticatedShutdownProgress(t *testing.T) {
 	if code := <-done; code != 0 {
 		t.Fatalf("stop exit code=%d, stderr=%q", code, stderr.String())
 	}
+	if got := stderr.String(); !strings.Contains(got, "shutdown acknowledged") || !strings.Contains(got, "stopped cleanly") {
+		t.Fatalf("stderr=%q", got)
+	}
 }
 
 func TestStopReportsForcedKillProgress(t *testing.T) {
@@ -1313,6 +1575,9 @@ func TestStopReportsForcedKillProgress(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("stop exit code=%d, stderr=%q", code, stderr)
 	}
+	if !strings.Contains(stderr, "force-killed") || !strings.Contains(stderr, "guest filesystem or data corruption is possible") {
+		t.Fatalf("stderr=%q", stderr)
+	}
 }
 
 func TestRestartReportsMissingLifecycleService(t *testing.T) {
@@ -1335,7 +1600,7 @@ func TestRestartRunsStopThenStartForStoppedVM(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
 	}
-	if !strings.Contains(stderr, "Stopping VM: VM was already stopped; complete") {
+	if !strings.Contains(stderr, "already stopped") {
 		t.Fatalf("stop phase did not complete for a stopped VM: %q", stderr)
 	}
 	if !strings.Contains(stderr, "supervisor service is unavailable") {

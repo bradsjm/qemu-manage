@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -189,6 +190,7 @@ func TestSetVNCTransitions(t *testing.T) {
 func TestConfigShowValidateAndStrictApply(t *testing.T) {
 	a := testApp(t)
 	cfg := testConfig("vm")
+	cfg.Autostart.Scope = model.AutostartBoot
 	saveTestConfig(t, a, cfg)
 	code, shown, stderr := runCLI(a, "config", "show", "vm")
 	if code != 0 {
@@ -205,6 +207,7 @@ func TestConfigShowValidateAndStrictApply(t *testing.T) {
 	replacement := *cfg
 	replacement.CPUs = 6
 	replacement.GuestAgent.Enabled = true
+	replacement.RestartPolicy = model.RestartOnFailure
 	data, err := model.CanonicalJSON(&replacement)
 	if err != nil {
 		t.Fatal(err)
@@ -219,8 +222,9 @@ func TestConfigShowValidateAndStrictApply(t *testing.T) {
 	if code, _, stderr = runCLI(a, "config", "apply", "vm", file); code != 0 {
 		t.Fatalf("apply failed: %s", stderr)
 	}
+	assertStaleAutostartWarning(t, stderr, "vm", model.AutostartBoot)
 	got, _ := a.Store.Load("vm")
-	if got.CPUs != 6 || !got.GuestAgent.Enabled {
+	if got.CPUs != 6 || !got.GuestAgent.Enabled || got.RestartPolicy != model.RestartOnFailure {
 		t.Fatalf("apply not persisted: %+v", got)
 	}
 
@@ -276,4 +280,63 @@ func TestSetRejectsInvalidForwardWithoutMutation(t *testing.T) {
 	if len(got.Network.Forwards) != 0 {
 		t.Fatalf("invalid set mutated config: %+v", got.Network.Forwards)
 	}
+}
+
+func TestSetWarnsWhenAutostartLaunchdConfigBecomesStale(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	cfg.Autostart.Scope = model.AutostartLogin
+	saveTestConfig(t, a, cfg)
+
+	code, stdout, stderr := runCLI(a, "set", "vm", "--restart-policy", "on-failure")
+	if code != 0 {
+		t.Fatalf("set failed: %s", stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("set wrote unexpected stdout: %q", stdout)
+	}
+	assertStaleAutostartWarning(t, stderr, "vm", model.AutostartLogin)
+
+	got, _ := a.Store.Load("vm")
+	if got.RestartPolicy != model.RestartOnFailure {
+		t.Fatalf("set did not persist restart policy: %+v", got)
+	}
+}
+
+func TestWarnStaleAutostartIgnoresWriteErrors(t *testing.T) {
+	writer := &attemptingErrorWriter{}
+	warnStaleAutostart(writer, false, "vm", model.AutostartBoot)
+	if writer.attempts != 1 {
+		t.Fatalf("expected one write attempt, got %d", writer.attempts)
+	}
+}
+
+func assertStaleAutostartWarning(t *testing.T, stderr, vmName string, scope model.AutostartScope) {
+	t.Helper()
+	if stderr == "" {
+		t.Fatal("expected stale launchd warning")
+	}
+	if strings.Contains(stderr, "\x1b") {
+		t.Fatalf("redirected warning contained ANSI escape: %q", stderr)
+	}
+	for _, fragment := range []string{
+		"launchd configuration",
+		vmName,
+		"qemu-manage stop " + vmName,
+		"qemu-manage autostart disable " + vmName,
+		"qemu-manage autostart enable " + vmName + " --scope " + string(scope),
+	} {
+		if !strings.Contains(stderr, fragment) {
+			t.Fatalf("warning %q missing fragment %q", stderr, fragment)
+		}
+	}
+}
+
+type attemptingErrorWriter struct {
+	attempts int
+}
+
+func (w *attemptingErrorWriter) Write(p []byte) (int, error) {
+	w.attempts++
+	return 0, io.ErrClosedPipe
 }

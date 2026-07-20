@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -139,12 +140,15 @@ func TestControlWithProgressPreservesCoalescedResponses(t *testing.T) {
 
 func TestDebugfRequiresExplicitEnablement(t *testing.T) {
 	var output bytes.Buffer
+
 	debugf(false, &output, "hidden")
 	if output.Len() != 0 {
 		t.Fatalf("disabled debug wrote %q", output.String())
 	}
-	debugf(true, &output, "visible")
-	if output.String() != "debug: visible\n" {
-		t.Fatalf("enabled debug output=%q", output.String())
+
+	debugf(true, &output, "visible token")
+	got := output.String()
+	if !strings.Contains(got, "visible token") {
+		t.Fatalf("enabled debug output=%q; want visible token", got)
 	}
 }

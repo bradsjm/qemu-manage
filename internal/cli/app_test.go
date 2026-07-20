@@ -136,6 +136,66 @@ func TestVersionBypassesRootAndInitialization(t *testing.T) {
 	}
 }
 
+func TestNewAppConfirmIsNonNil(t *testing.T) {
+	if NewApp().Confirm == nil {
+		t.Fatal("NewApp returned nil Confirm seam")
+	}
+}
+
+func TestRunDebugLoggingDisabledAndEnabledOnRedirectedStderr(t *testing.T) {
+	a := testApp(t)
+
+	code, stdout, stderr := runCLI(a, "wat")
+	if code != 2 || stdout != "" {
+		t.Fatalf("disabled debug code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if strings.Contains(stderr, a.Store.LogRoot) {
+		t.Fatalf("disabled debug leaked log root in stderr=%q", stderr)
+	}
+
+	code, stdout, stderr = runCLI(a, "--debug", "wat")
+	if code != 2 || stdout != "" {
+		t.Fatalf("enabled debug code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, `command="wat"`) || !strings.Contains(stderr, a.Store.LogRoot) {
+		t.Fatalf("enabled debug stderr=%q, want command and log root", stderr)
+	}
+	if strings.Contains(stderr, "debug: ") {
+		t.Fatalf("stderr retained manual debug prefix: %q", stderr)
+	}
+	assertNoTerminalControlBytes(t, stderr)
+}
+
+func TestRunDebugLoggingRedactsSecretsWhileKeepingSemanticTokens(t *testing.T) {
+	a := testApp(t)
+	root := t.TempDir()
+	codeFD, varsFD, qemu, qemuImg := writeCreatePrereqs(t, root)
+	a.RunExternal = stubPrimaryDiskCreate()
+
+	code, stdout, stderr := runCLI(
+		a,
+		"--debug",
+		"create", "vm",
+		"--firmware-code", codeFD,
+		"--firmware-vars", varsFD,
+		"--qemu", qemu,
+		"--qemu-img", qemuImg,
+		"--disk-size", "1GiB",
+		"--vnc",
+		"--vnc-password", "secret",
+	)
+	if code != 0 || stdout != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, `command="create"`) || !strings.Contains(stderr, a.Store.DataRoot) {
+		t.Fatalf("stderr=%q, want semantic debug tokens", stderr)
+	}
+	if strings.Contains(stderr, "secret") {
+		t.Fatalf("stderr leaked secret: %q", stderr)
+	}
+	assertNoTerminalControlBytes(t, stderr)
+}
+
 func TestVersionRejectsArguments(t *testing.T) {
 	a := testApp(t)
 	code, stdout, stderr := runCLI(a, "--version", "extra")

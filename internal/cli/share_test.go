@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,48 @@ import (
 	"github.com/bradsjm/qemu-manage/internal/model"
 	"github.com/bradsjm/qemu-manage/internal/qemu"
 )
+
+type failingWriter struct {
+	err error
+}
+
+func (w failingWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func TestWriteTablePreservesCellValuesAndStripsANSIWhenNoninteractive(t *testing.T) {
+	var output bytes.Buffer
+	headers := []string{"NAME", "STATE", "RESTART REQUIRED", "ERROR"}
+	rows := [][]string{
+		{"vm", "running", "\x1b[93mtrue\x1b[0m", ""},
+		{"broken", "failed", "false", "runtime unavailable"},
+	}
+
+	if err := writeTable(&output, false, headers, rows); err != nil {
+		t.Fatalf("writeTable: %v", err)
+	}
+
+	got := output.String()
+	if strings.Contains(got, "\x1b[") {
+		t.Fatalf("noninteractive table contains ANSI: %q", got)
+	}
+	if !strings.HasSuffix(got, "\n") || strings.HasSuffix(got, "\n\n") {
+		t.Fatalf("table should end with exactly one newline: %q", got)
+	}
+	for _, want := range []string{"NAME", "STATE", "RESTART REQUIRED", "ERROR", "vm", "running", "true", "broken", "failed", "false", "runtime unavailable"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("table output missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestWriteTablePropagatesWriterError(t *testing.T) {
+	sentinel := errors.New("write failed")
+	err := writeTable(failingWriter{err: sentinel}, false, []string{"FIELD", "VALUE"}, [][]string{{"version", "devel"}})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("err=%v want %v", err, sentinel)
+	}
+}
 
 func TestCreateSharePersistsAbsoluteDirAndPrintsGuidance(t *testing.T) {
 	a := testApp(t)
@@ -200,10 +244,12 @@ func TestStatusNamedEmitsSMBMountGuidance(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
 	}
-	if !strings.Contains(stdout, "│ NAME │ STATE") || strings.Contains(stdout, "\t") {
-		t.Fatalf("status table is not aligned go-pretty output: %q", stdout)
+	if strings.Contains(stdout, "\x1b[") {
+		t.Fatalf("redirected status stdout contains ANSI: %q", stdout)
 	}
 	for _, want := range []string{
+		"NAME", "STATE", "RESTART REQUIRED", "ERROR",
+		"vm", "stopped", "false",
 		"SMB host folder: /srv/vm-share",
 		"Linux guest mount: sudo mount -t cifs //10.0.2.4/qemu /mnt/share -o username=guest",
 	} {

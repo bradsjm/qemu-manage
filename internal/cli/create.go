@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/jedib0t/go-pretty/v6/progress"
 	"io"
 	"math"
 	"os"
@@ -384,25 +383,53 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 
 	// Persist config.
 	if err := a.Store.Create(config, func(_ *model.Config, paths store.Paths) error {
-		if err := copyRegularFile(*firmwareCode, filepath.Join(paths.VMDir, config.Firmware.Code), 0o400, stderr, true, a.progressInteractive(stderr), "Copying firmware code"); err != nil {
+		if err := copyRegularFile(
+			*firmwareCode,
+			filepath.Join(paths.VMDir, config.Firmware.Code),
+			0o400,
+			stderr,
+			true,
+			a.liveProgressInteractive(stderr),
+			fmt.Sprintf("Copying firmware code for %s VM", name),
+			fmt.Sprintf("Copied firmware code for %s VM", name),
+		); err != nil {
 			return fmt.Errorf("copy firmware code: %w", err)
 		}
-		if err := copyRegularFile(*firmwareVars, filepath.Join(paths.VMDir, config.Firmware.Variables), 0o600, stderr, true, a.progressInteractive(stderr), "Copying firmware variables"); err != nil {
+		if err := copyRegularFile(
+			*firmwareVars,
+			filepath.Join(paths.VMDir, config.Firmware.Variables),
+			0o600,
+			stderr,
+			true,
+			a.liveProgressInteractive(stderr),
+			fmt.Sprintf("Copying firmware variables for %s VM", name),
+			fmt.Sprintf("Copied firmware variables for %s VM", name),
+		); err != nil {
 			return fmt.Errorf("copy firmware variables: %w", err)
 		}
 		if installer != nil {
-			if err := copyRegularFile(*iso, filepath.Join(paths.VMDir, installer.Path), 0o400, stderr, true, a.progressInteractive(stderr), "Copying installer ISO"); err != nil {
+			if err := copyRegularFile(
+				*iso,
+				filepath.Join(paths.VMDir, installer.Path),
+				0o400,
+				stderr,
+				true,
+				a.liveProgressInteractive(stderr),
+				fmt.Sprintf("Copying installer ISO for %s VM", name),
+				fmt.Sprintf("Copied installer ISO for %s VM", name),
+			); err != nil {
 				return fmt.Errorf("copy installer: %w", err)
 			}
 		}
 		if *cloudInitUserData != "" {
 			if err := a.createCloudInitSeed(
 				ctx,
+				name,
 				*cloudInitUserData,
 				filepath.Join(paths.VMDir, cloudInitSeedFilename),
 				config.UUID,
 				stderr,
-				a.progressInteractive(stderr),
+				a.liveProgressInteractive(stderr),
 			); err != nil {
 				return err
 			}
@@ -410,9 +437,16 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		// Create image.
 		diskPath := filepath.Join(paths.VMDir, config.Disks[0].Path)
 		if *image == "" {
-			if err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Creating primary disk", func() error {
-				return a.runExternal(ctx, qemuImgPath, []string{"create", "-f", "qcow2", diskPath, strconv.FormatUint(diskBytes, 10)})
-			}); err != nil {
+			if err := withWaitingProgress(
+				stderr,
+				true,
+				a.liveProgressInteractive(stderr),
+				fmt.Sprintf("Creating %s primary disk for %s VM", *diskSize, name),
+				fmt.Sprintf("Created %s primary disk for %s VM", *diskSize, name),
+				func() error {
+					return a.runExternal(ctx, qemuImgPath, []string{"create", "-f", "qcow2", diskPath, strconv.FormatUint(diskBytes, 10)})
+				},
+			); err != nil {
 				return err
 			}
 			if err := os.Chmod(diskPath, 0o600); err != nil {
@@ -420,13 +454,20 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			}
 			return nil
 		}
-		sourcePath, temporarySource, err := a.materializeImage(ctx, imageSource, paths.VMDir, stderr, true, a.progressInteractive(stderr))
+		sourcePath, temporarySource, err := a.materializeImage(ctx, name, imageSource, paths.VMDir, stderr, true, a.liveProgressInteractive(stderr))
 		if err != nil {
 			return err
 		}
-		convertErr := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Converting image", func() error {
-			return a.runExternal(ctx, qemuImgPath, []string{"convert", "-O", "qcow2", sourcePath, diskPath})
-		})
+		convertErr := withWaitingProgress(
+			stderr,
+			true,
+			a.liveProgressInteractive(stderr),
+			fmt.Sprintf("Converting image to qcow2 for %s VM", name),
+			fmt.Sprintf("Converted image to qcow2 for %s VM", name),
+			func() error {
+				return a.runExternal(ctx, qemuImgPath, []string{"convert", "-O", "qcow2", sourcePath, diskPath})
+			},
+		)
 		if temporarySource {
 			removeErr := os.Remove(sourcePath)
 			if convertErr != nil {
@@ -447,9 +488,16 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			return fmt.Errorf("query converted image virtual size: %w", err)
 		}
 		if virtualSize < diskBytes {
-			if err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Resizing image", func() error {
-				return a.runExternal(ctx, qemuImgPath, []string{"resize", diskPath, strconv.FormatUint(diskBytes, 10)})
-			}); err != nil {
+			if err := withWaitingProgress(
+				stderr,
+				true,
+				a.liveProgressInteractive(stderr),
+				fmt.Sprintf("Expanding primary disk to %s for %s VM", *diskSize, name),
+				fmt.Sprintf("Expanded primary disk to %s for %s VM", *diskSize, name),
+				func() error {
+					return a.runExternal(ctx, qemuImgPath, []string{"resize", diskPath, strconv.FormatUint(diskBytes, 10)})
+				},
+			); err != nil {
 				return err
 			}
 		}
@@ -803,7 +851,13 @@ func requireRegularSource(path string) error {
 // copyRegularFile copies one verified regular file into a newly created
 // destination, preserves the requested mode, and removes partial output on
 // failure.
-func copyRegularFile(source, destination string, mode os.FileMode, progressOutput io.Writer, progressEnabled, interactive bool, message string) error {
+func copyRegularFile(
+	source, destination string,
+	mode os.FileMode,
+	progressOutput io.Writer,
+	progressEnabled, interactive bool,
+	startMessage, successMessage string,
+) error {
 	input, err := os.Open(source)
 	if err != nil {
 		return err
@@ -827,21 +881,32 @@ func copyRegularFile(source, destination string, mode os.FileMode, progressOutpu
 			os.Remove(destination)
 		}
 	}()
-	if err := withProgress(progressOutput, progressEnabled, interactive, message, info.Size(), progress.UnitsBytes, func(tracker *progress.Tracker) error {
-		return copyWithProgress(input, output, info.Size(), tracker)
-	}); err != nil {
+	if err := withByteProgress(
+		progressOutput,
+		progressEnabled,
+		interactive,
+		startMessage,
+		successMessage,
+		info.Size(),
+		func(progress byteProgress) error {
+			if err := copyWithProgress(input, output, progress); err != nil {
+				return err
+			}
+			if err := output.Sync(); err != nil {
+				return err
+			}
+			if err := output.Close(); err != nil {
+				return err
+			}
+			if err := os.Chmod(destination, mode); err != nil {
+				return err
+			}
+			committed = true
+			return nil
+		},
+	); err != nil {
 		return err
 	}
-	if err := output.Sync(); err != nil {
-		return err
-	}
-	if err := output.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(destination, mode); err != nil {
-		return err
-	}
-	committed = true
 	return nil
 }
 

@@ -65,15 +65,61 @@ func TestRedirectErrorDoesNotExposeURLSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	var progress strings.Builder
-	_, _, err = (&App{HTTPClient: newImageHTTPClient()}).materializeImage(context.Background(), source, t.TempDir(), &progress, true, false)
+	_, _, err = (&App{HTTPClient: newImageHTTPClient()}).materializeImage(
+		context.Background(),
+		"redirected-vm",
+		source,
+		t.TempDir(),
+		&progress,
+		true,
+		false,
+	)
 	if err == nil {
 		t.Fatal("redirect to FTP unexpectedly succeeded")
 	}
-	output := progress.String() + err.Error()
+	if progress.Len() != 0 {
+		t.Fatalf("progress started before request completed: %q", progress.String())
+	}
+	output := err.Error()
 	for _, secret := range []string{"initial-token", "initial-query", "initial-fragment", "redirect-user", "redirect-pass", "private-token", "redirect-query"} {
 		if strings.Contains(output, secret) {
 			t.Errorf("output exposed %q: %q", secret, output)
 		}
+	}
+}
+
+func TestMaterializeImageHTTPFailureReturnsBeforeProgressStarts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		http.Error(response, "upstream failed", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	source, err := parseImageSource(server.URL + "/image.qcow2?token=secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var progress strings.Builder
+	_, _, err = (&App{HTTPClient: server.Client()}).materializeImage(
+		context.Background(),
+		"failed-download",
+		source,
+		t.TempDir(),
+		&progress,
+		true,
+		false,
+	)
+	if err == nil {
+		t.Fatal("HTTP failure unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "HTTP 502 Bad Gateway") {
+		t.Fatalf("materializeImage error = %v", err)
+	}
+	if progress.Len() != 0 {
+		t.Fatalf("progress started before response validation: %q", progress.String())
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("materializeImage error exposed URL query: %q", err.Error())
 	}
 }
 
@@ -171,6 +217,7 @@ func TestCompressedHeaderReadHonorsCancellation(t *testing.T) {
 
 func TestMaterializeRemoteImageCompression(t *testing.T) {
 	payload := []byte("source qcow2 fixture")
+	const vmName = "home-assistant"
 	for _, test := range []struct {
 		name   string
 		suffix string
@@ -186,6 +233,7 @@ func TestMaterializeRemoteImageCompression(t *testing.T) {
 				if request.Header.Get("Accept-Encoding") != "identity" {
 					t.Errorf("Accept-Encoding = %q, want identity", request.Header.Get("Accept-Encoding"))
 				}
+				response.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 				_, _ = response.Write(body)
 			}))
 			defer server.Close()
@@ -195,7 +243,15 @@ func TestMaterializeRemoteImageCompression(t *testing.T) {
 				t.Fatal(err)
 			}
 			var progress strings.Builder
-			path, temporary, err := (&App{HTTPClient: server.Client()}).materializeImage(context.Background(), source, t.TempDir(), &progress, true, false)
+			path, temporary, err := (&App{HTTPClient: server.Client()}).materializeImage(
+				context.Background(),
+				vmName,
+				source,
+				t.TempDir(),
+				&progress,
+				true,
+				false,
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -209,8 +265,20 @@ func TestMaterializeRemoteImageCompression(t *testing.T) {
 			if !bytes.Equal(got, payload) {
 				t.Fatalf("materialized image = %q, want %q", got, payload)
 			}
-			if strings.Contains(progress.String(), "secret") {
-				t.Fatalf("progress exposed URL query: %q", progress.String())
+
+			wantStart := fmt.Sprintf("Downloading image for %s VM from %s", vmName, publicURL(source.remoteURL))
+			wantSuccess := fmt.Sprintf("Downloaded image for %s VM", vmName)
+			if source.compression != imageUncompressed {
+				wantStart = fmt.Sprintf("Downloading and decompressing image for %s VM from %s", vmName, publicURL(source.remoteURL))
+				wantSuccess = fmt.Sprintf("Downloaded and decompressed image for %s VM", vmName)
+			}
+
+			output := progress.String()
+			if !strings.Contains(output, wantStart) || !strings.Contains(output, wantSuccess) {
+				t.Fatalf("progress output = %q, want start %q and success %q", output, wantStart, wantSuccess)
+			}
+			if strings.Contains(output, "secret") {
+				t.Fatalf("progress exposed URL query: %q", output)
 			}
 		})
 	}

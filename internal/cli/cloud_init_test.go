@@ -195,7 +195,7 @@ func TestCreateCloudInitSeedCleansStagingOnFailure(t *testing.T) {
 		}
 		return sentinel
 	}
-	err := a.createCloudInitSeed(context.Background(), userData, filepath.Join(root, cloudInitSeedFilename), "instance", io.Discard, false)
+	err := a.createCloudInitSeed(context.Background(), "vm", userData, filepath.Join(root, cloudInitSeedFilename), "instance", io.Discard, false)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("error = %v, want sentinel", err)
 	}
@@ -229,9 +229,10 @@ func TestCreateCloudInitSeedFailureRollsBack(t *testing.T) {
 		return sentinel
 	}
 	exit, _, stderr := runCLI(a, "create", "vm", "--firmware-code", codeFD, "--firmware-vars", varsFD, "--qemu", qemu, "--qemu-img", qemuImg, "--cloud-init-user-data", userData, "--disk-size", "1GiB")
-	if exit != 1 || !strings.Contains(stderr, "Creating cloud-init seed failed: "+sentinel.Error()) || !strings.Contains(stderr, "cloud-init: create seed ISO: "+sentinel.Error()) {
+	if exit != 1 || !strings.Contains(stderr, "cloud-init: create seed ISO: "+sentinel.Error()) || strings.TrimSpace(stderr) == "" {
 		t.Fatalf("exit=%d stderr=%q", exit, stderr)
 	}
+	assertNoTerminalControlBytes(t, stderr)
 	if _, err := os.Lstat(filepath.Join(a.Store.DataRoot, "vm")); !os.IsNotExist(err) {
 		t.Fatalf("failed seed left VM directory: %v", err)
 	}

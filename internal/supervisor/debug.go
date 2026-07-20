@@ -7,28 +7,20 @@ import (
 	"strings"
 
 	"github.com/bradsjm/qemu-manage/internal/backend"
+	"github.com/pterm/pterm"
 )
 
-// debugf writes line-prefixed debug output when debug logging is enabled.
+// debugf writes debug output when debug logging is enabled.
 func debugf(enabled bool, output io.Writer, format string, args ...any) {
 	if !enabled || output == nil {
 		return
 	}
-	message := fmt.Sprintf(format, args...)
-	if !strings.HasSuffix(message, "\n") {
-		message += "\n"
-	}
-	for _, line := range strings.SplitAfter(message, "\n") {
-		if line == "" {
-			continue
-		}
-		if _, err := io.WriteString(output, "debug: "); err != nil {
-			return
-		}
-		if _, err := io.WriteString(output, line); err != nil {
-			return
-		}
-	}
+
+	logger := pterm.DefaultLogger.
+		WithWriter(output).
+		WithLevel(pterm.LogLevelDebug).
+		WithTime(false)
+	logger.Debug(fmt.Sprintf(format, args...))
 }
 
 // formatQuotedArgv shell-quotes a command line for debug output
