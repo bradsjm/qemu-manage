@@ -189,8 +189,33 @@ func TestCreateDispatchPersistsDefaultsWithoutRealQEMU(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Name != "vm" || cfg.CPUs != 2 || cfg.MemoryMiB != 2048 || cfg.Network.Mode != model.NetworkUser {
+	if cfg.Name != "vm" || cfg.CPUs != 2 || cfg.MemoryMiB != 2048 || cfg.Network.Mode != model.NetworkUser || cfg.Metrics != nil {
 		t.Fatalf("unexpected config: %+v", cfg)
+	}
+}
+
+func TestCreatePersistsMetricsPort(t *testing.T) {
+	a := testApp(t)
+	root := t.TempDir()
+	codeFD, varsFD, qemu, img := filepath.Join(root, "code"), filepath.Join(root, "vars"), filepath.Join(root, "qemu"), filepath.Join(root, "qemu-img")
+	for _, path := range []string{codeFD, varsFD, qemu, img} {
+		if err := os.WriteFile(path, []byte("x"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.RunExternal = func(_ context.Context, _ string, args []string) error {
+		return os.WriteFile(args[3], []byte("disk"), 0o600)
+	}
+	code, _, stderr := runCLI(a, "create", "vm", "--firmware-code", codeFD, "--firmware-vars", varsFD, "--qemu", qemu, "--qemu-img", img, "--disk-size", "1GiB", "--metrics-port", "1024")
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	config, err := a.Store.Load("vm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Metrics == nil || config.Metrics.Port != 1024 {
+		t.Fatalf("metrics config = %#v", config.Metrics)
 	}
 }
 

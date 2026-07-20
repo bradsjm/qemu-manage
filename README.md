@@ -7,6 +7,40 @@
 ![qemu-manage logo](./artifacts/banner.png)
 
 **A single-binary CLI for managing headless AArch64 QEMU virtual machines on Apple Silicon.** No persistent daemon, no database, no shell execution — just declarative JSON configs, per-VM supervisors, and authenticated control sockets.
+## Table of contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+  - [Homebrew](#homebrew)
+  - [GitHub release](#github-release)
+  - [Install with Go](#install-with-go)
+  - [Build from source](#build-from-source)
+- [Quick start](#quick-start)
+- [Creating a VM](#creating-a-vm)
+  - [Import from an HTTP(S) URL](#import-from-an-https-url)
+  - [Import a local image](#import-a-local-image)
+  - [Provision a cloud image with cloud-init](#provision-a-cloud-image-with-cloud-init)
+  - [Install from an ARM64 ISO](#install-from-an-arm64-iso)
+  - [Blank disk](#blank-disk)
+  - [Adding extra drives](#adding-extra-drives)
+  - [Adding a USB passthrough](#adding-a-usb-passthrough)
+  - [Optional host folder share over SMB](#optional-host-folder-share-over-smb)
+- [Networking](#networking)
+  - [QEMU user mode](#qemu-user-mode)
+  - [`socket_vmnet` shared](#socket_vmnet-shared)
+  - [`socket_vmnet` bridged](#socket_vmnet-bridged)
+- [Starting and inspecting a VM](#starting-and-inspecting-a-vm)
+- [Log management](#log-management)
+- [Monitor and guest agent](#monitor-and-guest-agent)
+  - [Monitor](#monitor)
+  - [Guest agent](#guest-agent)
+- [Autostart](#autostart)
+- [Storage & security](#storage--security)
+- [How it works](#how-it-works)
+- [Development](#development)
+- [License](#license)
+
 
 ## Features
 
@@ -140,6 +174,13 @@ default keyboard layout is `en-us`.
 Use `--mac MAC` to override the generated address at creation time. The value
 must be a lowercase, six-byte, colon-separated hexadecimal locally administered
 unicast MAC.
+
+Enable the optional per-VM monitoring endpoint at creation time with
+`--metrics-port PORT`, or later with
+`qemu-manage set NAME --metrics-port PORT`. Use `--metrics-port off` to disable
+it. The server always binds `127.0.0.1`, is unauthenticated, and starts and stops
+with that VM's supervisor. See [API.md](API.md) for its five routes, Prometheus
+setup, response schemas, and security contract.
 
 ### Import from an HTTP(S) URL
 
@@ -407,6 +448,47 @@ qemu-manage status linux --json    # shows live VNC endpoint when enabled
 qemu-manage vnc linux              # opens in Screen Sharing, password on clipboard
 ```
 
+## Log management
+
+Each VM has a private log directory under `<LogRoot>/<NAME>/`. The default
+`<LogRoot>` is `~/Library/Logs/qemu-manage`; override it with the
+`QEMU_MANAGE_LOG_ROOT` environment variable. The directory and managed log
+files are created with owner-only access.
+
+The available logs are:
+
+| File | Contents and behavior |
+| --- | --- |
+| `serial.log` | The guest's serial output. This is the active log printed by `qemu-manage log NAME`, whether the VM is running or stopped. |
+| `serial.log.0` through `serial.log.2` | Up to three older serial-log backups. Rotation keeps each active or backup file at or below 2 MiB; the oldest backup is discarded when another rotation occurs. |
+| `qemu.log` | QEMU's process output, appended to across starts. It is not included by the `log` command and is not subject to serial-log rotation. |
+| `supervisor.stdout.log` | Standard output produced by the per-VM supervisor. |
+| `supervisor.stderr.log` | Standard error produced by the per-VM supervisor. |
+
+### Viewing and managing logs
+
+Print only the current serial log to stdout, making it easy to page or pipe:
+
+```sh
+qemu-manage log home-assistant | less
+qemu-manage log home-assistant > serial.log.txt
+```
+
+The `log` command deliberately excludes `serial.log.0`, `.1`, and `.2`; read
+those files directly when older serial output is needed. The serial log is
+bounded automatically: when it reaches 2 MiB, the active file is rotated and
+the three-backup limit is maintained. If the active log already exceeds the
+limit when a supervisor starts, it is truncated before new output is
+collected.
+
+Delete a VM with `qemu-manage delete NAME` to remove its managed logs along
+with its configuration, copied firmware, disks, and runtime files. Source
+images supplied to `--image` or `--iso` are not removed.
+
+If serial-log storage fails during a run, the supervisor reports a warning and
+continues forwarding the live serial stream; durable serial logging is disabled
+for that run rather than terminating the VM.
+
 ## Monitor and guest agent
 
 Use `qemu-manage monitor --help` and `qemu-manage guest-agent --help` for the complete command contracts.
@@ -549,8 +631,14 @@ Autostart jobs preserve explicit roots and persisted `socket_vmnet` paths
 because launchd does not inherit your shell environment.
 Configuration files are strict, versioned JSON with owner-only mode `0600`. Use `qemu-manage config show`, `config validate`, and `config apply` for full configuration management. Generated `config.json` files begin with `$schema` pointing to the repository’s raw [`schema.json`](https://raw.githubusercontent.com/bradsjm/qemu-manage/main/schema.json), so compatible editors can validate them automatically. `qemu-manage config validate` remains the authoritative full validator because some cross-field and cross-item semantics are described but cannot be enforced portably by JSON Schema.
 
-`qemu-manage log NAME` prints `<LogRoot>/<NAME>/serial.log` verbatim. The
-`.0`, `.1`, and `.2` files are rotation backups and are not included.
+The optional monitoring HTTP endpoint is fixed to loopback and has no
+authentication. Its `/status` route can expose validated guest IP addresses to
+local callers; metrics and the other routes do not. Do not forward or tunnel the
+endpoint without adding access controls appropriate to the host. See
+[API.md](API.md) for the complete monitoring contract.
+
+See [Log management](#log-management) for the per-VM log files, serial-log
+rotation limits, and `qemu-manage log NAME` behavior.
 
 > **VNC security note:** An enabled VNC password is stored in plaintext in the config file, and `qemu-manage config show NAME` prints it. VNC transport is not encrypted; binding to an address other than loopback exposes it to the network.
 

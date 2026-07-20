@@ -37,7 +37,7 @@ func TestMaterializeImageProgressUsesNetworkBytesAndDisabledSilence(t *testing.T
 				t.Fatal(err)
 			}
 			got := progress.String()
-			if !strings.Contains(got, "done!") || !strings.Contains(got, fmt.Sprintf("%dB", len(test.body))) {
+			if !strings.Contains(got, "complete") || !strings.Contains(got, fmt.Sprintf("%dB", len(test.body))) {
 				t.Fatalf("progress=%q, want completed network-byte record for %d bytes", got, len(test.body))
 			}
 
@@ -73,7 +73,7 @@ func TestMaterializeImageProgressUnknownLengthFallsBackToStatus(t *testing.T) {
 	if _, _, err := (&App{HTTPClient: server.Client()}).materializeImage(context.Background(), source, t.TempDir(), &progress, true, false); err != nil {
 		t.Fatal(err)
 	}
-	if got := progress.String(); got != "Downloading image...\nDownloading image done\n" {
+	if got := progress.String(); got != "Downloading image...\nDownloading image complete\n" {
 		t.Fatalf("unknown-length progress=%q", got)
 	}
 }

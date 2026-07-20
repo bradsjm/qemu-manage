@@ -27,6 +27,13 @@ const (
 	CommandStop   Command = "stop"
 )
 
+type StopProgress string
+
+const (
+	StopProgressAcknowledged StopProgress = "acknowledged"
+	StopProgressForcing      StopProgress = "forcing"
+)
+
 type ErrorCode string
 
 const (
@@ -46,11 +53,12 @@ type Request struct {
 }
 
 type Response struct {
-	Version int            `json:"version"`
-	ID      string         `json:"id"`
-	OK      bool           `json:"ok"`
-	Status  *Status        `json:"status,omitempty"`
-	Error   *ProtocolError `json:"error,omitempty"`
+	Version  int            `json:"version"`
+	ID       string         `json:"id"`
+	OK       bool           `json:"ok"`
+	Status   *Status        `json:"status,omitempty"`
+	Progress *StopProgress  `json:"progress,omitempty"`
+	Error    *ProtocolError `json:"error,omitempty"`
 }
 
 type ProtocolError struct {
@@ -100,6 +108,17 @@ func (r Response) Validate() error {
 		if r.Error != nil {
 			return errors.New("successful response must not include error")
 		}
+		if r.Progress != nil {
+			if r.Status != nil {
+				return errors.New("progress response must not include status")
+			}
+			switch *r.Progress {
+			case StopProgressAcknowledged, StopProgressForcing:
+				return nil
+			default:
+				return fmt.Errorf("unsupported stop progress %q", *r.Progress)
+			}
+		}
 		if r.Status != nil {
 			return r.Status.Validate()
 		}
@@ -107,6 +126,9 @@ func (r Response) Validate() error {
 	}
 	if r.Status != nil {
 		return errors.New("failed response must not include status")
+	}
+	if r.Progress != nil {
+		return errors.New("failed response must not include progress")
 	}
 	if r.Error == nil {
 		return errors.New("failed response must include error")

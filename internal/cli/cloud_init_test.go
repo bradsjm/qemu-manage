@@ -113,8 +113,8 @@ func TestCreateCloudInitUserData(t *testing.T) {
 		}
 	}
 	for _, progress := range []string{
-		"Copying cloud-init user-data...\nCopying cloud-init user-data done\n",
-		"Creating cloud-init seed...\nCreating cloud-init seed done\n",
+		"Copying cloud-init user-data...\nCopying cloud-init user-data complete\n",
+		"Creating cloud-init seed...\nCreating cloud-init seed complete\n",
 	} {
 		if !strings.Contains(stderr, progress) {
 			t.Fatalf("stderr missing %q: %q", progress, stderr)

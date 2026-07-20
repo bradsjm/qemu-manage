@@ -210,6 +210,17 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 	var vncPort, vncPortTo optionalValue[uint16]
 	vncPort.parse = parsePort
 	vncPortTo.parse = parsePort
+	var metrics optionalValue[*model.MetricsConfig]
+	metrics.parse = func(raw string) (*model.MetricsConfig, error) {
+		if raw == "off" {
+			return nil, nil
+		}
+		port, err := parsePort(raw)
+		if err != nil || port < 1024 {
+			return nil, fmt.Errorf("must be a port between 1024 and 65535, or off")
+		}
+		return &model.MetricsConfig{Port: port}, nil
+	}
 	var forwards forwardValues
 	var clearForwards bool
 
@@ -226,6 +237,7 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 	flags.Var(&vncPortTo, "vnc-port-to", "maximum VNC TCP port")
 	flags.Var(&keyboardLayout, "keyboard-layout", "QEMU VNC keyboard layout")
 	flags.Var(&rtcBase, "rtc-base", "QEMU RTC base")
+	flags.Var(&metrics, "metrics-port", "loopback monitoring port or off")
 	flags.Var(&networkMode, "network", "user or socket_vmnet")
 	flags.Var(&forwards, "forward", "proto:IPv4:host-port:guest-port (repeatable)")
 	flags.BoolVar(&clearForwards, "clear-forwards", false, "replace existing forwards")
@@ -269,6 +281,9 @@ func (a *App) runSet(ctx context.Context, name string, args []string, stdin io.R
 	}
 	if rtcBase.set {
 		config.QEMU.RTCBase = rtcBase.value
+	}
+	if metrics.set {
+		config.Metrics = metrics.value
 	}
 	vncDetailsSet := vncPassword.set || vncBind.set || vncPort.set || vncPortTo.set || keyboardLayout.set
 	switch {

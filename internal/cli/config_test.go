@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -57,6 +58,45 @@ func TestSetForwardsGuestAgentAndNetworkTransitions(t *testing.T) {
 		t.Fatalf("unexpected user config: %+v", got)
 	}
 }
+func TestSetMetricsPortTransitions(t *testing.T) {
+	a := testApp(t)
+	saveTestConfig(t, a, testConfig("vm"))
+
+	for _, port := range []string{"1024", "65535", "8124"} {
+		code, _, stderr := runCLI(a, "set", "vm", "--metrics-port", port)
+		if code != 0 {
+			t.Fatalf("set port %s failed: %s", port, stderr)
+		}
+		config, err := a.Store.Load("vm")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := strconv.ParseUint(port, 10, 16)
+		if config.Metrics == nil || config.Metrics.Port != uint16(want) {
+			t.Fatalf("set port %s persisted %#v", port, config.Metrics)
+		}
+	}
+
+	code, _, stderr := runCLI(a, "set", "vm", "--metrics-port", "off")
+	if code != 0 {
+		t.Fatalf("disable metrics failed: %s", stderr)
+	}
+	config, err := a.Store.Load("vm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Metrics != nil {
+		t.Fatalf("metrics remained enabled: %#v", config.Metrics)
+	}
+
+	for _, value := range []string{"0", "1023", "65536", "invalid", "on"} {
+		code, _, stderr = runCLI(a, "set", "vm", "--metrics-port", value)
+		if code != 2 || !strings.Contains(stderr, "1024 and 65535, or off") {
+			t.Fatalf("value %q: code=%d stderr=%q", value, code, stderr)
+		}
+	}
+}
+
 func TestSetVNCTransitions(t *testing.T) {
 	a := testApp(t)
 	saveTestConfig(t, a, testConfig("vm"))

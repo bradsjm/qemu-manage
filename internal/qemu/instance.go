@@ -2,6 +2,7 @@ package qemu
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -25,6 +26,7 @@ type instance struct {
 	process *os.Process
 	qgaPath string
 	useQGA  bool
+	qgaGate chan struct{}
 
 	qmpMu sync.RWMutex
 	qmp   *QMPClient
@@ -88,10 +90,12 @@ func (b *Backend) Start(ctx context.Context, config *model.Config, paths backend
 		process:   cmd.Process,
 		qgaPath:   paths.QGA,
 		useQGA:    config.GuestAgent.Enabled,
+		qgaGate:   make(chan struct{}, 1),
 		done:      make(chan struct{}),
 		published: make(chan backend.Exit, 1),
 		forceDone: make(chan struct{}),
 	}
+	i.qgaGate <- struct{}{}
 	go i.reap(cmd, logFile)
 
 	startupFailure := func(primary error) error {
@@ -315,10 +319,36 @@ func (i *instance) Status(ctx context.Context) (model.RunState, error) {
 	return qmp.Status(ctx)
 }
 
+func (i *instance) qgaCommand(ctx context.Context, request GuestAgentRequest) (json.RawMessage, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-i.qgaGate:
+	}
+	defer func() { i.qgaGate <- struct{}{} }()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return GuestAgentCommand(ctx, i.qgaPath, request)
+}
+
+func (i *instance) qgaShutdown(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-i.qgaGate:
+	}
+	defer func() { i.qgaGate <- struct{}{} }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return GuestShutdown(ctx, i.qgaPath)
+}
+
 func (i *instance) RequestShutdown(ctx context.Context) error {
 	if i.useQGA {
 		qgaCtx, cancel := qgaResponsivenessContext(ctx)
-		err := GuestShutdown(qgaCtx, i.qgaPath)
+		err := i.qgaShutdown(qgaCtx)
 		cancel()
 		if err == nil {
 			return nil

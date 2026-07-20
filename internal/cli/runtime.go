@@ -199,15 +199,49 @@ func (a *App) runStop(ctx context.Context, args []string, stderr io.Writer) erro
 	if a.Lifecycle == nil {
 		return errors.New("runtime: lifecycle service is unavailable")
 	}
-	if *force {
-		fmt.Fprintf(
-			stderr,
-			"warning: --force kills QEMU without guest cooperation; guest filesystem or data corruption is possible\n",
-		)
+	effectiveTimeout := *timeout
+	if effectiveTimeout == 0 {
+		effectiveTimeout = time.Duration(config.ShutdownTimeoutSeconds) * time.Second
 	}
-	return withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Stopping VM (waiting for shutdown response)", func() error {
-		return a.Lifecycle.Stop(ctx, config, *timeout, *force)
+	if effectiveTimeout < time.Second || effectiveTimeout > time.Hour || effectiveTimeout%time.Second != 0 {
+		return &lifecycle.InvalidStopTimeoutError{Timeout: effectiveTimeout}
+	}
+	if *force {
+		_, _ = fmt.Fprintln(stderr, "Stopping VM: Requesting forced kill...")
+		_, _ = fmt.Fprintln(
+			stderr,
+			"warning: --force kills QEMU without guest cooperation; guest filesystem or data corruption is possible",
+		)
+	} else if config.GuestAgent.Enabled {
+		_, _ = fmt.Fprintln(stderr, "Stopping VM: Sending guest shutdown command...")
+	} else {
+		_, _ = fmt.Fprintln(stderr, "Stopping VM: Sending shutdown command...")
+	}
+
+	acknowledged := false
+	forcing := false
+	err = a.Lifecycle.StopWithProgress(ctx, config, *timeout, *force, func(progress supervisor.StopProgress) {
+		switch progress {
+		case supervisor.StopProgressAcknowledged:
+			acknowledged = true
+			_, _ = fmt.Fprintf(stderr, "Stopping VM: Shutdown command acknowledged; waiting up to %d seconds...\n", int(effectiveTimeout/time.Second))
+		case supervisor.StopProgressForcing:
+			forcing = true
+			_, _ = fmt.Fprintln(stderr, "Stopping VM: Forcing kill...")
+		}
 	})
+	if err != nil {
+		return err
+	}
+	switch {
+	case forcing:
+		_, _ = fmt.Fprintln(stderr, "Stopping VM: Forced kill complete")
+	case acknowledged:
+		_, _ = fmt.Fprintln(stderr, "Stopping VM: VM shut down on its own; complete")
+	default:
+		_, _ = fmt.Fprintln(stderr, "Stopping VM: VM was already stopped; complete")
+	}
+	return nil
 }
 func withConnectionProgress(output io.Writer, interactive bool, message string, connect func(func()) error) error {
 	ready := make(chan struct{})

@@ -36,7 +36,7 @@ func TestWithProgressRedirectedReportsStartAndFinish(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); got != "Creating primary disk...\nCreating primary disk done\n" {
+	if got := output.String(); got != "Creating primary disk...\nCreating primary disk complete\n" {
 		t.Fatalf("output=%q", got)
 	}
 }
@@ -60,7 +60,7 @@ func TestWithProgressInteractiveCompletesDeterminateAndIndeterminate(t *testing.
 				tracker.Increment(4)
 				return nil
 			},
-			want: []string{"Copying firmware code", "4B", "done!"},
+			want: []string{"Copying firmware code", "4B", "complete"},
 		},
 		{
 			name:    "indeterminate",

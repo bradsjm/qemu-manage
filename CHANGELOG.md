@@ -3,6 +3,15 @@
 All notable changes to qemu-manage are documented in this file.
 
 
+## [Unreleased]
+
+### Added
+- Optional per-VM loopback monitoring server with Prometheus metrics, cached
+- Optional per-VM loopback monitoring server with Prometheus metrics, cached health/status/info JSON, live guest-agent ping, validated guest IP reporting, and an API reference
+
+### Changed
+- CLI progress now uses “complete” instead of “done,” and `stop` reports the
+- CLI progress now uses "complete" instead of "done," and `stop` reports the authenticated shutdown acknowledgment, wait duration, and graceful or forced completion path
 ## [0.4.0] - 2026-07-19
 
 ### Added

@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -70,7 +73,7 @@ func (f *fakeInstance) Wait() <-chan backend.Exit { return f.exits }
 func (f *fakeInstance) exit(exit backend.Exit)    { f.exits <- exit; close(f.exits) }
 
 type fakeBackend struct {
-	instance *fakeInstance
+	instance backend.Instance
 	start    func(context.Context, *model.Config, backend.RuntimePaths, backend.Command) error
 	render   func(*model.Config, backend.RuntimePaths, backend.RenderOptions) (backend.Command, error)
 }
@@ -214,6 +217,45 @@ func TestGracefulTimeoutLeavesBackendRunning(t *testing.T) {
 	instance.exit(backend.Exit{})
 }
 
+func TestStopProgressReportsAcknowledgmentAndForce(t *testing.T) {
+	t.Run("graceful", func(t *testing.T) {
+		instance := newFakeInstance()
+		run := newSupervisedRun(instance, time.Hour)
+		progress := make(chan StopProgress, 1)
+		result := make(chan error, 1)
+		go func() {
+			result <- run.stopWithProgress(context.Background(), false, time.Hour, func(stage StopProgress) {
+				progress <- stage
+			})
+		}()
+		if stage := <-progress; stage != StopProgressAcknowledged {
+			t.Fatalf("progress=%q", stage)
+		}
+		instance.exit(backend.Exit{})
+		if err := <-result; err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("force", func(t *testing.T) {
+		instance := newFakeInstance()
+		instance.force = func(context.Context) error {
+			instance.exit(backend.Exit{})
+			return nil
+		}
+		run := newSupervisedRun(instance, time.Hour)
+		var progress []StopProgress
+		if err := run.stopWithProgress(context.Background(), true, time.Hour, func(stage StopProgress) {
+			progress = append(progress, stage)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if len(progress) != 1 || progress[0] != StopProgressForcing {
+			t.Fatalf("progress=%v", progress)
+		}
+	})
+}
+
 func TestForcePreemptsGracefulExactlyOnceAndWaitsForReap(t *testing.T) {
 	for _, forceBeforeShutdownReturns := range []bool{true, false} {
 		name := "after_request_returns"
@@ -296,7 +338,7 @@ func validSupervisorConfig() *model.Config {
 	return &model.Config{SchemaVersion: 1, ID: testProtocolID, Name: "vm", Backend: model.BackendQEMU, Architecture: "aarch64", UUID: "123e4567-e89b-42d3-a456-426614174000", CPUs: 2, MemoryMiB: 512, RestartPolicy: model.RestartNever, ShutdownTimeoutSeconds: 30, Firmware: model.FirmwareConfig{Code: "code.fd", Variables: "vars.fd"}, Disks: []model.DiskConfig{{Path: "disk.qcow2", Format: "qcow2", Serial: "disk0", BootIndex: 0}}, Network: model.NetworkConfig{Mode: model.NetworkUser, MAC: "02:00:00:00:00:01", Forwards: []model.PortForward{}}, QEMU: model.QEMUConfig{Binary: "/fake/qemu", ExtraArgs: []string{}}, Autostart: model.AutostartConfig{Scope: model.AutostartNone}}
 }
 
-func supervisorFixture(t *testing.T, instance *fakeInstance) (*Service, *model.Config, store.Paths) {
+func supervisorFixture(t *testing.T, instance backend.Instance) (*Service, *model.Config, store.Paths) {
 	t.Helper()
 	root, err := os.MkdirTemp(os.TempDir(), "qm-s-")
 	if err != nil {
@@ -323,6 +365,99 @@ func supervisorFixture(t *testing.T, instance *fakeInstance) (*Service, *model.C
 	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	service.Clock = func() time.Time { return fixed }
 	return service, cfg, st.Paths(cfg)
+}
+
+type monitoringFakeInstance struct{ *fakeInstance }
+
+func (*monitoringFakeInstance) CollectQEMU(context.Context) backend.QEMUObservation {
+	return backend.QEMUObservation{State: "running"}
+}
+func (*monitoringFakeInstance) CollectGuest(context.Context) backend.GuestObservation {
+	return backend.GuestObservation{Results: map[string]backend.ObservationResult{"info": {Code: "guest_agent_not_configured"}}}
+}
+func (*monitoringFakeInstance) PingGuest(context.Context) backend.GuestProbe {
+	return backend.GuestProbe{}
+}
+
+func enableMetrics(t *testing.T, service *Service, config *model.Config, port uint16) {
+	t.Helper()
+	lock, err := service.Store.LockName(config.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	config.Metrics = &model.MetricsConfig{Port: port}
+	if err := lock.Save(config); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func availableMetricsPort(t *testing.T) uint16 {
+	t.Helper()
+	listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := uint16(listener.Addr().(*net.TCPAddr).Port)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+func TestSuperviseMonitoringUnsupportedForcesChildAndReleasesPort(t *testing.T) {
+	instance := newFakeInstance()
+	instance.force = func(context.Context) error {
+		instance.exit(backend.Exit{})
+		return nil
+	}
+	service, config, _ := supervisorFixture(t, instance)
+	port := availableMetricsPort(t)
+	enableMetrics(t, service, config, port)
+	var ready bytes.Buffer
+	err := service.Supervise(context.Background(), config.Name, config.ID, &ready, SuperviseOptions{})
+	if err == nil || !strings.Contains(err.Error(), `monitoring is unsupported by backend "qemu"`) {
+		t.Fatalf("Supervise() error = %v, ready=%s", err, ready.String())
+	}
+	instance.mu.Lock()
+	forceCalls := instance.forceCalls
+	instance.mu.Unlock()
+	if forceCalls != 1 || strings.Contains(ready.String(), `"ok":true`) {
+		t.Fatalf("force calls=%d ready=%s", forceCalls, ready.String())
+	}
+	listener, listenErr := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(port)})
+	if listenErr != nil {
+		t.Fatalf("metrics port remained occupied: %v", listenErr)
+	}
+	_ = listener.Close()
+}
+
+func TestSuperviseMonitoringStartsBeforeReadyAndClosesOnExit(t *testing.T) {
+	base := newFakeInstance()
+	instance := &monitoringFakeInstance{fakeInstance: base}
+	service, config, _ := supervisorFixture(t, instance)
+	port := availableMetricsPort(t)
+	enableMetrics(t, service, config, port)
+	ready := &readinessWriter{ready: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		done <- service.Supervise(context.Background(), config.Name, config.ID, ready, SuperviseOptions{})
+	}()
+	<-ready.ready
+	response, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/status", port))
+	if err != nil {
+		t.Fatalf("monitoring endpoint unavailable after readiness: %v", err)
+	}
+	_ = response.Body.Close()
+	base.exit(backend.Exit{})
+	if err := <-done; err != nil {
+		t.Fatalf("Supervise() failed: %v", err)
+	}
+	connection, err := net.DialTCP("tcp4", nil, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(port)})
+	if err == nil {
+		_ = connection.Close()
+		t.Fatal("monitoring endpoint remained open after backend exit")
+	}
 }
 
 func TestBackendPathsIncludePrivateMonitorSockets(t *testing.T) {

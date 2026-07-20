@@ -112,6 +112,8 @@ func TestResponseOptionConsistency(t *testing.T) {
 		VNC:                 &backend.VNCEndpoint{Host: "127.0.0.1", Port: 5900},
 	}
 	goodError := &ProtocolError{Code: ErrorInternal, Message: "failed"}
+	acknowledged := StopProgressAcknowledged
+	unknownProgress := StopProgress("unknown")
 	tests := []struct {
 		name     string
 		response Response
@@ -120,9 +122,13 @@ func TestResponseOptionConsistency(t *testing.T) {
 		{"success empty", Response{Version: 1, ID: testProtocolID, OK: true}, true},
 		{"success status", Response{Version: 1, ID: testProtocolID, OK: true, Status: goodStatus}, true},
 		{"success error", Response{Version: 1, ID: testProtocolID, OK: true, Error: goodError}, false},
+		{"success progress", Response{Version: 1, ID: testProtocolID, OK: true, Progress: &acknowledged}, true},
+		{"success progress and status", Response{Version: 1, ID: testProtocolID, OK: true, Status: goodStatus, Progress: &acknowledged}, false},
+		{"success unknown progress", Response{Version: 1, ID: testProtocolID, OK: true, Progress: &unknownProgress}, false},
 		{"failure error", Response{Version: 1, ID: testProtocolID, Error: goodError}, true},
 		{"failure missing error", Response{Version: 1, ID: testProtocolID}, false},
 		{"failure status", Response{Version: 1, ID: testProtocolID, Status: goodStatus, Error: goodError}, false},
+		{"failure progress", Response{Version: 1, ID: testProtocolID, Progress: &acknowledged, Error: goodError}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

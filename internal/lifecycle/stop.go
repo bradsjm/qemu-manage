@@ -65,9 +65,18 @@ func IsTransportError(err error) bool {
 	return errors.As(err, &target)
 }
 
+// StopProgress reports authenticated supervisor progress while stopping a VM.
+type StopProgress func(supervisor.StopProgress)
+
 // Stop asks the authenticated supervisor to stop cfg. It never signals a PID
 // or modifies runtime metadata.
 func (s *Service) Stop(ctx context.Context, cfg *model.Config, timeout time.Duration, force bool) error {
+	return s.StopWithProgress(ctx, cfg, timeout, force, nil)
+}
+
+// StopWithProgress asks the authenticated supervisor to stop cfg and reports
+// progress after the supervisor acknowledges each shutdown action.
+func (s *Service) StopWithProgress(ctx context.Context, cfg *model.Config, timeout time.Duration, force bool, onProgress StopProgress) error {
 	if s == nil || s.Store == nil {
 		return errors.New("runtime: lifecycle service has no store")
 	}
@@ -80,12 +89,16 @@ func (s *Service) Stop(ctx context.Context, cfg *model.Config, timeout time.Dura
 		return err
 	}
 
-	_, err = supervisor.Control(ctx, s.Store.Paths(cfg).ControlSocket, supervisor.Request{
+	_, err = supervisor.ControlWithProgress(ctx, s.Store.Paths(cfg).ControlSocket, supervisor.Request{
 		Version:        supervisor.ProtocolVersion,
 		ID:             cfg.ID,
 		Command:        supervisor.CommandStop,
 		Force:          force,
 		TimeoutSeconds: &timeoutSeconds,
+	}, func(progress supervisor.StopProgress) {
+		if onProgress != nil {
+			onProgress(progress)
+		}
 	})
 	if err == nil {
 		return nil

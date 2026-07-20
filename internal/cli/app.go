@@ -132,6 +132,7 @@ func NewApp() *App {
 
 	a.Lifecycle = lifecycle.NewService(a.Store)
 	a.Supervisor = supervisor.NewService(a.Store, a.Backends)
+	a.Supervisor.BuildVersion = currentBuildInfo().version
 	a.Supervisor.Preflight = func(ctx context.Context, config *model.Config, paths store.Paths) error {
 		if _, err := a.Backends.Lookup(string(config.Backend)); err != nil {
 			return err

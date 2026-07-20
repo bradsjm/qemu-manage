@@ -28,6 +28,12 @@ func (e *ResponseError) Error() string {
 
 // Control sends one request to a supervisor control socket.
 func Control(ctx context.Context, socketPath string, request Request) (Response, error) {
+	return ControlWithProgress(ctx, socketPath, request, nil)
+}
+
+// ControlWithProgress sends one request and reports authenticated stop progress
+// frames before returning the terminal response.
+func ControlWithProgress(ctx context.Context, socketPath string, request Request, onProgress func(StopProgress)) (Response, error) {
 	if err := request.Validate(); err != nil {
 		return Response{}, fmt.Errorf("supervisor: %w", err)
 	}
@@ -46,20 +52,31 @@ func Control(ctx context.Context, socketPath string, request Request) (Response,
 	if err := EncodeRequest(connection, &request); err != nil {
 		return Response{}, fmt.Errorf("supervisor: send control request: %w", err)
 	}
-	response, err := DecodeResponse(connection)
-	if err != nil {
-		return Response{}, fmt.Errorf("supervisor: read control response: %w", err)
+	for {
+		response, err := DecodeResponse(connection)
+		if err != nil {
+			return Response{}, fmt.Errorf("supervisor: read control response: %w", err)
+		}
+		if response.Version != request.Version {
+			return Response{}, fmt.Errorf("supervisor: response version %d does not match request version %d", response.Version, request.Version)
+		}
+		if response.ID != request.ID {
+			return Response{}, fmt.Errorf("supervisor: response ID %q does not match request ID %q", response.ID, request.ID)
+		}
+		if response.Progress != nil {
+			if request.Command != CommandStop {
+				return Response{}, errors.New("supervisor: received stop progress for a non-stop request")
+			}
+			if onProgress != nil {
+				onProgress(*response.Progress)
+			}
+			continue
+		}
+		if !response.OK {
+			return *response, &ResponseError{Code: response.Error.Code, Message: response.Error.Message}
+		}
+		return *response, nil
 	}
-	if response.Version != request.Version {
-		return Response{}, fmt.Errorf("supervisor: response version %d does not match request version %d", response.Version, request.Version)
-	}
-	if response.ID != request.ID {
-		return Response{}, fmt.Errorf("supervisor: response ID %q does not match request ID %q", response.ID, request.ID)
-	}
-	if !response.OK {
-		return *response, &ResponseError{Code: response.Error.Code, Message: response.Error.Message}
-	}
-	return *response, nil
 }
 
 // ReadyMessage is the single message emitted by a supervisor during startup.

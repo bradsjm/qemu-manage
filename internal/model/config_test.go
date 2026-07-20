@@ -112,6 +112,71 @@ func TestCanonicalRoundTripAndHashStability(t *testing.T) {
 	}
 }
 
+func TestMetricsConfigContract(t *testing.T) {
+	disabled := validTestConfig()
+	disabledJSON, err := CanonicalJSON(&disabled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(disabledJSON, []byte(`"metrics"`)) {
+		t.Fatalf("disabled metrics unexpectedly persisted: %s", disabledJSON)
+	}
+
+	for _, port := range []uint16{1024, 65535} {
+		config := validTestConfig()
+		config.Metrics = &MetricsConfig{Port: port}
+		data, err := CanonicalJSON(&config)
+		if err != nil {
+			t.Fatalf("port %d rejected: %v", port, err)
+		}
+		decoded, err := DecodeBytes(data)
+		if err != nil {
+			t.Fatalf("port %d round trip failed: %v", port, err)
+		}
+		if decoded.Metrics == nil || decoded.Metrics.Port != port {
+			t.Fatalf("port %d round trip = %#v", port, decoded.Metrics)
+		}
+		withoutMetrics := config
+		withoutMetrics.Metrics = nil
+		enabledHash, err := Hash(&config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		disabledHash, err := Hash(&withoutMetrics)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if enabledHash == disabledHash {
+			t.Fatalf("metrics port %d did not change configuration hash", port)
+		}
+	}
+
+	for _, port := range []uint16{0, 1023} {
+		config := validTestConfig()
+		config.Metrics = &MetricsConfig{Port: port}
+		requireInvalid(t, config)
+	}
+
+	valid, err := json.Marshal(validTestConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, member := range map[string]string{
+		"overflow":      `"metrics":{"port":65536}`,
+		"unknown field": `"metrics":{"port":1024,"bind":"0.0.0.0"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			document := append([]byte(`{"$schema":"`+ConfigSchemaURL+`",`), valid[1:len(valid)-1]...)
+			document = append(document, ',')
+			document = append(document, member...)
+			document = append(document, '}')
+			if _, err := DecodeBytes(document); err == nil {
+				t.Fatal("DecodeBytes() accepted invalid metrics configuration")
+			}
+		})
+	}
+}
+
 func TestCanonicalCompatibilityOmitsUSBAndDiskOptions(t *testing.T) {
 	config := Config{
 		SchemaVersion:          SchemaVersion,

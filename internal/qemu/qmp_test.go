@@ -138,6 +138,100 @@ func TestQMPFramingEventsIDsAndStatusMapping(t *testing.T) {
 	}
 }
 
+func TestQMPMonitoringQueriesAndEvents(t *testing.T) {
+	server := startQMPServer(t, func(conn net.Conn) error {
+		reader := bufio.NewReader(conn)
+		if err := initializeQMP(conn, reader); err != nil {
+			return err
+		}
+		responses := []string{
+			`{"event":"SHUTDOWN"}` + "\n" +
+				`{"event":"BLOCK_IO_ERROR","data":{"device":"disk-b","operation":"write","nospace":true,"description":"redacted"}}` + "\n" +
+				`{"return":{"status":"guest-panicked","unknown":true},"id":%d}` + "\n",
+			`{"return":[{"device":"disk-b","stats":{"rd_bytes":0,"wr_operations":2,"rd_total_time_ns":1000000000},"idle_time_ns":0,"unknown":true},{"device":"","stats":{}},{"device":"disk-a","stats":{"unmap_bytes":3,"failed_rd_operations":0}}],"id":%d}` + "\n",
+			`{"return":[{"device":"disk-b","io-status":"ok"},{"device":"disk-a"},{"device":""}],"id":%d}` + "\n",
+		}
+		for index, response := range responses {
+			command, err := readQMPCommand(reader)
+			if err != nil {
+				return err
+			}
+			want := []string{"query-status", "query-blockstats", "query-block"}[index]
+			if command.Execute != want {
+				return fmt.Errorf("command %d = %q, want %q", index, command.Execute, want)
+			}
+			if _, err := fmt.Fprintf(conn, response, command.ID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	client, err := NewQMPClient(server.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	if got := client.Version(); got.Major != 11 || got.Minor != 0 || got.Micro != 1 || got.Package != "test" {
+		t.Fatalf("Version() = %#v", got)
+	}
+	status, err := client.RawStatus(context.Background())
+	if err != nil || status != "guest-panicked" {
+		t.Fatalf("RawStatus() = %q, %v", status, err)
+	}
+	blocks, err := client.QueryBlocks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocks) != 2 || blocks[0].Device != "disk-a" || blocks[1].Device != "disk-b" {
+		t.Fatalf("blocks not filtered and sorted: %#v", blocks)
+	}
+	if blocks[0].UnmapBytes == nil || *blocks[0].UnmapBytes != 3 ||
+		blocks[0].FailedOperations["read"] != 0 || blocks[0].ReadBytes != nil {
+		t.Fatalf("optional samples not preserved: %#v", blocks[0])
+	}
+	if blocks[1].ReadBytes == nil || *blocks[1].ReadBytes != 0 ||
+		blocks[1].ReadSeconds == nil || *blocks[1].ReadSeconds != 1 ||
+		blocks[1].IdleSeconds == nil || *blocks[1].IdleSeconds != 0 ||
+		blocks[1].IOStatus == nil || *blocks[1].IOStatus != "ok" {
+		t.Fatalf("block normalization failed: %#v", blocks[1])
+	}
+	events, err := client.EventCounters(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events.Lifecycle["shutdown"] != 1 || events.Lifecycle["reset"] != 0 {
+		t.Fatalf("lifecycle events = %#v", events.Lifecycle)
+	}
+	if len(events.BlockIO) != 1 || events.BlockIO[0].Device != "disk-b" ||
+		events.BlockIO[0].Operation != "write" || !events.BlockIO[0].NoSpace || events.BlockIO[0].Count != 1 {
+		t.Fatalf("block I/O events = %#v", events.BlockIO)
+	}
+}
+
+func TestQMPMonitoringRejectsNegativeCounters(t *testing.T) {
+	server := startQMPServer(t, func(conn net.Conn) error {
+		reader := bufio.NewReader(conn)
+		if err := initializeQMP(conn, reader); err != nil {
+			return err
+		}
+		command, err := readQMPCommand(reader)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(conn, `{"return":[{"device":"disk","stats":{"rd_bytes":-1}}],"id":%d}`+"\n", command.ID)
+		return err
+	})
+	client, err := NewQMPClient(server.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.QueryBlocks(context.Background()); err == nil || !strings.Contains(err.Error(), "must be nonnegative") {
+		t.Fatalf("QueryBlocks() error = %v", err)
+	}
+}
+
 func TestQMPQueryVNCFramingAndFiltering(t *testing.T) {
 	server := startQMPServer(t, func(conn net.Conn) error {
 		reader := bufio.NewReader(conn)

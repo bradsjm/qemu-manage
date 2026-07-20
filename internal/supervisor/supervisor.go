@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/bradsjm/qemu-manage/internal/backend"
 	"github.com/bradsjm/qemu-manage/internal/model"
+	"github.com/bradsjm/qemu-manage/internal/monitoring"
 	"github.com/bradsjm/qemu-manage/internal/store"
 )
 
@@ -29,6 +31,7 @@ type Service struct {
 	Preflight    func(context.Context, *model.Config, store.Paths) error
 	Clock        func() time.Time
 	StartTimeout time.Duration
+	BuildVersion string
 }
 
 func NewService(st *store.Store, registry *backend.Registry) *Service {
@@ -125,8 +128,10 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	defer lifetime.Close()
 
 	var (
-		run  *supervisedRun
-		sink *serialLogSink
+		run             *supervisedRun
+		sink            *serialLogSink
+		metricsListener *net.TCPListener
+		stopMonitoring  = func() {}
 	)
 	finalized := false
 	startupIntent := make(chan struct{})
@@ -140,6 +145,7 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 			intentionalStartup = true
 		default:
 		}
+		stopMonitoring()
 		if run != nil {
 			forceErr := run.force(context.Background())
 			resultErr = errors.Join(resultErr, forceErr)
@@ -215,6 +221,18 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	if s.Preflight != nil {
 		if err := s.Preflight(startCtx, config, paths); err != nil {
 			return err
+		}
+	}
+	if config.Metrics != nil {
+		metricsListener, err = net.ListenTCP("tcp4", &net.TCPAddr{
+			IP: net.IPv4(127, 0, 0, 1), Port: int(config.Metrics.Port),
+		})
+		if err != nil {
+			return fmt.Errorf("runtime: bind metrics endpoint: %w", err)
+		}
+		defer metricsListener.Close()
+		if err := closeOnExec(metricsListener); err != nil {
+			return fmt.Errorf("runtime: metrics descriptor: %w", err)
 		}
 	}
 
@@ -300,6 +318,55 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	run.mu.Lock()
 	run.status = Status{State: backendState, Backend: config.Backend, SupervisorPID: os.Getpid(), BackendPID: instance.PID(), StartedAt: startedAt, RunningConfigSHA256: hash, VNC: vnc}
 	run.mu.Unlock()
+	if metricsListener != nil {
+		monitoringInstance, ok := instance.(backend.MonitoringInstance)
+		if !ok {
+			return fmt.Errorf("runtime: monitoring is unsupported by backend %q", config.Backend)
+		}
+		monitorService := monitoring.New(monitoring.Options{
+			Instance: monitoringInstance,
+			PID:      instance.PID(),
+			VM: monitoring.VMIdentity{
+				ID:           config.ID,
+				Name:         config.Name,
+				Backend:      string(config.Backend),
+				Architecture: config.Architecture,
+				CPUs:         config.CPUs,
+				MemoryMiB:    config.MemoryMiB,
+				GuestAgent:   config.GuestAgent.Enabled,
+				StartedAt:    startedAt,
+				BuildVersion: s.BuildVersion,
+			},
+			Clock: s.Clock,
+		})
+		monitorService.Seed(startCtx, string(backendState))
+		monitorContext, cancelMonitoring := context.WithCancel(context.Background())
+		collectorDone := monitorService.Start(monitorContext)
+		server := &http.Server{
+			Handler:           monitorService.Handler(),
+			ReadHeaderTimeout: 2 * time.Second,
+			WriteTimeout:      5 * time.Second,
+			IdleTimeout:       30 * time.Second,
+			MaxHeaderBytes:    8 << 10,
+		}
+		serverDone := make(chan struct{})
+		go func() {
+			defer close(serverDone)
+			if serveErr := server.Serve(metricsListener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				_, _ = fmt.Fprintf(warningWriter, "monitoring: HTTP server failed: %v\n", serveErr)
+			}
+		}()
+		var stopOnce sync.Once
+		stopMonitoring = func() {
+			stopOnce.Do(func() {
+				cancelMonitoring()
+				_ = server.Close()
+				_ = metricsListener.Close()
+				<-collectorDone
+				<-serverDone
+			})
+		}
+	}
 	select {
 	case <-run.done:
 		run.mu.Lock()
@@ -356,6 +423,7 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	if err := sink.finish(); err != nil {
 		_, _ = fmt.Fprintf(warningWriter, "serial log: sink failed: %v\n", err)
 	}
+	stopMonitoring()
 	cancelServe()
 	_ = listener.Close()
 	<-serveDone
@@ -473,7 +541,10 @@ func (s *Service) handleConnection(connection *net.UnixConn, id string, run *sup
 		if request.TimeoutSeconds != nil {
 			timeout = time.Duration(*request.TimeoutSeconds) * time.Second
 		}
-		err := run.stop(context.Background(), request.Force, timeout)
+		err := run.stopWithProgress(context.Background(), request.Force, timeout, func(stage StopProgress) {
+			progress := stage
+			_ = EncodeResponse(connection, &Response{Version: ProtocolVersion, ID: id, OK: true, Progress: &progress})
+		})
 		if err != nil {
 			code := ErrorInternal
 			if errors.Is(err, errShutdownTimeout) {
@@ -510,13 +581,23 @@ func (r *supervisedRun) currentStatus(ctx context.Context) (Status, error) {
 var errShutdownTimeout = errors.New("graceful shutdown timed out")
 
 func (r *supervisedRun) stop(ctx context.Context, force bool, timeout time.Duration) error {
+	return r.stopWithProgress(ctx, force, timeout, nil)
+}
+
+func (r *supervisedRun) stopWithProgress(ctx context.Context, force bool, timeout time.Duration, onProgress func(StopProgress)) error {
 	if force {
+		if onProgress != nil {
+			onProgress(StopProgressForcing)
+		}
 		return r.force(ctx)
 	}
 	r.mu.Lock()
 	if r.forceStarted {
 		done := r.forceDone
 		r.mu.Unlock()
+		if onProgress != nil {
+			onProgress(StopProgressForcing)
+		}
 		return r.waitForce(ctx, done)
 	}
 	attempt := r.graceful
@@ -529,6 +610,24 @@ func (r *supervisedRun) stop(ctx context.Context, force bool, timeout time.Durat
 	}
 	forceDone := r.forceDone
 	r.mu.Unlock()
+
+	select {
+	case <-attempt.request:
+		r.mu.Lock()
+		accepted := attempt.accepted
+		r.mu.Unlock()
+		if accepted && onProgress != nil {
+			onProgress(StopProgressAcknowledged)
+		}
+	case <-forceDone:
+		if onProgress != nil {
+			onProgress(StopProgressForcing)
+		}
+		return r.waitForce(ctx, forceDone)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
 	select {
 	case <-attempt.done:
 		r.mu.Lock()
@@ -536,6 +635,9 @@ func (r *supervisedRun) stop(ctx context.Context, force bool, timeout time.Durat
 		r.mu.Unlock()
 		return err
 	case <-forceDone:
+		if onProgress != nil {
+			onProgress(StopProgressForcing)
+		}
 		return r.waitForce(ctx, forceDone)
 	case <-ctx.Done():
 		return ctx.Err()

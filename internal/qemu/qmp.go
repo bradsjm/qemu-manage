@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/bradsjm/qemu-manage/internal/backend"
 	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
@@ -62,11 +65,14 @@ type qmpVNCInfo struct {
 // including their responses, are serialized by gate. Unlike a mutex, gate
 // allows a command's context to expire while it is waiting for the stream.
 type QMPClient struct {
-	gate   chan struct{}
-	conn   net.Conn
-	dec    *json.Decoder
-	nextID int64
-	closed bool
+	gate               chan struct{}
+	conn               net.Conn
+	dec                *json.Decoder
+	nextID             int64
+	closed             bool
+	version            backend.QEMUVersion
+	lifecycleEvents    map[string]uint64
+	blockIOErrorEvents map[qmpBlockIOErrorKey]uint64
 }
 
 type qmpGreeting struct {
@@ -83,6 +89,25 @@ type qmpGreeting struct {
 	} `json:"QMP"`
 }
 
+var qmpDeviceLabelPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+var qmpLifecycleEventNames = map[string]string{
+	"SHUTDOWN":       "shutdown",
+	"RESET":          "reset",
+	"STOP":           "stop",
+	"RESUME":         "resume",
+	"SUSPEND":        "suspend",
+	"WAKEUP":         "wakeup",
+	"GUEST_PANICKED": "guest_panicked",
+	"WATCHDOG":       "watchdog",
+}
+
+type qmpBlockIOErrorKey struct {
+	Device    string
+	Operation string
+	NoSpace   bool
+}
+
 type qmpCommand struct {
 	Execute   string         `json:"execute"`
 	Arguments map[string]any `json:"arguments,omitempty"`
@@ -94,6 +119,7 @@ type qmpResponse struct {
 	Error  json.RawMessage `json:"error"`
 	Event  string          `json:"event"`
 	ID     json.RawMessage `json:"id"`
+	Data   json.RawMessage `json:"data"`
 }
 
 // NewQMPClient connects to path, validates the server greeting, and negotiates
@@ -111,7 +137,16 @@ func NewQMPClientContext(ctx context.Context, path string) (*QMPClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect QMP socket: %w", err)
 	}
-	client := &QMPClient{gate: make(chan struct{}, 1), conn: conn, dec: json.NewDecoder(conn)}
+	client := &QMPClient{
+		gate:               make(chan struct{}, 1),
+		conn:               conn,
+		dec:                json.NewDecoder(conn),
+		lifecycleEvents:    make(map[string]uint64, len(qmpLifecycleEventNames)),
+		blockIOErrorEvents: make(map[qmpBlockIOErrorKey]uint64),
+	}
+	for _, event := range qmpLifecycleEventNames {
+		client.lifecycleEvents[event] = 0
+	}
 	client.gate <- struct{}{}
 	if err := client.initialize(callCtx); err != nil {
 		_ = conn.Close()
@@ -147,6 +182,12 @@ func (c *QMPClient) initialize(ctx context.Context) error {
 	if greeting.QMP.Version.QEMU.Major <= 0 || greeting.QMP.Version.QEMU.Minor < 0 || greeting.QMP.Version.QEMU.Micro < 0 || greeting.QMP.Capabilities == nil {
 		return errors.New("invalid QMP greeting")
 	}
+	c.version = backend.QEMUVersion{
+		Major:   greeting.QMP.Version.QEMU.Major,
+		Minor:   greeting.QMP.Version.QEMU.Minor,
+		Micro:   greeting.QMP.Version.QEMU.Micro,
+		Package: greeting.QMP.Version.Package,
+	}
 
 	result, err := c.executeLocked(ctx, "qmp_capabilities", nil)
 	if err != nil {
@@ -170,28 +211,88 @@ func (c *QMPClient) Close() error {
 	return c.conn.Close()
 }
 
+func (c *QMPClient) Version() backend.QEMUVersion { return c.version }
+
+func (c *QMPClient) RawStatus(ctx context.Context) (string, error) {
+	result, err := c.execute(ctx, "query-status", nil)
+	if err != nil {
+		return "", err
+	}
+	var status struct {
+		Status *string `json:"status"`
+	}
+	if err := json.Unmarshal(result, &status); err != nil {
+		return "", fmt.Errorf("decode query-status response: %w", err)
+	}
+	if status.Status == nil || *status.Status == "" {
+		return "", errors.New("query-status response has empty status")
+	}
+	return *status.Status, nil
+}
+
+func (c *QMPClient) EventCounters(ctx context.Context) (backend.QEMUEventCounters, error) {
+	select {
+	case <-ctx.Done():
+		return backend.QEMUEventCounters{}, ctx.Err()
+	case <-c.gate:
+	}
+	defer func() { c.gate <- struct{}{} }()
+	lifecycle := make(map[string]uint64, len(c.lifecycleEvents))
+	for event, count := range c.lifecycleEvents {
+		lifecycle[event] = count
+	}
+	block := make([]backend.QEMUBlockIOError, 0, len(c.blockIOErrorEvents))
+	for key, count := range c.blockIOErrorEvents {
+		block = append(block, backend.QEMUBlockIOError{
+			Device: key.Device, Operation: key.Operation, NoSpace: key.NoSpace, Count: count,
+		})
+	}
+	sort.Slice(block, func(i, j int) bool {
+		if block[i].Device != block[j].Device {
+			return block[i].Device < block[j].Device
+		}
+		if block[i].Operation != block[j].Operation {
+			return block[i].Operation < block[j].Operation
+		}
+		return !block[i].NoSpace && block[j].NoSpace
+	})
+	return backend.QEMUEventCounters{Lifecycle: lifecycle, BlockIO: block}, nil
+}
+
+func (c *QMPClient) recordEvent(response qmpResponse) {
+	if event, ok := qmpLifecycleEventNames[response.Event]; ok {
+		c.lifecycleEvents[event]++
+		return
+	}
+	if response.Event != "BLOCK_IO_ERROR" {
+		return
+	}
+	var data struct {
+		Device    string `json:"device"`
+		Operation string `json:"operation"`
+		NoSpace   bool   `json:"nospace"`
+	}
+	if err := json.Unmarshal(response.Data, &data); err != nil ||
+		!qmpDeviceLabelPattern.MatchString(data.Device) ||
+		(data.Operation != "read" && data.Operation != "write" && data.Operation != "flush" && data.Operation != "unmap") {
+		return
+	}
+	c.blockIOErrorEvents[qmpBlockIOErrorKey{Device: data.Device, Operation: data.Operation, NoSpace: data.NoSpace}]++
+}
+
 // Status queries QEMU and maps only the states represented by model.RunState.
 func (c *QMPClient) Status(ctx context.Context) (model.RunState, error) {
-	result, err := c.execute(ctx, "query-status", nil)
+	status, err := c.RawStatus(ctx)
 	if err != nil {
 		return model.RunStateFailed, err
 	}
-	var status struct {
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal(result, &status); err != nil {
-		return model.RunStateFailed, fmt.Errorf("decode query-status response: %w", err)
-	}
-	if status.Status == "" {
-		return model.RunStateFailed, errors.New("query-status response has empty status")
-	}
-	switch status.Status {
+	switch status {
 	case string(model.RunStateRunning):
 		return model.RunStateRunning, nil
 	case string(model.RunStatePaused):
 		return model.RunStatePaused, nil
 	default:
-		return model.RunStateFailed, &UnexpectedStatusError{Status: status.Status}
+		return model.RunStateFailed, &UnexpectedStatusError{Status: status}
 	}
 }
 
@@ -315,6 +416,7 @@ func (c *QMPClient) executeLocked(ctx context.Context, command string, arguments
 			return nil, fmt.Errorf("decode QMP response: %w", err)
 		}
 		if response.Event != "" {
+			c.recordEvent(response)
 			continue
 		}
 		responseID, valid := numericID(response.ID)

@@ -20,7 +20,7 @@ func withProgress(output io.Writer, enabled, interactive bool, message string, t
 		_, _ = fmt.Fprintf(output, "%s...\n", message)
 		err := operation(nil)
 		if err == nil {
-			_, _ = fmt.Fprintf(output, "%s done\n", message)
+			_, _ = fmt.Fprintf(output, "%s complete\n", message)
 		} else {
 			_, _ = fmt.Fprintf(output, "%s failed: %v\n", message, err)
 		}
@@ -39,6 +39,9 @@ func withProgress(output io.Writer, enabled, interactive bool, message string, t
 	writer := progress.NewWriter()
 	writer.SetOutputWriter(output)
 	writer.SetAutoStop(false)
+	style := progress.StyleDefault
+	style.Options.DoneString = "complete"
+	writer.SetStyle(style)
 	writer.SetUpdateFrequency(25 * time.Millisecond)
 	writer.AppendTracker(tracker)
 	renderDone := make(chan struct{})

@@ -82,6 +82,7 @@ type Config struct {
 	Network                NetworkConfig     `json:"network"`
 	GuestAgent             GuestAgentConfig  `json:"guest_agent"`
 	VNC                    *VNCConfig        `json:"vnc,omitempty"`
+	Metrics                *MetricsConfig    `json:"metrics,omitempty"`
 	USB                    []USBDeviceConfig `json:"usb,omitempty"`
 	QEMU                   QEMUConfig        `json:"qemu"`
 	Autostart              AutostartConfig   `json:"autostart"`
@@ -90,6 +91,10 @@ type Config struct {
 type FirmwareConfig struct {
 	Code      string `json:"code"`
 	Variables string `json:"variables"`
+}
+
+type MetricsConfig struct {
+	Port uint16 `json:"port"`
 }
 
 type InstallerConfig struct {
@@ -334,6 +339,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ShutdownTimeoutSeconds < 1 || c.ShutdownTimeoutSeconds > 3600 {
 		return configError("shutdown_timeout_seconds must be between 1 and 3600")
+	}
+	if c.Metrics != nil && c.Metrics.Port < 1024 {
+		return configError("metrics port must be between 1024 and 65535")
 	}
 	if c.Firmware.Code == "" || c.Firmware.Variables == "" {
 		return configError("firmware code and variables paths are required")

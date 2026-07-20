@@ -98,6 +98,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	network := flags.String("network", string(model.NetworkUser), "network mode")
 	macOverride := flags.String("mac", "", "optional canonical MAC override (generated when omitted)")
 	guestAgent := flags.String("guest-agent", "off", "guest agent")
+	metricsPort := flags.String("metrics-port", "", "loopback monitoring HTTP port")
 	socketVMNetInterface := flags.String("socket-vmnet-interface", "", "socket_vmnet interface")
 	rtcBase := flags.String("rtc-base", defaultRTCBase, "QEMU RTC base")
 	vncEnabled := flags.Bool("vnc", false, "enable QEMU VNC")
@@ -171,6 +172,14 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 	guestAgentEnabled, err := parseOnOff(*guestAgent)
 	if err != nil {
 		return usageErrorf("create: --guest-agent: %v", err)
+	}
+	var metrics *model.MetricsConfig
+	if *metricsPort != "" {
+		port, err := parsePort(*metricsPort)
+		if err != nil || port < 1024 {
+			return usageErrorf("create: --metrics-port: must be between 1024 and 65535")
+		}
+		metrics = &model.MetricsConfig{Port: port}
 	}
 	rtcBaseValue, err := parseRTCBase(*rtcBase)
 	if err != nil {
@@ -357,6 +366,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		Network:                networkConfig,
 		GuestAgent:             model.GuestAgentConfig{Enabled: guestAgentEnabled},
 		VNC:                    vnc,
+		Metrics:                metrics,
 		USB:                    []model.USBDeviceConfig(usbs),
 		QEMU:                   model.QEMUConfig{Binary: qemuPath, ImageTool: qemuImgPath, Machine: machine, RTCBase: rtcBaseValue, ExtraArgs: []string{}},
 		Autostart:              model.AutostartConfig{Scope: model.AutostartNone},

@@ -118,6 +118,7 @@ func TestCommandAndNestedHelp(t *testing.T) {
 				"Display and guest integration:",
 				"--keyboard-layout LAYOUT",
 				"--rtc-base VALUE",
+				"--metrics-port VALUE",
 				"QEMU_MANAGE_SOCKET_VMNET_CLIENT",
 			},
 			avoid: []string{"--socket-vmnet-client", "--socket-vmnet-socket"},
@@ -271,6 +272,8 @@ func TestInvalidValuesListExactValidValues(t *testing.T) {
 		want string
 	}{
 		{name: "create restart policy", args: []string{"create", "example", "--restart-policy", "always", "--firmware-code", "code.fd", "--firmware-vars", "vars.fd"}, want: "never, on-failure"},
+		{name: "create metrics port", args: []string{"create", "example", "--metrics-port", "1023"}, want: "1024 and 65535"},
+		{name: "set metrics port", args: []string{"set", "example", "--metrics-port", "65536"}, want: "1024 and 65535, or off"},
 		{name: "set network", args: []string{"set", "example", "--network", "bridge"}, want: "user, socket_vmnet"},
 		{name: "set guest agent", args: []string{"set", "example", "--guest-agent", "maybe"}, want: "on, off"},
 		{name: "set restart policy", args: []string{"set", "example", "--restart-policy", "always"}, want: "never, on-failure"},

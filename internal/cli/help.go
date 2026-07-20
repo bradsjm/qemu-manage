@@ -70,6 +70,7 @@ Resources and lifecycle:
   --restart-policy VALUE   Valid values: never, on-failure (default: never)
   --shutdown-timeout D     Positive whole-second duration (default: 180s)
   --rtc-base VALUE         Valid values: utc, localtime (default: utc)
+  --metrics-port PORT      Loopback monitoring HTTP port, 1024-65535 (default: off)
 
 Networking:
   --network VALUE             Valid values: user, socket_vmnet (default: user)
@@ -182,6 +183,7 @@ Resources and lifecycle:
   --restart-policy VALUE         Valid values: never, on-failure
   --shutdown-timeout DURATION    Positive whole-second duration, such as 180s
   --rtc-base VALUE               Valid values: utc, localtime
+  --metrics-port VALUE            Loopback monitoring port, 1024-65535, or off
 
 Networking:
   --network VALUE                Valid values: user, socket_vmnet

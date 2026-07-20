@@ -27,6 +27,7 @@
     "network": { "$ref": "#/$defs/network" },
     "guest_agent": { "$ref": "#/$defs/guestAgent" },
     "vnc": { "$ref": "#/$defs/vnc" },
+    "metrics": { "$ref": "#/$defs/metrics" },
     "usb": { "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": { "$ref": "#/$defs/usbDevice" } },
     "qemu": { "$ref": "#/$defs/qemu" },
     "autostart": { "$ref": "#/$defs/autostart" }
@@ -86,6 +87,7 @@
       ]
     },
     "guestAgent": { "type": "object", "additionalProperties": false, "required": ["enabled"], "properties": { "enabled": { "type": "boolean" } } },
+    "metrics": { "type": "object", "additionalProperties": false, "required": ["port"], "properties": { "port": { "type": "integer", "minimum": 1024, "maximum": 65535 } } },
     "vnc": {
       "type": "object", "additionalProperties": false, "required": ["bind", "port", "port_to", "password"],
       "properties": {
