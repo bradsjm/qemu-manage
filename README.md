@@ -12,6 +12,7 @@
 - [Features](#features)
 - [Requirements](#requirements)
 - [Installation](#installation)
+  - [AI Agent Integration](#ai-agent-integration)
   - [Homebrew](#homebrew)
   - [GitHub release](#github-release)
   - [Install with Go](#install-with-go)
@@ -74,6 +75,18 @@
   discovery from common Homebrew or MacPorts locations.
 
 ## Installation
+
+### AI Agent Integration (Optional)
+
+AI coding agents can be given context about the `qemu-manage` commands, configuration, architecture, and conventions by installing the project skill:
+
+```sh
+npx skills add bradsjm/qemu-manage/skills
+```
+
+This adds the skill definitions from the [`skills/`](skills/) directory, enabling
+agents to provide more accurate assistance with `qemu-manage` configuration,
+workflows, and troubleshooting.
 
 ### Homebrew
 
