@@ -47,12 +47,13 @@
 
 - **VM lifecycle** — Create, start, stop, and inspect VMs with straightforward commands.
 - **Disk import** — Pull images from HTTP(S) URLs (auto-decompresses `.xz`/`.gz`), copy local qcow2/raw images, or boot installer ISOs.
-- **Serial logs & console** — Print the active bounded serial log verbatim or connect to any guest with `Ctrl-]` disconnect handling.
-- **Monitor & guest agent** — Use the interactive QEMU human monitor, run one-shot HMP commands, and send strict JSON guest-agent requests with pipe-safe stdout.
+- **Serial logs & console** — Print the active bounded serial log verbatim or connect to any guest serial console interactively.
+- **Monitor & guest agent support** — Use the interactive QEMU human monitor, run one-shot HMP commands, and send strict JSON guest-agent requests with pipe-safe stdout.
+- **Prometheus metrics and REST API** — Exposes VM metrics via a dedicated HTTP endpoint for monitoring with Prometheus, and a REST API with ping, health and configutation information (see [API documentation](API.md)).
 - **VNC passthrough** — Optional VNC with password auth; `qemu-manage vnc NAME` opens it in Screen Sharing with the password on your clipboard.
 - **Networking** — User-mode NAT out of the box; optional `socket_vmnet` for shared or bridged mode without running QEMU as root, plus optional user-network SMB host-folder share.
 - **Autostart** — Per-VM launchd jobs at login or boot scope; QEMU stays unprivileged.
-- **Secure by design** — Atomic writes, owner-only file modes, peer-authenticated Unix sockets, immutable-ID lifetime locks, and no central service to attack.
+- **Secure by design** — Atomic writes, owner-only file modes, peer-authenticated Unix sockets, immutable-ID lifetime locks, localhost only binding and no central service to attack.
 - **Accelerated hardware** — All AArch64 guests use QEMU's HVF (Hypervisor.framework) native hardware virtualization accelerator for MacOS.
 
 ## Requirements
