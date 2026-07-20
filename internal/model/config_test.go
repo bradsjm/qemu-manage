@@ -246,7 +246,7 @@ func TestCanonicalCompatibilityOmitsUSBAndDiskOptions(t *testing.T) {
 	if string(data) != wantDocument {
 		t.Fatalf("canonical JSON changed\n got:\n%s\nwant:\n%s", data, wantDocument)
 	}
-	if strings.Contains(wantConfig, "\"usb\"") || strings.Contains(wantConfig, "\"cache\"") || strings.Contains(wantConfig, "\"aio\"") {
+	if strings.Contains(wantConfig, "\"usb\"") || strings.Contains(wantConfig, "\"cache\"") {
 		t.Fatal("expected fixture unexpectedly contains omitted fields")
 	}
 	hash, err := Hash(&config)
@@ -589,8 +589,6 @@ func TestStorageValidation(t *testing.T) {
 		"format other":             func(c *Config) { c.Disks[0].Format = "vmdk" },
 		"cache uppercase":          func(c *Config) { c.Disks[0].Cache = "Writeback" },
 		"cache other":              func(c *Config) { c.Disks[0].Cache = "passthrough" },
-		"aio uppercase":            func(c *Config) { c.Disks[0].AIO = "Threads" },
-		"aio other":                func(c *Config) { c.Disks[0].AIO = "io_uring" },
 		"serial empty":             func(c *Config) { c.Disks[0].Serial = "" },
 		"serial unsafe":            func(c *Config) { c.Disks[0].Serial = "bad,serial" },
 		"serial too long":          func(c *Config) { c.Disks[0].Serial = strings.Repeat("a", 65) },
@@ -612,13 +610,6 @@ func TestStorageValidation(t *testing.T) {
 		c.Disks[0].Cache = cache
 		if err := c.Validate(); err != nil {
 			t.Fatalf("valid cache %q rejected: %v", cache, err)
-		}
-	}
-	for _, aio := range []string{"", "threads", "native"} {
-		c := validTestConfig()
-		c.Disks[0].AIO = aio
-		if err := c.Validate(); err != nil {
-			t.Fatalf("valid aio %q rejected: %v", aio, err)
 		}
 	}
 }

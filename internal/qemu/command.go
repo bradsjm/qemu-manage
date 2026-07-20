@@ -80,12 +80,9 @@ func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths, optio
 
 	for i, disk := range config.Disks {
 		id := "disk" + strconv.Itoa(i)
-		drive := "if=none,media=disk,id=" + id + ",file.filename=" + keyval(backend.ResolvePath(paths.VMDir, disk.Path)) + ",format=" + keyval(disk.Format)
+		drive := "if=none,media=disk,id=" + id + ",file.filename=" + keyval(backend.ResolvePath(paths.VMDir, disk.Path)) + ",format=" + keyval(disk.Format) + ",aio=threads"
 		if disk.Cache != "" {
 			drive += ",cache=" + keyval(disk.Cache)
-		}
-		if disk.AIO != "" {
-			drive += ",aio=" + keyval(disk.AIO)
 		}
 		if disk.ReadOnly {
 			drive += ",readonly=on"

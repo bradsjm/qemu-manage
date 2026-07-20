@@ -39,7 +39,6 @@ type createDrive struct {
 	Source   string
 	Format   string
 	Cache    string
-	AIO      string
 	ReadOnly bool
 }
 
@@ -343,7 +342,6 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			BootIndex: primaryBootIndex + i + 1,
 			ReadOnly:  drive.ReadOnly,
 			Cache:     drive.Cache,
-			AIO:       drive.AIO,
 		})
 	}
 	if *cloudInitUserData != "" {
@@ -620,11 +618,6 @@ func (v *driveValues) Set(raw string) error {
 				)
 			}
 			drive.Cache = value
-		case "aio":
-			if value != "threads" && value != "native" {
-				return fmt.Errorf("aio %q is invalid; valid values: threads, native", value)
-			}
-			drive.AIO = value
 		case "readonly":
 			switch value {
 			case "on":

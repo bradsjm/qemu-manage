@@ -54,8 +54,7 @@
         "path": { "type": "string", "minLength": 1 }, "format": { "type": "string", "enum": ["qcow2", "raw"] },
         "serial": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$" },
         "boot_index": { "type": "integer", "minimum": 0 }, "read_only": { "type": "boolean" },
-        "cache": { "type": "string", "enum": ["none", "writeback", "writethrough", "directsync", "unsafe"] },
-        "aio": { "type": "string", "enum": ["threads", "native"] }
+        "cache": { "type": "string", "enum": ["none", "writeback", "writethrough", "directsync", "unsafe"] }
       }
     },
     "disks": { "oneOf": [{ "type": "null" }, { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/disk" } }] },

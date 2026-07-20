@@ -292,7 +292,7 @@ default.
 Repeat `--drive` to append extra virtio disks after the managed primary disk:
 
 ```text
---drive file=PATH[,if=virtio][,format=raw|qcow2][,cache=none|writeback|writethrough|directsync|unsafe][,aio=threads|native][,readonly=on|off]
+--drive file=PATH[,if=virtio][,format=raw|qcow2][,cache=none|writeback|writethrough|directsync|unsafe][,readonly=on|off]
 ```
 
 Relative paths are resolved to absolute external references in the stored
@@ -300,12 +300,12 @@ config. `qemu-manage` never copies, resizes, converts, chmods, or deletes those 
 
 - If `format` is omitted, it is detected from the file header
 - If `if` is omitted, it defaults to `virtio`
-- The `aio=native` option relies on Linux native AIO which is not available on Mac OS
+- All disks use QEMU threaded I/O, which is supported on macOS
 
 ```sh
 qemu-manage create lab \
   --image "$HOME/Images/lab.qcow2" \
-  --drive "file=disk.img,if=virtio,cache=none,aio=native" \
+  --drive "file=disk.img,if=virtio,cache=none" \
   --drive "file=archive.qcow2,format=qcow2,readonly=on"
 ```
 
@@ -694,6 +694,7 @@ flowchart LR
     Backend -->|"QMP/QGA/process observations"| Monitoring
     Backend --> QEMU["unprivileged QEMU child"]
     Supervisor --> Runtime["runtime metadata<br/>control socket + lifetime lock"]
+```
 
 **Key design decisions:**
 

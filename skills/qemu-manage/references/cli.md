@@ -80,7 +80,7 @@ qemu-manage create cloud-vm --image "$HOME/Images/cloud-aarch64.qcow2" \
 
 Important options:
 
-- Storage: `--image SOURCE`, `--iso PATH`, `--cloud-init-user-data PATH`, `--disk-size SIZE`, repeatable `--drive file=PATH[,if=virtio][,format=raw|qcow2][,cache=...][,aio=threads|native][,readonly=on|off]`.
+- Storage: `--image SOURCE`, `--iso PATH`, `--cloud-init-user-data PATH`, `--disk-size SIZE`, repeatable `--drive file=PATH[,if=virtio][,format=raw|qcow2][,cache=...][,readonly=on|off]`. All disks use QEMU threaded I/O.
 - Resources: `--cpus N` (default 2), `--memory SIZE` (default 2GiB).
 - Lifecycle: `--restart-policy never|on-failure`, `--shutdown-timeout D`, `--rtc-base utc|localtime`.
 - Monitoring: `--metrics-port PORT` (1024–65535; off by default).

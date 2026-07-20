@@ -131,7 +131,6 @@ type DiskConfig struct {
 	BootIndex int    `json:"boot_index"`
 	ReadOnly  bool   `json:"read_only"`
 	Cache     string `json:"cache,omitempty"`
-	AIO       string `json:"aio,omitempty"`
 }
 
 type USBDeviceConfig struct {
@@ -432,11 +431,6 @@ func validateStorage(c *Config) error {
 				i,
 				disk.Cache,
 			)
-		}
-		switch disk.AIO {
-		case "", "threads", "native":
-		default:
-			return configError("disk %d has invalid aio %q; valid values: threads, native", i, disk.AIO)
 		}
 		if disk.BootIndex < 0 {
 			return configError("disk %d boot_index must be nonnegative", i)

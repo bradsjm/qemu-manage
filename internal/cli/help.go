@@ -109,7 +109,7 @@ Firmware and executables:
 Repeatable devices and drives:
   --usb vendor=VVVV,product=PPPP
   --usb bus=N,address=N
-  --drive file=PATH[,if=virtio][,format=raw|qcow2][,cache=none|writeback|writethrough|directsync|unsafe][,aio=threads|native][,readonly=on|off]
+  --drive file=PATH[,if=virtio][,format=raw|qcow2][,cache=none|writeback|writethrough|directsync|unsafe][,readonly=on|off]
 
 USB selectors attach in the order provided. Bus/address can change after a device
 is unplugged and replugged. Without VNC, up to four USB selections fit; with VNC,
@@ -118,7 +118,7 @@ up to two fit because QEMU adds a USB keyboard and tablet.
 Extra drives are repeatable virtio disks appended after the managed primary disk.
 Relative drive files become absolute external references and must stay readable
 and in place. Double each literal comma in a value as ",,". Omitted format is
-detected; omitted if means virtio; host and QEMU support still govern aio=native.
+detected; omitted if means virtio. All disks use QEMU threaded I/O.
 
 --cloud-init-user-data copies one user-data file into a managed read-only
 NoCloud ISO labelled CIDATA and generates meta-data using the VM UUID as the

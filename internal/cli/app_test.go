@@ -327,14 +327,14 @@ func TestDriveValuesSetAndDetectDriveFormat(t *testing.T) {
 	withWorkingDir(t, root)
 
 	var drives driveValues
-	if err := drives.Set("aio=native,file=extras/data,,one.img,readonly=on,cache=none,if=virtio"); err != nil {
+	if err := drives.Set("file=extras/data,,one.img,readonly=on,cache=none,if=virtio"); err != nil {
 		t.Fatalf("Set() error: %v", err)
 	}
 	if len(drives) != 1 {
 		t.Fatalf("len(drives)=%d", len(drives))
 	}
 	wantPath := filepath.Join(root, "extras", "data,one.img")
-	if drives[0].Source != wantPath || drives[0].Format != "" || drives[0].Cache != "none" || drives[0].AIO != "native" || !drives[0].ReadOnly {
+	if drives[0].Source != wantPath || drives[0].Format != "" || drives[0].Cache != "none" || !drives[0].ReadOnly {
 		t.Fatalf("drive=%+v wantPath=%q", drives[0], wantPath)
 	}
 
@@ -349,7 +349,7 @@ func TestDriveValuesSetAndDetectDriveFormat(t *testing.T) {
 		{name: "invalid if", raw: "file=disk.img,if=scsi", want: "valid values: virtio"},
 		{name: "invalid format", raw: "file=disk.img,format=vmdk", want: "valid values: raw, qcow2"},
 		{name: "invalid cache", raw: "file=disk.img,cache=passthrough", want: "valid values: none, writeback, writethrough, directsync, unsafe"},
-		{name: "invalid aio", raw: "file=disk.img,aio=io_uring", want: "valid values: threads, native"},
+		{name: "removed aio", raw: "file=disk.img,aio=threads", want: "unknown key"},
 		{name: "invalid readonly", raw: "file=disk.img,readonly=true", want: "valid values: on, off"},
 		{name: "malformed item", raw: "file=disk.img,cache", want: "key=value"},
 		{name: "empty item", raw: "file=disk.img,", want: "empty item"},
@@ -416,7 +416,7 @@ func TestCreatePersistsUSBAndDetectedExtraDrives(t *testing.T) {
 		"--disk-size", "1GiB",
 		"--usb", "vendor=00Aa,product=0FfF",
 		"--usb", "address=127,bus=255",
-		"--drive", "file=extras/alpha,,one.raw,cache=none,aio=native",
+		"--drive", "file=extras/alpha,,one.raw,cache=none",
 		"--drive", "readonly=on,file=extras/beta.qcow2",
 	)
 	if code != 0 {
@@ -442,10 +442,10 @@ func TestCreatePersistsUSBAndDetectedExtraDrives(t *testing.T) {
 	if cfg.Disks[0].Path != "disk.qcow2" || cfg.Disks[0].BootIndex != 0 || cfg.Disks[0].Serial != "disk-"+cfg.ID[:16] {
 		t.Fatalf("primary disk=%+v id=%q", cfg.Disks[0], cfg.ID)
 	}
-	if cfg.Disks[1].Path != rawSource || cfg.Disks[1].Format != "raw" || cfg.Disks[1].Cache != "none" || cfg.Disks[1].AIO != "native" || cfg.Disks[1].ReadOnly || cfg.Disks[1].BootIndex != 1 || cfg.Disks[1].Serial != "disk-"+cfg.ID[:12]+"-1" {
+	if cfg.Disks[1].Path != rawSource || cfg.Disks[1].Format != "raw" || cfg.Disks[1].Cache != "none" || cfg.Disks[1].ReadOnly || cfg.Disks[1].BootIndex != 1 || cfg.Disks[1].Serial != "disk-"+cfg.ID[:12]+"-1" {
 		t.Fatalf("disk[1]=%+v id=%q", cfg.Disks[1], cfg.ID)
 	}
-	if cfg.Disks[2].Path != qcowSource || cfg.Disks[2].Format != "qcow2" || cfg.Disks[2].Cache != "" || cfg.Disks[2].AIO != "" || !cfg.Disks[2].ReadOnly || cfg.Disks[2].BootIndex != 2 || cfg.Disks[2].Serial != "disk-"+cfg.ID[:12]+"-2" {
+	if cfg.Disks[2].Path != qcowSource || cfg.Disks[2].Format != "qcow2" || cfg.Disks[2].Cache != "" || !cfg.Disks[2].ReadOnly || cfg.Disks[2].BootIndex != 2 || cfg.Disks[2].Serial != "disk-"+cfg.ID[:12]+"-2" {
 		t.Fatalf("disk[2]=%+v id=%q", cfg.Disks[2], cfg.ID)
 	}
 	if data, err := os.ReadFile(rawSource); err != nil || string(data) != string(rawBytes) {
