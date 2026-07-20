@@ -52,8 +52,9 @@ func ControlWithProgress(ctx context.Context, socketPath string, request Request
 	if err := EncodeRequest(connection, &request); err != nil {
 		return Response{}, fmt.Errorf("supervisor: send control request: %w", err)
 	}
+	reader := newFramedReader(connection)
 	for {
-		response, err := DecodeResponse(connection)
+		response, err := decodeResponseFrame(reader)
 		if err != nil {
 			return Response{}, fmt.Errorf("supervisor: read control response: %w", err)
 		}
@@ -111,7 +112,7 @@ func WriteReady(writer io.Writer, message ReadyMessage) error {
 // ReadReady reads one capped, newline-framed ready message.
 func ReadReady(reader io.Reader) (ReadyMessage, error) {
 	var message ReadyMessage
-	if err := decodeLine(reader, &message); err != nil {
+	if err := newFramedReader(reader).decode(&message); err != nil {
 		return ReadyMessage{}, fmt.Errorf("invalid ready message: %w", err)
 	}
 	if err := message.validate(); err != nil {

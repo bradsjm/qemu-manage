@@ -688,6 +688,161 @@ func TestNetworkValidation(t *testing.T) {
 	}
 }
 
+func TestValidateHostPortConflicts(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*Config)
+		wantErr   string
+	}{
+		{
+			name: "tcp wildcard after concrete conflicts",
+			configure: func(c *Config) {
+				c.Network.Forwards = []PortForward{
+					{Protocol: "tcp", HostAddress: "127.0.0.1", HostPort: 6000, GuestPort: 22},
+					{Protocol: "tcp", HostAddress: "0.0.0.0", HostPort: 6000, GuestPort: 23},
+				}
+			},
+			wantErr: "config: network forward 1 on 0.0.0.0 conflicts with network forward 0 on 127.0.0.1 for tcp port 6000",
+		},
+		{
+			name: "tcp concrete after wildcard conflicts",
+			configure: func(c *Config) {
+				c.Network.Forwards = []PortForward{
+					{Protocol: "tcp", HostAddress: "0.0.0.0", HostPort: 6000, GuestPort: 22},
+					{Protocol: "tcp", HostAddress: "127.0.0.1", HostPort: 6000, GuestPort: 23},
+				}
+			},
+			wantErr: "config: network forward 1 on 127.0.0.1 conflicts with network forward 0 on 0.0.0.0 for tcp port 6000",
+		},
+		{
+			name: "metrics conflicts with tcp forward",
+			configure: func(c *Config) {
+				c.Metrics = &MetricsConfig{Port: 6001}
+				c.Network.Forwards = []PortForward{
+					{Protocol: "tcp", HostAddress: "0.0.0.0", HostPort: 6001, GuestPort: 22},
+				}
+			},
+			wantErr: "config: metrics port 6001 conflicts with network forward 0 on 0.0.0.0",
+		},
+		{
+			name: "metrics conflicts with single-port vnc",
+			configure: func(c *Config) {
+				c.Metrics = &MetricsConfig{Port: 5905}
+				c.VNC = validTestVNC()
+				c.VNC.Bind = "0.0.0.0"
+				c.VNC.Port = 5905
+				c.VNC.PortTo = 5905
+			},
+			wantErr: "config: metrics port 5905 conflicts with vnc listener on 0.0.0.0",
+		},
+		{
+			name: "single-port vnc conflicts with tcp forward",
+			configure: func(c *Config) {
+				c.VNC = validTestVNC()
+				c.VNC.Bind = "127.0.0.1"
+				c.VNC.Port = 5906
+				c.VNC.PortTo = 5906
+				c.Network.Forwards = []PortForward{
+					{Protocol: "tcp", HostAddress: "0.0.0.0", HostPort: 5906, GuestPort: 22},
+				}
+			},
+			wantErr: "config: vnc port 5906 on 127.0.0.1 conflicts with network forward 0 on 0.0.0.0",
+		},
+		{
+			name: "tcp and udp may share host port",
+			configure: func(c *Config) {
+				c.Network.Forwards = []PortForward{
+					{Protocol: "tcp", HostAddress: "127.0.0.1", HostPort: 6002, GuestPort: 22},
+					{Protocol: "udp", HostAddress: "127.0.0.1", HostPort: 6002, GuestPort: 53},
+				}
+			},
+		},
+		{
+			name: "distinct concrete tcp binds may share host port",
+			configure: func(c *Config) {
+				c.Network.Forwards = []PortForward{
+					{Protocol: "tcp", HostAddress: "127.0.0.1", HostPort: 6003, GuestPort: 22},
+					{Protocol: "tcp", HostAddress: "192.0.2.1", HostPort: 6003, GuestPort: 23},
+				}
+			},
+		},
+		{
+			name: "udp forward may match metrics port",
+			configure: func(c *Config) {
+				c.Metrics = &MetricsConfig{Port: 6004}
+				c.Network.Forwards = []PortForward{
+					{Protocol: "udp", HostAddress: "127.0.0.1", HostPort: 6004, GuestPort: 53},
+				}
+			},
+		},
+		{
+			name: "udp forward may match vnc port",
+			configure: func(c *Config) {
+				c.VNC = validTestVNC()
+				c.VNC.Port = 5907
+				c.VNC.PortTo = 5907
+				c.Network.Forwards = []PortForward{
+					{Protocol: "udp", HostAddress: "127.0.0.1", HostPort: 5907, GuestPort: 53},
+				}
+			},
+		},
+		{
+			name: "metrics may use port inside multi-port vnc range",
+			configure: func(c *Config) {
+				c.Metrics = &MetricsConfig{Port: 5909}
+				c.VNC = validTestVNC()
+				c.VNC.Port = 5908
+				c.VNC.PortTo = 5910
+			},
+		},
+		{
+			name: "tcp forward may use first port of multi-port vnc range",
+			configure: func(c *Config) {
+				c.VNC = validTestVNC()
+				c.VNC.Port = 5911
+				c.VNC.PortTo = 5912
+				c.Network.Forwards = []PortForward{
+					{Protocol: "tcp", HostAddress: "127.0.0.1", HostPort: 5911, GuestPort: 22},
+				}
+			},
+		},
+		{
+			name: "disjoint listeners remain valid",
+			configure: func(c *Config) {
+				c.Metrics = &MetricsConfig{Port: 6005}
+				c.VNC = validTestVNC()
+				c.VNC.Bind = "192.0.2.2"
+				c.VNC.Port = 5913
+				c.VNC.PortTo = 5913
+				c.Network.Forwards = []PortForward{
+					{Protocol: "tcp", HostAddress: "127.0.0.1", HostPort: 6006, GuestPort: 22},
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config := validTestConfig()
+			config.Network.Forwards = nil
+			config.Metrics = nil
+			config.VNC = nil
+			tc.configure(&config)
+
+			err := config.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("Validate() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestUSBValidationSelectorsDuplicatesAndCapacity(t *testing.T) {
 	valid := validTestConfig()
 	valid.USB = []USBDeviceConfig{

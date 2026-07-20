@@ -92,7 +92,7 @@
       "type": "object", "additionalProperties": false, "required": ["bind", "port", "port_to", "password"],
       "properties": {
         "bind": { "$ref": "#/$defs/ipv4" }, "port": { "type": "integer", "minimum": 5900, "maximum": 65535 }, "port_to": { "type": "integer", "minimum": 5900, "maximum": 65535 },
-        "password": { "type": "string", "minLength": 1, "maxLength": 8, "not": { "pattern": "\\u0000" } },
+        "password": { "type": "string", "description": "VNC password; qemu-manage enforces a 1-8 UTF-8 byte limit. JSON Schema length keywords count Unicode characters, so this constraint is approximate for non-ASCII passwords.", "minLength": 1, "maxLength": 8, "not": { "pattern": "\\u0000" } },
         "keyboard_layout": { "type": "string", "enum": ["ar", "da", "de", "de-ch", "en-gb", "en-us", "es", "et", "fi", "fo", "fr", "fr-be", "fr-ca", "fr-ch", "hr", "hu", "is", "it", "ja", "lt", "lv", "mk", "nl", "nl-be", "no", "pl", "pt", "pt-br", "ru", "sl", "sv", "th", "tr"] }
       }
     },

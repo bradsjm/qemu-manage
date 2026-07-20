@@ -3,7 +3,11 @@ package supervisor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -58,6 +62,78 @@ func TestStartForegroundDoesNotInvokeOnReadyForMismatchedReadiness(t *testing.T)
 	})
 	if err == nil || called {
 		t.Fatalf("error=%v, callback=%t; want readiness error and no callback", err, called)
+	}
+}
+
+func TestControlWithProgressPreservesCoalescedResponses(t *testing.T) {
+	dir, err := os.MkdirTemp(os.TempDir(), "qm-c-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+
+	socketPath := filepath.Join(dir, "control.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	serverDone := make(chan error, 1)
+	go func() {
+		connection, err := listener.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer connection.Close()
+
+		request, err := DecodeRequest(connection)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if request.Command != CommandStop {
+			serverDone <- errors.New("unexpected command")
+			return
+		}
+
+		progress := StopProgressAcknowledged
+		var frames bytes.Buffer
+		if err := EncodeResponse(&frames, &Response{Version: ProtocolVersion, ID: request.ID, OK: true, Progress: &progress}); err != nil {
+			serverDone <- err
+			return
+		}
+		if err := EncodeResponse(&frames, &Response{Version: ProtocolVersion, ID: request.ID, OK: true}); err != nil {
+			serverDone <- err
+			return
+		}
+		if _, err := connection.Write(frames.Bytes()); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- nil
+	}()
+
+	var got []StopProgress
+	response, err := ControlWithProgress(context.Background(), socketPath, Request{
+		Version: ProtocolVersion,
+		ID:      testProtocolID,
+		Command: CommandStop,
+	}, func(progress StopProgress) {
+		got = append(got, progress)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.OK {
+		t.Fatalf("response = %#v", response)
+	}
+	if len(got) != 1 || got[0] != StopProgressAcknowledged {
+		t.Fatalf("progress callbacks = %#v", got)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
 	}
 }
 

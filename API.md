@@ -61,7 +61,7 @@ value families are omitted rather than reported as zero.
 | `qemu_manage_qmp_up` | gauge | none | boolean | Always; `1` only for fresh QMP |
 | `qemu_manage_vm_state_info` | gauge | `state` | info | Always; one raw QEMU state or `unknown` |
 | `qemu_manage_vm_uptime_seconds` | gauge | none | seconds | Always; supervisor lifetime |
-| `qemu_manage_qmp_events_total` | counter | `event` | events | Fresh QMP; fixed lifecycle labels; supervisor reset |
+| `qemu_manage_qmp_events_total` | counter | `event` | events | Fresh QMP; fixed labels `shutdown`, `powerdown`, `reset`, `stop`, `resume`, `suspend`, `suspend_disk`, `wakeup`, `guest_panicked`, `watchdog`; supervisor-lifetime observations; unknown events ignored |
 | `qemu_manage_qemu_process_stats_up` | gauge | none | boolean | Always; `0` off Darwin or on failed/stale collection |
 | `qemu_manage_qemu_process_cpu_seconds_total` | counter | `mode=user|system` | seconds | Fresh macOS child stats; supervisor reset |
 | `qemu_manage_qemu_process_resident_memory_bytes` | gauge | none | bytes | Fresh macOS child stats |
@@ -175,7 +175,10 @@ Returns `200` while the server can render its immutable cached snapshot.
 | `qmp.observed_at` | timestamp | required, nullable | Latest attempt |
 | `qmp.version.{major,minor,micro}` | integer | required | Retained greeting |
 | `qmp.version.package` | string | required | Retained greeting |
-| `qmp.events` | object | required | Lifecycle and block-event counters |
+| `qmp.events` | object | required | Supervisor-lifetime lifecycle counters plus structured block-event aggregates |
+| `qmp.events.lifecycle` | object | required | Fixed keys `shutdown`, `powerdown`, `reset`, `stop`, `resume`, `suspend`, `suspend_disk`, `wakeup`, `guest_panicked`, `watchdog`; unknown QMP events ignored |
+| `qmp.events.block_io_errors[]` | array | required, nullable | Structured `BLOCK_IO_ERROR` aggregates |
+| `qmp.events.block_io_errors[].device` | string | optional | `""` when QEMU reports no associated device |
 | `process.stats_up` | boolean | required | Fresh process collector |
 | `process.pid` | integer | required | Exact supervised QEMU child PID |
 | `process.observed_at` | timestamp | required, nullable | Latest attempt |
@@ -211,7 +214,13 @@ Returns `200` while the server can render its immutable cached snapshot.
 | `collectors.<key>.age_seconds` | number/null | required | Age of last success or null |
 
 ```json
-{"api_version":1,"observed_at":"2026-07-20T12:00:00Z","health":{"status":"healthy"},"vm":{"id":"0123456789abcdef0123456789abcdef","name":"home-assistant","backend":"qemu","architecture":"aarch64","state":"running","started_at":"2026-07-20T11:00:00Z","uptime_seconds":3600},"qmp":{"up":true,"state":"running","duration_seconds":0.002,"observed_at":"2026-07-20T12:00:00Z","version":{"major":11,"minor":0,"micro":1,"package":""},"events":{"lifecycle":{"shutdown":0},"block_io_errors":null}},"process":{"stats_up":true,"pid":4242,"observed_at":"2026-07-20T12:00:00Z","cpu_seconds":{"user":20.5,"system":3.1},"resident_memory_bytes":1073741824},"block_devices":[],"guest_agent":{"configured":true,"up":true,"observed_at":"2026-07-20T12:00:00Z","version":"9.1"},"guest":{"network_interfaces":[{"name":"eth0","addresses":[{"address":"192.0.2.10","family":"ipv4","prefix":24}]}]},"collectors":{"qmp":{"status":"ok","age_seconds":0},"process":{"status":"ok","age_seconds":0}}}
+{"api_version":1,"observed_at":"2026-07-20T12:00:00Z","health":{"status":"healthy"},"vm":{"id":"0123456789abcdef0123456789abcdef","name":"home-assistant","backend":"qemu","architecture":"aarch64","state":"running","started_at":"2026-07-20T11:00:00Z","uptime_seconds":3600},"qmp":{"up":true,"state":"running","duration_seconds":0.002,"observed_at":"2026-07-20T12:00:00Z","version":{"major":11,"minor":0,"micro":1,"package":""},"events":{"lifecycle":{"shutdown":0,"powerdown":0,"reset":0,"stop":0,"resume":0,"suspend":0,"suspend_disk":0,"wakeup":0,"guest_panicked":0,"watchdog":0},"block_io_errors":[]}},"process":{"stats_up":true,"pid":4242,"observed_at":"2026-07-20T12:00:00Z","cpu_seconds":{"user":20.5,"system":3.1},"resident_memory_bytes":1073741824},"block_devices":[],"guest_agent":{"configured":true,"up":true,"observed_at":"2026-07-20T12:00:00Z","version":"9.1"},"guest":{"network_interfaces":[{"name":"eth0","addresses":[{"address":"192.0.2.10","family":"ipv4","prefix":24}]}]},"collectors":{"qmp":{"status":"ok","age_seconds":0},"process":{"status":"ok","age_seconds":0}}}
+```
+
+When QEMU reports a structured block I/O error without an associated device, the aggregate keeps `device` as the empty string rather than inventing a placeholder:
+
+```json
+{"qmp":{"events":{"block_io_errors":[{"device":"","operation":"read","nospace":false,"count":1}]}}}
 ```
 
 Failure is represented by collector state while the route remains `200`:

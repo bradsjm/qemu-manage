@@ -27,6 +27,9 @@ const (
 	CommandStop   Command = "stop"
 )
 
+// StopProgress reports a non-terminal stop milestone. A stop request may emit
+// zero or more progress frames before exactly one later terminal Response frame
+// completes the request.
 type StopProgress string
 
 const (
@@ -44,6 +47,9 @@ const (
 	ErrorInternal        ErrorCode = "internal"
 )
 
+// Request is one newline-framed control command sent over the authenticated
+// supervisor socket. Stop-only options are valid only with CommandStop; every
+// other command must leave them unset.
 type Request struct {
 	Version        int     `json:"version"`
 	ID             string  `json:"id"`
@@ -52,6 +58,9 @@ type Request struct {
 	TimeoutSeconds *int    `json:"timeout_seconds,omitempty"`
 }
 
+// Response is one newline-framed supervisor reply. Successful stop progress is
+// reported with Progress in a non-terminal frame; exactly one later terminal
+// frame completes the request with either Status, empty success, or Error.
 type Response struct {
 	Version  int            `json:"version"`
 	ID       string         `json:"id"`
@@ -61,11 +70,17 @@ type Response struct {
 	Error    *ProtocolError `json:"error,omitempty"`
 }
 
+// ProtocolError describes the terminal failure carried by a Response. Progress
+// frames never include it, and successful frames must leave Error unset.
 type ProtocolError struct {
 	Code    ErrorCode `json:"code"`
 	Message string    `json:"message"`
 }
 
+// Status reports the authenticated live state of the supervised child.
+// SupervisorPID, BackendPID, StartedAt, RunningConfigSHA256, and VNC align with
+// the current run's persisted metadata, while State is the live supervisor view
+// rather than a historical exit record.
 type Status struct {
 	State               model.RunState       `json:"state"`
 	Backend             model.Backend        `json:"backend"`
@@ -80,6 +95,14 @@ var (
 	protocolIDPattern   = regexp.MustCompile(`^[0-9a-f]{32}$`)
 	protocolHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
+
+type framedReader struct {
+	reader *bufio.Reader
+}
+
+func newFramedReader(r io.Reader) *framedReader {
+	return &framedReader{reader: bufio.NewReaderSize(r, MaxMessageBytes+1)}
+}
 
 func (r Request) Validate() error {
 	if err := validateEnvelope(r.Version, r.ID); err != nil {
@@ -201,7 +224,7 @@ func EncodeRequest(w io.Writer, request *Request) error {
 
 func DecodeRequest(r io.Reader) (*Request, error) {
 	var request Request
-	if err := decodeLine(r, &request); err != nil {
+	if err := newFramedReader(r).decode(&request); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 	if err := request.Validate(); err != nil {
@@ -221,14 +244,7 @@ func EncodeResponse(w io.Writer, response *Response) error {
 }
 
 func DecodeResponse(r io.Reader) (*Response, error) {
-	var response Response
-	if err := decodeLine(r, &response); err != nil {
-		return nil, fmt.Errorf("invalid response: %w", err)
-	}
-	if err := response.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid response: %w", err)
-	}
-	return &response, nil
+	return decodeResponseFrame(newFramedReader(r))
 }
 
 func validateEnvelope(version int, id string) error {
@@ -255,10 +271,12 @@ func encodeLine(w io.Writer, value interface{}) error {
 	return err
 }
 
-func decodeLine(r io.Reader, destination interface{}) error {
-	reader := bufio.NewReaderSize(io.LimitReader(r, MaxMessageBytes+1), MaxMessageBytes+1)
-	line, err := reader.ReadBytes('\n')
+func (r *framedReader) decode(destination any) error {
+	line, err := r.reader.ReadSlice('\n')
 	if err != nil {
+		if errors.Is(err, bufio.ErrBufferFull) {
+			return fmt.Errorf("message exceeds %d bytes", MaxMessageBytes)
+		}
 		if errors.Is(err, io.EOF) {
 			if len(line) == 0 {
 				return io.EOF
@@ -276,7 +294,7 @@ func decodeLine(r io.Reader, destination interface{}) error {
 	if err := decoder.Decode(destination); err != nil {
 		return err
 	}
-	var trailing interface{}
+	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return errors.New("message contains trailing JSON data")
@@ -284,4 +302,15 @@ func decodeLine(r io.Reader, destination interface{}) error {
 		return fmt.Errorf("message contains trailing data: %w", err)
 	}
 	return nil
+}
+
+func decodeResponseFrame(r *framedReader) (*Response, error) {
+	var response Response
+	if err := r.decode(&response); err != nil {
+		return nil, fmt.Errorf("invalid response: %w", err)
+	}
+	if err := response.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid response: %w", err)
+	}
+	return &response, nil
 }

@@ -8,12 +8,13 @@ The primary target is macOS 13+ with QEMU/HVF. User-mode networking is the defau
 
 ## Architecture & Data Flow
 
-The dependency flow is deliberately one-way:
+The dependency flow is deliberately one-way, including supervisor-owned monitoring that consumes backend observations:
 
 ```text
 cmd/qemu-manage -> internal/cli
 internal/cli -> model, store, backend/qemu, supervisor, lifecycle,
                 launchd, console
+internal/supervisor -> internal/monitoring
 ```
 
 - `cmd/qemu-manage/main.go` creates `cli.NewApp()`, passes process I/O and arguments to `App.Run`, and exits with its status code.
@@ -22,6 +23,7 @@ internal/cli -> model, store, backend/qemu, supervisor, lifecycle,
 - `start` re-execs the same binary in hidden `supervise` mode. One supervisor owns one QEMU child, holds the immutable-ID lifetime lock, writes runtime metadata, and serves an authenticated Unix control socket. There is no shared service process.
 - CLI lifecycle requests flow through `internal/lifecycle` to `internal/supervisor`. If control is unavailable, status is derived conservatively from the lifetime lock plus `runtime.json` and `last_exit.json`.
 - `internal/backend` defines backend/instance interfaces; `internal/qemu` is the concrete backend. QMP provides readiness, status, and power control; QGA is optional.
+- `internal/monitoring` turns backend QMP, optional QGA, and process observations into the per-VM loopback HTTP monitoring surface under supervisor ownership.
 - Configuration mutations take a stable per-name lock. Running-state ownership uses immutable-ID lifetime locks. Preserve this distinction to prevent delete/recreate races.
 - Autostart renders per-VM LaunchAgent/LaunchDaemon plists and uses the same foreground supervisor path as manual starts.
 
@@ -35,6 +37,7 @@ internal/cli -> model, store, backend/qemu, supervisor, lifecycle,
 - `internal/qemu/` — deterministic argv rendering, QMP/QGA clients, process ownership, readiness, and host diagnostics.
 - `internal/supervisor/` — per-VM state machine, metadata, peer-authenticated control protocol, signals, and detached process startup.
 - `internal/lifecycle/` — status derivation and stop coordination.
+- `internal/monitoring/` — cached backend observations and per-VM loopback HTTP monitoring endpoints.
 - `internal/launchd/` — plist rendering and transactional login/boot job management.
 - `internal/console/` — raw-terminal serial-console proxy and `Ctrl-]` disconnect handling.
 
@@ -74,7 +77,7 @@ Use `go mod tidy` only when dependency imports change, and keep `go.mod` and `go
 ## Code Conventions & Common Patterns
 
 - Follow standard Go formatting and naming. Export protocol/model contracts; keep implementation helpers unexported.
-- Prefer the standard library. Current direct dependencies are limited to `golang.org/x/sys` and `golang.org/x/term`; justify additions against existing platform capabilities.
+- Prefer the standard library. `go.mod` is the dependency source of truth; keep direct dependencies few and justify additions against existing platform capabilities.
 - Wrap errors with actionable package context using `%w` where callers need the cause. CLI failures use stable prefixes such as `config:`, `qemu:`, `runtime:`, `launchd:`, and `socket_vmnet:`. Usage errors exit 2; operational/validation failures exit 1.
 - Pass `context.Context` through blocking process, socket, and lifecycle operations. Do not add detached goroutines without explicit ownership and cleanup.
 - Concurrency is localized: supervisors serialize lifecycle transitions with mutexes/channels; QEMU instances own child reaping and force-stop idempotence; QMP serializes requests so cancellation cannot corrupt the stream.
@@ -83,7 +86,7 @@ Use `go mod tidy` only when dependency imports change, and keep `go.mod` and `go
 - Use atomic writes, owner-only modes, `O_NOFOLLOW`, ownership checks, and stable locks for managed files. Never weaken socket permissions, peer-UID checks, symlink rejection, or process ownership validation.
 - Render external commands as argv slices; never invoke a shell. Keep manager-owned QEMU lifecycle, device, and control arguments protected from user passthrough.
 - Keep Darwin behavior in build-tagged files with unsupported-platform companions. Do not make another platform compile by silently weakening macOS security behavior.
-- Update `internal/cli/help.go` and `README.md` together when commands, defaults, prerequisites, storage paths, or security behavior change.
+- Update `internal/cli/help.go` and `README.md` together when commands, defaults, prerequisites, storage paths, or security behavior change. Update `API.md` for monitoring behavior, `schema.json` for durable configuration shape or constraints, and `SECURITY.md` for trust-boundary changes.
 
 ## Important Files
 

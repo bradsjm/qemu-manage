@@ -1,3 +1,8 @@
+// Package monitoring caches per-VM observations gathered by a supervisor and
+// serves them through supervisor-owned loopback HTTP endpoints.
+//
+// Snapshots are deep-cloned before publication so handlers can render a stable
+// view without sharing mutable collector state.
 package monitoring
 
 import (
@@ -17,18 +22,36 @@ const (
 	collectorTimeout = 5 * time.Second
 )
 
+// ProcessCollector samples host-process counters for the backend PID.
+// It returns ErrProcessStatsUnsupported when the current platform cannot expose
+// those measurements.
 type ProcessCollector func(int) (ProcessStats, error)
 
+// Options wires one Service to its backend observation source and immutable VM
+// identity. Nil Clock and Process fall back to time.Now and collectProcess, and
+// nil tick channels enable the package's default polling intervals.
 type Options struct {
-	Instance   backend.MonitoringInstance
-	PID        int
-	VM         VMIdentity
-	Clock      func() time.Time
-	Process    ProcessCollector
-	QMPTicks   <-chan time.Time
+	// Instance supplies QMP, guest-agent, and ping observations for the current
+	// VM.
+	Instance backend.MonitoringInstance
+	// PID is the host PID whose process statistics are sampled.
+	PID int
+	// VM is copied into every snapshot as the run identity rendered by /info and
+	// /status.
+	VM VMIdentity
+	// Clock supplies observation timestamps; nil uses time.Now.
+	Clock func() time.Time
+	// Process overrides host-process sampling; nil uses collectProcess.
+	Process ProcessCollector
+	// QMPTicks triggers QMP and process refreshes; nil uses the built-in ticker.
+	QMPTicks <-chan time.Time
+	// GuestTicks triggers guest-agent refreshes; nil uses the built-in ticker.
 	GuestTicks <-chan time.Time
 }
 
+// Service owns one VM's in-memory monitoring cache.
+// It refreshes QMP, guest-agent, and local process observations and publishes
+// immutable snapshots for HTTP handlers.
 type Service struct {
 	instance   backend.MonitoringInstance
 	pid        int
@@ -44,6 +67,8 @@ type Service struct {
 	store snapshotStore
 }
 
+// New constructs a Service for one backend instance.
+// The returned service is inert until Seed initializes the first snapshot.
 func New(options Options) *Service {
 	clock := options.Clock
 	if clock == nil {
@@ -56,6 +81,9 @@ func New(options Options) *Service {
 	return &Service{instance: options.Instance, pid: options.PID, vm: options.VM, clock: clock, process: process, qmpTicks: options.QMPTicks, guestTicks: options.GuestTicks}
 }
 
+// Seed publishes the initial snapshot and performs the first QMP and process
+// refreshes synchronously. fallbackState is the temporary QMP state exposed
+// until a successful QMP observation replaces it.
 func (s *Service) Seed(ctx context.Context, fallbackState string) {
 	now := s.clock().UTC()
 	snapshot := &Snapshot{
@@ -76,6 +104,9 @@ func (s *Service) Seed(ctx context.Context, fallbackState string) {
 	s.refreshProcess()
 }
 
+// Snapshot returns a deep-cloned view of the current cache, or nil before Seed
+// runs. Callers may retain or mutate the returned value, and collector staleness
+// is evaluated against the read time.
 func (s *Service) Snapshot() *Snapshot {
 	snapshot := s.store.load()
 	if snapshot == nil {
@@ -84,6 +115,8 @@ func (s *Service) Snapshot() *Snapshot {
 	return markStale(cloneSnapshot(snapshot), s.clock().UTC())
 }
 
+// Start begins the background refresh loop and returns a channel closed after
+// all collectors stop. The caller controls collector lifetime by canceling ctx.
 func (s *Service) Start(ctx context.Context) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {

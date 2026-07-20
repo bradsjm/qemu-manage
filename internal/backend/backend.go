@@ -1,3 +1,6 @@
+// Package backend defines the contracts between supervisor orchestration and a
+// concrete VM backend, including command rendering, process lifecycle control,
+// and optional monitoring observations.
 package backend
 
 import (
@@ -32,13 +35,17 @@ func ResolvePath(vmDir, configuredPath string) string {
 	return filepath.Join(vmDir, configuredPath)
 }
 
-// Command is an executable and its argument vector. Args excludes Path.
+// Command is an executable path and its argument vector. Args excludes Path
+// and remains ordered exactly as the backend wants the child process launched.
 type Command struct {
 	Path string
 	Args []string
 }
 
+// RenderOptions carries supervisor-selected launch toggles that affect only
+// the rendered command line.
 type RenderOptions struct {
+	// BootMenu asks the backend to expose an interactive firmware boot picker.
 	BootMenu bool
 }
 
@@ -84,6 +91,8 @@ type Registry struct {
 	factories map[string]Factory
 }
 
+// NewRegistry returns an empty backend registry ready for process-startup
+// registrations.
 func NewRegistry() *Registry {
 	return &Registry{factories: make(map[string]Factory)}
 }

@@ -1,3 +1,6 @@
+// Package cli parses qemu-manage command lines and wires them to the store,
+// lifecycle, supervisor, and backend collaborators that implement each
+// subcommand.
 package cli
 
 import (
@@ -24,12 +27,15 @@ import (
 	"github.com/bradsjm/qemu-manage/internal/supervisor"
 )
 
+// PlatformUser captures the invoking platform account used for ownership-aware
+// defaults and host service integration.
 type PlatformUser struct {
 	Name string
 	Home string
 	UID  int
 }
 
+// StatusRow summarizes the observed runtime state for one VM.
 type StatusRow struct {
 	Name                string               `json:"name"`
 	State               model.RunState       `json:"state"`
@@ -42,15 +48,25 @@ type StatusRow struct {
 	Error               string               `json:"error,omitempty"`
 }
 
+// RuntimeService reads live VM state without mutating it.
 type RuntimeService interface {
 	Status(context.Context, *model.Config) (StatusRow, error)
 	DeleteAllowed(context.Context, *model.Config) (bool, error)
 }
+
+// MonitorClient is one human-oriented QMP session used by interactive CLI
+// commands.
 type MonitorClient interface {
 	HumanMonitorCommand(context.Context, string) (string, error)
 	Close() error
 }
 
+// App serves one qemu-manage invocation.
+//
+// Its exported fields are pre-Run injection seams for platform wiring and
+// tests; callers must finish configuring them before invoking Run. App is not
+// safe for concurrent Run calls because each invocation mutates shared debug
+// state that subcommands and delegated helpers read.
 type App struct {
 	Store                      *store.Store
 	Backends                   *backend.Registry
@@ -80,6 +96,7 @@ type App struct {
 	debugWriter         io.Writer
 }
 
+// NewApp constructs an App wired to the host's default collaborators.
 func NewApp() *App {
 	if os.Geteuid() == 0 {
 		return &App{
@@ -161,6 +178,7 @@ func usageErrorf(format string, args ...any) error {
 	return &usageError{message: fmt.Sprintf(format, args...)}
 }
 
+// Run executes one CLI invocation and returns its process exit code.
 func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	a.debug = false
 	a.debugWriter = nil

@@ -1,3 +1,8 @@
+// Command qemu-manage is the user-facing entry point for VM lifecycle
+// operations.
+//
+// It owns process-level signal handling for normal CLI invocations and leaves
+// foreground supervisor commands to install their own lifecycle policy.
 package main
 
 import (

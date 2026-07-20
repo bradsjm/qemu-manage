@@ -118,6 +118,31 @@ func TestSupervisedRunStatusAndHash(t *testing.T) {
 	}
 	instance.exit(backend.Exit{})
 }
+func TestTerminalOutcome(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		exit            backend.Exit
+		intentional     bool
+		internalFailure bool
+		forceErr        error
+		wantCode        int
+		wantText        string
+	}{
+		{name: "clean", exit: backend.Exit{}, wantCode: 0, wantText: ""},
+		{name: "backend_error_with_zero_code", exit: backend.Exit{Err: errors.New("backend failed")}, wantCode: 1, wantText: "backend failed"},
+		{name: "nonzero_code_without_text", exit: backend.Exit{Code: 7}, wantCode: 7, wantText: "backend exited with code 7"},
+		{name: "intentional", exit: backend.Exit{Code: 3, Err: errors.New("ignored")}, intentional: true, wantCode: 0, wantText: ""},
+		{name: "context_canceled_precedes_force", exit: backend.Exit{Code: 5, Err: errors.New("backend failed")}, internalFailure: true, forceErr: errors.New("force failed"), wantCode: 1, wantText: "supervisor context canceled"},
+		{name: "force_error_precedes_backend", exit: backend.Exit{Code: 5, Err: errors.New("backend failed")}, forceErr: errors.New("force failed"), wantCode: 1, wantText: "force failed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			gotCode, gotText := terminalOutcome(tt.exit, tt.intentional, tt.internalFailure, tt.forceErr)
+			if gotCode != tt.wantCode || gotText != tt.wantText {
+				t.Fatalf("terminalOutcome(...) = (%d, %q), want (%d, %q)", gotCode, gotText, tt.wantCode, tt.wantText)
+			}
+		})
+	}
+}
 
 func TestSuperviseStatusIncludesVNCEndpoint(t *testing.T) {
 	if runtime.GOOS != "darwin" {
@@ -148,6 +173,71 @@ func TestSuperviseStatusIncludesVNCEndpoint(t *testing.T) {
 	instance.exit(backend.Exit{})
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+func TestSuperviseStopDeliversTerminalResponse(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("authenticated supervisor control sockets require macOS peer credentials")
+	}
+	instance := newFakeInstance()
+	service, cfg, paths := supervisorFixture(t, instance)
+	writer := &readinessWriter{ready: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() { done <- service.Supervise(context.Background(), cfg.Name, cfg.ID, writer, SuperviseOptions{}) }()
+	select {
+	case <-writer.ready:
+	case err := <-done:
+		t.Fatalf("supervisor exited before readiness: %v", err)
+	}
+
+	progress := make(chan StopProgress, 4)
+	type stopResult struct {
+		response Response
+		err      error
+	}
+	stopDone := make(chan stopResult, 1)
+	go func() {
+		response, err := ControlWithProgress(context.Background(), paths.ControlSocket, Request{
+			Version: ProtocolVersion,
+			ID:      cfg.ID,
+			Command: CommandStop,
+		}, func(stage StopProgress) {
+			progress <- stage
+		})
+		stopDone <- stopResult{response: response, err: err}
+	}()
+
+	var stages []StopProgress
+	select {
+	case stage := <-progress:
+		stages = append(stages, stage)
+	case result := <-stopDone:
+		t.Fatalf("stop returned before progress: response=%#v err=%v", result.response, result.err)
+	case err := <-done:
+		t.Fatalf("supervisor exited before stop progress: %v", err)
+	}
+	instance.exit(backend.Exit{})
+
+	result := <-stopDone
+	if result.err != nil {
+		t.Fatalf("ControlWithProgress() failed: %v", result.err)
+	}
+	if !result.response.OK {
+		t.Fatalf("response = %#v", result.response)
+	}
+	for {
+		select {
+		case stage := <-progress:
+			stages = append(stages, stage)
+		default:
+			if len(stages) != 1 || stages[0] != StopProgressAcknowledged {
+				t.Fatalf("progress = %#v", stages)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("Supervise() failed: %v", err)
+			}
+			return
+		}
 	}
 }
 

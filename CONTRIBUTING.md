@@ -39,7 +39,7 @@ Changes to QEMU rendering, lifecycle handling, `socket_vmnet`, or launchd integr
 
 ## Documentation
 
-Update command help and the README when user-visible commands, prerequisites, defaults, storage paths, or security behavior change. Examples must use supported syntax and should be executable as written once their named input files exist.
+Update command help and the README when user-visible commands, prerequisites, defaults, storage paths, or security behavior change. Update `API.md` when monitoring behavior changes, `schema.json` when durable configuration shape or constraints change, and `SECURITY.md` when trust boundaries change. Examples must use supported syntax and should be executable as written once their named input files exist.
 
 ## Licensing contributions
 

@@ -1,3 +1,8 @@
+// Package console proxies VM serial console and monitor sockets onto local
+// terminals without leaving them wedged on connect, disconnect, or error.
+//
+// It preserves terminal state around raw-mode sessions and uses an explicit
+// local escape byte so operators can detach cleanly from private Unix sockets.
 package console
 
 import (

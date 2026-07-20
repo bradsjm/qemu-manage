@@ -1,3 +1,7 @@
+// Package store manages the secure VM path layout, atomic config persistence,
+// and the separate name and lifetime locks that prevent durable-state and
+// running-state collisions.
+
 package store
 
 import (
@@ -115,6 +119,11 @@ func (s *Store) Paths(config *model.Config) Paths {
 	}
 }
 
+// RuntimeDir returns the per-VM runtime directory. It deliberately uses only
+// the first 12 hexadecimal characters of the immutable VM ID so derived
+// Unix-socket paths stay within platform limits, while callers still validate
+// the full 32-character ID before touching lock paths and preserve the full ID
+// in persisted configuration and metadata.
 func (s *Store) RuntimeDir(id string) string {
 	prefix := id
 	if len(prefix) > 12 {

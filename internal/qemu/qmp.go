@@ -91,12 +91,17 @@ type qmpGreeting struct {
 
 var qmpDeviceLabelPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
+// qmpLifecycleEventNames is the fixed, bounded monitoring allowlist. Unknown
+// QMP events are intentionally ignored so snapshots cannot grow arbitrary
+// labels from server-defined names.
 var qmpLifecycleEventNames = map[string]string{
 	"SHUTDOWN":       "shutdown",
+	"POWERDOWN":      "powerdown",
 	"RESET":          "reset",
 	"STOP":           "stop",
 	"RESUME":         "resume",
 	"SUSPEND":        "suspend",
+	"SUSPEND_DISK":   "suspend_disk",
 	"WAKEUP":         "wakeup",
 	"GUEST_PANICKED": "guest_panicked",
 	"WATCHDOG":       "watchdog",
@@ -273,7 +278,7 @@ func (c *QMPClient) recordEvent(response qmpResponse) {
 		NoSpace   bool   `json:"nospace"`
 	}
 	if err := json.Unmarshal(response.Data, &data); err != nil ||
-		!qmpDeviceLabelPattern.MatchString(data.Device) ||
+		(data.Device != "" && !qmpDeviceLabelPattern.MatchString(data.Device)) ||
 		(data.Operation != "read" && data.Operation != "write" && data.Operation != "flush" && data.Operation != "unmap") {
 		return
 	}

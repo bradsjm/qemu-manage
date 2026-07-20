@@ -1,3 +1,6 @@
+// Package lifecycle derives conservative VM run state from authenticated
+// supervisor status, durable metadata, and lifetime locks, and coordinates
+// stop-or-delete decisions so callers never treat an unverified VM as offline.
 package lifecycle
 
 import (
@@ -24,6 +27,8 @@ type Service struct {
 	Clock func() time.Time
 }
 
+// NewService returns a lifecycle Service backed by st and using time.Now until
+// tests replace Clock.
 func NewService(st *store.Store) *Service {
 	return &Service{Store: st, Clock: time.Now}
 }

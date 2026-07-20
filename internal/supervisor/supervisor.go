@@ -1,3 +1,6 @@
+// Package supervisor owns one runtime child per VM, serves authenticated
+// control over the per-VM Unix socket, persists runtime metadata for that
+// child, and optionally exposes loopback monitoring for its live observations.
 package supervisor
 
 import (
@@ -6,18 +9,15 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/bradsjm/qemu-manage/internal/backend"
 	"github.com/bradsjm/qemu-manage/internal/model"
-	"github.com/bradsjm/qemu-manage/internal/monitoring"
 	"github.com/bradsjm/qemu-manage/internal/store"
 )
 
@@ -44,34 +44,6 @@ type SuperviseOptions struct {
 	DebugWriter io.Writer
 }
 
-type gracefulAttempt struct {
-	done     chan struct{}
-	request  chan struct{}
-	err      error
-	accepted bool
-}
-
-type supervisedRun struct {
-	mu             sync.Mutex
-	instance       backend.Instance
-	status         Status
-	exit           backend.Exit
-	done           chan struct{}
-	defaultTimeout time.Duration
-	intentional    bool
-	stopping       bool
-	terminal       bool
-
-	graceful       *gracefulAttempt
-	gracefulCancel context.CancelFunc
-
-	forceStarted bool
-	forceDone    chan struct{}
-	forceErr     error
-	handlers     sync.WaitGroup
-	connections  map[*net.UnixConn]bool
-}
-
 func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready io.Writer, options SuperviseOptions) (resultErr error) {
 	restoreUmask := setUmaskPrivate()
 	defer restoreUmask()
@@ -94,6 +66,8 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	if !supervisorIDPattern.MatchString(expectedID) {
 		return errors.New("runtime: expected ID must be 32 lowercase hexadecimal characters")
 	}
+
+	// Lock acquisition and durable runtime ownership.
 	nameLock, err := s.Store.LockName(name)
 	if err != nil {
 		return err
@@ -130,8 +104,8 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	var (
 		run             *supervisedRun
 		sink            *serialLogSink
+		monitor         *monitoringServer
 		metricsListener *net.TCPListener
-		stopMonitoring  = func() {}
 	)
 	finalized := false
 	startupIntent := make(chan struct{})
@@ -145,7 +119,8 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 			intentionalStartup = true
 		default:
 		}
-		stopMonitoring()
+		monitor.stop()
+		metricsListener = nil
 		if run != nil {
 			forceErr := run.force(context.Background())
 			resultErr = errors.Join(resultErr, forceErr)
@@ -218,23 +193,21 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 		}
 	}()
 
+	// Runtime reservation and backend startup.
 	if s.Preflight != nil {
 		if err := s.Preflight(startCtx, config, paths); err != nil {
 			return err
 		}
 	}
-	if config.Metrics != nil {
-		metricsListener, err = net.ListenTCP("tcp4", &net.TCPAddr{
-			IP: net.IPv4(127, 0, 0, 1), Port: int(config.Metrics.Port),
-		})
-		if err != nil {
-			return fmt.Errorf("runtime: bind metrics endpoint: %w", err)
-		}
-		defer metricsListener.Close()
-		if err := closeOnExec(metricsListener); err != nil {
-			return fmt.Errorf("runtime: metrics descriptor: %w", err)
-		}
+	metricsListener, err = listenMonitoring(config)
+	if err != nil {
+		return err
 	}
+	defer func() {
+		if metricsListener != nil {
+			_ = metricsListener.Close()
+		}
+	}()
 
 	startedAt := s.now()
 	debugf(options.Debug, options.DebugWriter, "runtime metadata started_at=%q boot_menu=%t", startedAt.Format(time.RFC3339Nano), options.BootMenu)
@@ -260,7 +233,11 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	if err != nil {
 		return fmt.Errorf("runtime: bind control socket: %w", err)
 	}
-	defer listener.Close()
+	defer func() {
+		if listener != nil {
+			_ = listener.Close()
+		}
+	}()
 	if err := closeOnExec(listener); err != nil {
 		return fmt.Errorf("runtime: control descriptor: %w", err)
 	}
@@ -318,54 +295,9 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	run.mu.Lock()
 	run.status = Status{State: backendState, Backend: config.Backend, SupervisorPID: os.Getpid(), BackendPID: instance.PID(), StartedAt: startedAt, RunningConfigSHA256: hash, VNC: vnc}
 	run.mu.Unlock()
-	if metricsListener != nil {
-		monitoringInstance, ok := instance.(backend.MonitoringInstance)
-		if !ok {
-			return fmt.Errorf("runtime: monitoring is unsupported by backend %q", config.Backend)
-		}
-		monitorService := monitoring.New(monitoring.Options{
-			Instance: monitoringInstance,
-			PID:      instance.PID(),
-			VM: monitoring.VMIdentity{
-				ID:           config.ID,
-				Name:         config.Name,
-				Backend:      string(config.Backend),
-				Architecture: config.Architecture,
-				CPUs:         config.CPUs,
-				MemoryMiB:    config.MemoryMiB,
-				GuestAgent:   config.GuestAgent.Enabled,
-				StartedAt:    startedAt,
-				BuildVersion: s.BuildVersion,
-			},
-			Clock: s.Clock,
-		})
-		monitorService.Seed(startCtx, string(backendState))
-		monitorContext, cancelMonitoring := context.WithCancel(context.Background())
-		collectorDone := monitorService.Start(monitorContext)
-		server := &http.Server{
-			Handler:           monitorService.Handler(),
-			ReadHeaderTimeout: 2 * time.Second,
-			WriteTimeout:      5 * time.Second,
-			IdleTimeout:       30 * time.Second,
-			MaxHeaderBytes:    8 << 10,
-		}
-		serverDone := make(chan struct{})
-		go func() {
-			defer close(serverDone)
-			if serveErr := server.Serve(metricsListener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-				_, _ = fmt.Fprintf(warningWriter, "monitoring: HTTP server failed: %v\n", serveErr)
-			}
-		}()
-		var stopOnce sync.Once
-		stopMonitoring = func() {
-			stopOnce.Do(func() {
-				cancelMonitoring()
-				_ = server.Close()
-				_ = metricsListener.Close()
-				<-collectorDone
-				<-serverDone
-			})
-		}
+	monitor, err = s.startMonitoring(startCtx, metricsListener, instance, config, startedAt, backendState, warningWriter)
+	if err != nil {
+		return err
 	}
 	select {
 	case <-run.done:
@@ -375,6 +307,8 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 		return fmt.Errorf("qemu: backend exited during startup with code %d: %v", exit.Code, exit.Err)
 	default:
 	}
+
+	// Readiness and service publication.
 	if err := ClearFailedLastExit(paths.LastExitMetadata); err != nil {
 		return err
 	}
@@ -397,14 +331,24 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	}
 	debugf(options.Debug, options.DebugWriter, "ready id=%q backend_pid=%d", expectedID, instance.PID())
 	run.mu.Unlock()
+	control := s.startControlServer(listener, expectedID, run)
 
-	serveCtx, cancelServe := context.WithCancel(context.Background())
-	serveDone := make(chan struct{})
-	go func() {
-		s.serve(serveCtx, listener, expectedID, run)
-		close(serveDone)
-	}()
-	internalFailure := false
+	// Terminal finalization.
+	internalFailure := waitForTermination(ctx, signals, lifecycleSignal, run)
+	if err := sink.finish(); err != nil {
+		_, _ = fmt.Fprintf(warningWriter, "serial log: sink failed: %v\n", err)
+	}
+	monitor.stop()
+	metricsListener = nil
+	control.stop(run)
+	listener = nil
+	forceErr := run.completedForceError()
+	resultErr = s.finalizeRun(paths, expectedID, run, internalFailure, forceErr, options)
+	finalized = true
+	return resultErr
+}
+
+func waitForTermination(ctx context.Context, signals, lifecycleSignal <-chan os.Signal, run *supervisedRun) (internalFailure bool) {
 	select {
 	case <-run.done:
 	case <-ctx.Done():
@@ -420,23 +364,11 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 		}
 	}
 	<-run.done
-	if err := sink.finish(); err != nil {
-		_, _ = fmt.Fprintf(warningWriter, "serial log: sink failed: %v\n", err)
-	}
-	stopMonitoring()
-	cancelServe()
-	_ = listener.Close()
-	<-serveDone
-	run.closeNonStopConnections()
-	run.handlers.Wait()
-	forceErr := run.completedForceError()
+	return internalFailure
+}
 
-	run.mu.Lock()
-	exit := run.exit
-	intentional := run.intentional
-	run.mu.Unlock()
-	exitCode := exit.Code
-	text := ""
+func terminalOutcome(exit backend.Exit, intentional, internalFailure bool, forceErr error) (exitCode int, text string) {
+	exitCode = exit.Code
 	if exit.Err != nil {
 		text = exit.Err.Error()
 	}
@@ -444,14 +376,27 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 		exitCode = 1
 	}
 	if internalFailure {
-		exitCode, text = 1, "supervisor context canceled"
-	} else if forceErr != nil {
-		exitCode, text = 1, forceErr.Error()
-	} else if intentional || (exit.Err == nil && exitCode == 0) {
-		exitCode, text = 0, ""
-	} else if exitCode != 0 && text == "" {
+		return 1, "supervisor context canceled"
+	}
+	if forceErr != nil {
+		return 1, forceErr.Error()
+	}
+	if intentional || (exit.Err == nil && exitCode == 0) {
+		return 0, ""
+	}
+	if exitCode != 0 && text == "" {
 		text = fmt.Sprintf("backend exited with code %d", exitCode)
 	}
+	return exitCode, text
+}
+
+func (s *Service) finalizeRun(paths store.Paths, id string, run *supervisedRun, internalFailure bool, forceErr error, options SuperviseOptions) error {
+	run.mu.Lock()
+	exit := run.exit
+	intentional := run.intentional
+	run.mu.Unlock()
+
+	exitCode, text := terminalOutcome(exit, intentional, internalFailure, forceErr)
 	cleanupErr := CleanupRuntime(paths)
 	if cleanupErr != nil {
 		exitCode = 1
@@ -461,340 +406,14 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 			text = errors.Join(errors.New(text), cleanupErr).Error()
 		}
 	}
-	if err := WriteLastExit(paths.LastExitMetadata, LastExitMetadata{Version: metadataVersion, ID: expectedID, Timestamp: s.now(), ExitCode: exitCode, Error: text}); err != nil {
+	resultErr := error(nil)
+	if err := WriteLastExit(paths.LastExitMetadata, LastExitMetadata{Version: metadataVersion, ID: id, Timestamp: s.now(), ExitCode: exitCode, Error: text}); err != nil {
 		resultErr = fmt.Errorf("runtime: write last exit: %w", err)
 	} else if exitCode != 0 {
 		resultErr = fmt.Errorf("qemu: backend exited with code %d: %s", exitCode, text)
 	}
 	debugf(options.Debug, options.DebugWriter, "terminal exit_code=%d intentional=%t internal_failure=%t forced=%t", exitCode, intentional, internalFailure, forceErr != nil)
-	finalized = true
 	return resultErr
-}
-
-func newSupervisedRun(instance backend.Instance, timeout time.Duration) *supervisedRun {
-	r := &supervisedRun{
-		instance: instance, done: make(chan struct{}), defaultTimeout: timeout,
-		forceDone: make(chan struct{}), connections: make(map[*net.UnixConn]bool),
-	}
-	go func() {
-		exit, ok := <-instance.Wait()
-		if !ok {
-			exit = backend.Exit{Code: 1, Err: errors.New("backend wait channel closed without an exit result")}
-		}
-		r.mu.Lock()
-		r.exit = exit
-		r.terminal = true
-		close(r.done)
-		r.mu.Unlock()
-	}()
-	return r
-}
-
-func (s *Service) serve(ctx context.Context, listener *net.UnixListener, id string, run *supervisedRun) {
-	for {
-		connection, err := listener.AcceptUnix()
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				continue
-			}
-		}
-		run.trackConnection(connection)
-		go func() {
-			defer run.untrackConnection(connection)
-			s.handleConnection(connection, id, run)
-		}()
-	}
-}
-
-func (s *Service) handleConnection(connection *net.UnixConn, id string, run *supervisedRun) {
-	defer connection.Close()
-	uid, err := peerUID(connection)
-	if err != nil || uid != uint32(os.Getuid()) {
-		_ = EncodeResponse(connection, failure(id, ErrorUnauthorized, "control connection is not authorized"))
-		return
-	}
-	request, err := DecodeRequest(connection)
-	if err != nil {
-		_ = EncodeResponse(connection, failure(id, ErrorInvalidRequest, err.Error()))
-		return
-	}
-	if request.ID != id {
-		_ = EncodeResponse(connection, failure(id, ErrorInvalidRequest, "request ID does not match running VM"))
-		return
-	}
-	if request.Command == CommandStop {
-		run.markStopConnection(connection)
-	}
-	switch request.Command {
-	case CommandStatus:
-		status, err := run.currentStatus(context.Background())
-		if err != nil {
-			_ = EncodeResponse(connection, failure(id, ErrorInternal, err.Error()))
-			return
-		}
-		_ = EncodeResponse(connection, &Response{Version: ProtocolVersion, ID: id, OK: true, Status: &status})
-	case CommandStop:
-		timeout := run.defaultTimeout
-		if request.TimeoutSeconds != nil {
-			timeout = time.Duration(*request.TimeoutSeconds) * time.Second
-		}
-		err := run.stopWithProgress(context.Background(), request.Force, timeout, func(stage StopProgress) {
-			progress := stage
-			_ = EncodeResponse(connection, &Response{Version: ProtocolVersion, ID: id, OK: true, Progress: &progress})
-		})
-		if err != nil {
-			code := ErrorInternal
-			if errors.Is(err, errShutdownTimeout) {
-				code = ErrorShutdownTimeout
-			}
-			_ = EncodeResponse(connection, failure(id, code, err.Error()))
-			return
-		}
-		_ = EncodeResponse(connection, &Response{Version: ProtocolVersion, ID: id, OK: true})
-	}
-}
-
-func (r *supervisedRun) currentStatus(ctx context.Context) (Status, error) {
-	r.mu.Lock()
-	if r.stopping {
-		status := r.status
-		r.mu.Unlock()
-		return status, nil
-	}
-	r.mu.Unlock()
-	state, err := r.instance.Status(ctx)
-	if err != nil {
-		return Status{}, fmt.Errorf("qemu: status: %w", err)
-	}
-	r.mu.Lock()
-	if !r.stopping {
-		r.status.State = state
-	}
-	status := r.status
-	r.mu.Unlock()
-	return status, nil
-}
-
-var errShutdownTimeout = errors.New("graceful shutdown timed out")
-
-func (r *supervisedRun) stop(ctx context.Context, force bool, timeout time.Duration) error {
-	return r.stopWithProgress(ctx, force, timeout, nil)
-}
-
-func (r *supervisedRun) stopWithProgress(ctx context.Context, force bool, timeout time.Duration, onProgress func(StopProgress)) error {
-	if force {
-		if onProgress != nil {
-			onProgress(StopProgressForcing)
-		}
-		return r.force(ctx)
-	}
-	r.mu.Lock()
-	if r.forceStarted {
-		done := r.forceDone
-		r.mu.Unlock()
-		if onProgress != nil {
-			onProgress(StopProgressForcing)
-		}
-		return r.waitForce(ctx, done)
-	}
-	attempt := r.graceful
-	if attempt == nil {
-		attempt = &gracefulAttempt{done: make(chan struct{}), request: make(chan struct{})}
-		r.graceful = attempt
-		deadlineCtx, cancel := context.WithTimeout(context.Background(), timeout)
-		r.gracefulCancel = cancel
-		go r.runGraceful(deadlineCtx, attempt)
-	}
-	forceDone := r.forceDone
-	r.mu.Unlock()
-
-	select {
-	case <-attempt.request:
-		r.mu.Lock()
-		accepted := attempt.accepted
-		r.mu.Unlock()
-		if accepted && onProgress != nil {
-			onProgress(StopProgressAcknowledged)
-		}
-	case <-forceDone:
-		if onProgress != nil {
-			onProgress(StopProgressForcing)
-		}
-		return r.waitForce(ctx, forceDone)
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-
-	select {
-	case <-attempt.done:
-		r.mu.Lock()
-		err := attempt.err
-		r.mu.Unlock()
-		return err
-	case <-forceDone:
-		if onProgress != nil {
-			onProgress(StopProgressForcing)
-		}
-		return r.waitForce(ctx, forceDone)
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (r *supervisedRun) runGraceful(ctx context.Context, attempt *gracefulAttempt) {
-	err := r.instance.RequestShutdown(ctx)
-	r.mu.Lock()
-	attempt.accepted = err == nil
-	close(attempt.request)
-	if r.forceStarted {
-		forceDone := r.forceDone
-		r.mu.Unlock()
-		<-forceDone
-		r.mu.Lock()
-		attempt.err = r.forceErr
-		close(attempt.done)
-		r.mu.Unlock()
-		return
-	}
-	if err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			err = errShutdownTimeout
-		}
-		attempt.err = err
-		if r.graceful == attempt {
-			r.graceful = nil
-			r.gracefulCancel = nil
-		}
-		close(attempt.done)
-		r.mu.Unlock()
-		return
-	}
-	r.intentional = true
-	r.stopping = true
-	r.status.State = model.RunStateStopping
-	r.mu.Unlock()
-
-	select {
-	case <-r.done:
-	case <-ctx.Done():
-		r.mu.Lock()
-		forced := r.forceStarted
-		forceDone := r.forceDone
-		r.mu.Unlock()
-		if forced {
-			<-forceDone
-			r.mu.Lock()
-			err = r.forceErr
-			r.mu.Unlock()
-		} else {
-			err = errShutdownTimeout
-		}
-	case <-r.forceDone:
-		r.mu.Lock()
-		err = r.forceErr
-		r.mu.Unlock()
-	}
-	r.mu.Lock()
-	attempt.err = err
-	close(attempt.done)
-	r.mu.Unlock()
-}
-
-func (r *supervisedRun) force(ctx context.Context) error {
-	r.mu.Lock()
-	if !r.forceStarted {
-		r.forceStarted = true
-		r.intentional = true
-		r.stopping = true
-		r.status.State = model.RunStateStopping
-		requestDone := (<-chan struct{})(nil)
-		if r.graceful != nil {
-			requestDone = r.graceful.request
-		}
-		if r.gracefulCancel != nil {
-			r.gracefulCancel()
-		}
-		go func() {
-			if requestDone != nil {
-				<-requestDone
-			}
-			err := r.instance.ForceStop(context.Background())
-			<-r.done
-			r.mu.Lock()
-			r.forceErr = err
-			close(r.forceDone)
-			r.mu.Unlock()
-		}()
-	}
-	done := r.forceDone
-	r.mu.Unlock()
-	return r.waitForce(ctx, done)
-}
-
-func (r *supervisedRun) waitForce(ctx context.Context, done <-chan struct{}) error {
-	select {
-	case <-done:
-		r.mu.Lock()
-		err := r.forceErr
-		r.mu.Unlock()
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (r *supervisedRun) completedForceError() error {
-	r.mu.Lock()
-	started := r.forceStarted
-	done := r.forceDone
-	r.mu.Unlock()
-	if !started {
-		return nil
-	}
-	<-done
-	r.mu.Lock()
-	err := r.forceErr
-	r.mu.Unlock()
-	return err
-}
-
-func (r *supervisedRun) trackConnection(connection *net.UnixConn) {
-	r.mu.Lock()
-	r.connections[connection] = false
-	r.handlers.Add(1)
-	r.mu.Unlock()
-}
-
-func (r *supervisedRun) markStopConnection(connection *net.UnixConn) {
-	r.mu.Lock()
-	if _, ok := r.connections[connection]; ok {
-		r.connections[connection] = true
-	}
-	r.mu.Unlock()
-}
-
-func (r *supervisedRun) untrackConnection(connection *net.UnixConn) {
-	r.mu.Lock()
-	delete(r.connections, connection)
-	r.mu.Unlock()
-	r.handlers.Done()
-}
-
-func (r *supervisedRun) closeNonStopConnections() {
-	r.mu.Lock()
-	for connection, stop := range r.connections {
-		if !stop {
-			_ = connection.Close()
-		}
-	}
-	r.mu.Unlock()
-}
-
-func failure(id string, code ErrorCode, message string) *Response {
-	return &Response{Version: ProtocolVersion, ID: id, OK: false, Error: &ProtocolError{Code: code, Message: message}}
 }
 
 func (s *Service) recordFailure(paths store.Paths, id string, code int, cause error) error {

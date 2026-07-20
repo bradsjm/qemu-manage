@@ -26,10 +26,11 @@ type instance struct {
 	process *os.Process
 	qgaPath string
 	useQGA  bool
+	// qgaGate serializes every guest-agent session, including monitoring probes
+	// and shutdown requests, so callers never open overlapping QGA connections.
 	qgaGate chan struct{}
-
-	qmpMu sync.RWMutex
-	qmp   *QMPClient
+	qmpMu   sync.RWMutex
+	qmp     *QMPClient
 
 	vncHost string
 	vncPort uint16

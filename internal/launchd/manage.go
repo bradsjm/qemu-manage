@@ -1,3 +1,8 @@
+// Package launchd manages per-VM launchd jobs and the privileged socket_vmnet
+// bridge services they depend on as one transactional unit.
+//
+// It keeps plist installation, bootstrap and bootout, and rollback
+// ownership-aware so QEMU itself can remain unprivileged.
 package launchd
 
 import (

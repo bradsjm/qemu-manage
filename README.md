@@ -6,7 +6,7 @@
 
 ![qemu-manage logo](./artifacts/banner.png)
 
-**A single-binary CLI for managing headless AArch64 QEMU virtual machines on Apple Silicon.** No persistent daemon, no database, no shell execution — just declarative JSON configs, per-VM supervisors, and authenticated control sockets.
+**A single-binary CLI for managing headless AArch64 QEMU virtual machines on Apple Silicon.** No central `qemu-manage` daemon, no database, no shell execution — just declarative JSON configs, per-VM supervisors, and authenticated control sockets.
 ## Table of contents
 
 - [Features](#features)
@@ -659,15 +659,17 @@ flowchart LR
     Launchd -->|"same supervisor path"| Supervisor
 
     Supervisor --> Backend["internal/backend + internal/qemu<br/>argv, QMP, optional QGA"]
+    Supervisor --> Monitoring["internal/monitoring<br/>per-VM loopback HTTP"]
+    Monitoring --> HTTP["per-VM loopback HTTP<br/>metrics + JSON status"]
+    Backend -->|"QMP/QGA/process observations"| Monitoring
     Backend --> QEMU["unprivileged QEMU child"]
     Supervisor --> Runtime["runtime metadata<br/>control socket + lifetime lock"]
-```
 
 **Key design decisions:**
 
 - **Desired vs. live state** — Durable JSON configs store only what you want. Live state comes from the supervisor and QEMU control protocols (QMP/QGA).
 - **No central service** — Every VM supervisor is an independent process. There is no shared daemon, database, or background agent — just the binary, its config files, and per-VM locks.
-- **Minimal privilege** — QEMU runs unprivileged. The only `sudo` operations are narrow LaunchDaemon installs for boot-scope autostart.
+- **Minimal privilege** — QEMU and per-VM supervisors run unprivileged. `sudo` is limited to boot-scope `qemu-manage` LaunchDaemon management and explicit `socket_vmnet` bridge provisioning.
 
 ## Development
 

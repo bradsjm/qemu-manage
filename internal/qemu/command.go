@@ -1,3 +1,5 @@
+// Package qemu renders deterministic AArch64 QEMU command lines and owns the
+// concrete backend's QMP- and QGA-based process control.
 package qemu
 
 import (
@@ -14,17 +16,22 @@ import (
 
 const defaultStartTimeout = 15 * time.Second
 
-// Backend implements the QEMU backend.
+// Backend renders deterministic QEMU argv for one VM and starts the matching
+// child process implementation.
 type Backend struct {
+	// StartTimeout limits how long Start waits for the child to publish its
+	// initial readiness signals. Zero falls back to the package default.
 	StartTimeout time.Duration
 	removeFile   func(string) error
 }
 
+// NewBackend constructs a Backend with the default startup timeout.
 func NewBackend() *Backend {
 	return &Backend{StartTimeout: defaultStartTimeout}
 }
 
-// Render produces the complete, deterministic argv used to start QEMU.
+// Render produces the complete, deterministic argv used to start QEMU for one
+// AArch64 VM configuration.
 func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths, options backend.RenderOptions) (backend.Command, error) {
 	if config == nil {
 		return backend.Command{}, fmt.Errorf("qemu: config is nil")

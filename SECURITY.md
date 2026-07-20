@@ -32,5 +32,7 @@ Reports are especially useful for behavior that could:
 - Escape manager-owned QEMU arguments
 - Follow hostile symlinks or overwrite files outside managed storage
 - Make bridged networking silently fall back to a less restrictive mode
+- Expose the unauthenticated per-VM loopback monitoring endpoint beyond intended local callers
+- Expose guest IP addresses from the monitoring `/status` route beyond intended local callers
 
 The absence of a response is not permission to disclose secrets or exploit third-party systems.

@@ -1,3 +1,7 @@
+// Package model defines the strict, versioned durable VM configuration format,
+// its validation rules, and the canonical encodings and hashes shared across
+// persistence and runtime coordination.
+
 package model
 
 import (
@@ -26,12 +30,16 @@ type configDocument struct {
 	Config
 }
 
+// Backend identifies the durable VM backend selected in Config. Validation
+// currently accepts only BackendQEMU.
 type Backend string
 
 const (
 	BackendQEMU Backend = "qemu"
 )
 
+// RestartPolicy controls whether a stopped VM should be restarted
+// automatically. Valid values are RestartNever and RestartOnFailure.
 type RestartPolicy string
 
 const (
@@ -39,6 +47,8 @@ const (
 	RestartOnFailure RestartPolicy = "on-failure"
 )
 
+// NetworkMode selects the guest networking implementation for the desired
+// state. Valid values are NetworkUser and NetworkSocketVMNet.
 type NetworkMode string
 
 const (
@@ -46,6 +56,8 @@ const (
 	NetworkSocketVMNet NetworkMode = "socket_vmnet"
 )
 
+// AutostartScope selects which host lifecycle may auto-start a VM. Valid
+// values are AutostartNone, AutostartBoot, and AutostartLogin.
 type AutostartScope string
 
 const (
@@ -54,6 +66,9 @@ const (
 	AutostartLogin AutostartScope = "login"
 )
 
+// RunState names the coarse runtime states reported by supervisor metadata and
+// status APIs. Valid values are RunStateStarting, RunStateRunning,
+// RunStatePaused, RunStateStopping, RunStateStopped, and RunStateFailed.
 type RunState string
 
 const (
@@ -65,6 +80,10 @@ const (
 	RunStateFailed   RunState = "failed"
 )
 
+// Config is the strict, versioned durable desired state for one VM. It
+// captures validated hardware, storage, networking, autostart, and optional
+// listener settings for persistence and hashing; authenticated live state,
+// readiness, and exit metadata are tracked outside the config document.
 type Config struct {
 	SchemaVersion          int               `json:"schema_version"`
 	ID                     string            `json:"id"`
@@ -93,6 +112,9 @@ type FirmwareConfig struct {
 	Variables string `json:"variables"`
 }
 
+// MetricsConfig enables the per-VM monitoring HTTP endpoint on 127.0.0.1. Port
+// must be in the inclusive range 1024-65535 because the listener is loopback-
+// only and never binds wildcard or external addresses.
 type MetricsConfig struct {
 	Port uint16 `json:"port"`
 }
@@ -144,6 +166,11 @@ type GuestAgentConfig struct {
 	Enabled bool `json:"enabled"`
 }
 
+// VNCConfig enables an optional VNC listener on a validated IPv4 bind address.
+// A bind of 127.0.0.1 keeps access local, 0.0.0.0 overlaps every concrete
+// IPv4 bind for conflict checks, PortTo permits QEMU's inclusive fallback
+// scan, and Password must be valid UTF-8, contain no NUL bytes, and occupy
+// 1-8 bytes even when that differs from rune count.
 type VNCConfig struct {
 	Bind           string `json:"bind"`
 	Port           uint16 `json:"port"`
@@ -369,6 +396,9 @@ func (c *Config) Validate() error {
 	if err := validateVNC(c.VNC); err != nil {
 		return err
 	}
+	if err := validateHostPortConflicts(c); err != nil {
+		return err
+	}
 	if err := validateUSB(c); err != nil {
 		return err
 	}
@@ -557,6 +587,60 @@ func validateVNC(vnc *VNCConfig) error {
 	}
 	return nil
 }
+
+func tcpBindAddressesOverlap(first, second string) bool {
+	return first == second || first == "0.0.0.0" || second == "0.0.0.0"
+}
+
+func validateHostPortConflicts(c *Config) error {
+	for i, forward := range c.Network.Forwards {
+		if forward.Protocol != "tcp" {
+			continue
+		}
+		for earlier := range i {
+			previous := c.Network.Forwards[earlier]
+			if previous.Protocol != "tcp" {
+				continue
+			}
+			if forward.HostPort == previous.HostPort && tcpBindAddressesOverlap(forward.HostAddress, previous.HostAddress) {
+				return configError(
+					"network forward %d on %s conflicts with network forward %d on %s for tcp port %d",
+					i,
+					forward.HostAddress,
+					earlier,
+					previous.HostAddress,
+					forward.HostPort,
+				)
+			}
+		}
+	}
+	if c.Metrics != nil {
+		for i, forward := range c.Network.Forwards {
+			if forward.Protocol != "tcp" {
+				continue
+			}
+			if c.Metrics.Port == forward.HostPort && tcpBindAddressesOverlap("127.0.0.1", forward.HostAddress) {
+				return configError("metrics port %d conflicts with network forward %d on %s", c.Metrics.Port, i, forward.HostAddress)
+			}
+		}
+		if c.VNC != nil && c.VNC.Port == c.VNC.PortTo && c.Metrics.Port == c.VNC.Port && tcpBindAddressesOverlap("127.0.0.1", c.VNC.Bind) {
+			return configError("metrics port %d conflicts with vnc listener on %s", c.Metrics.Port, c.VNC.Bind)
+		}
+	}
+	if c.VNC == nil || c.VNC.Port != c.VNC.PortTo {
+		return nil
+	}
+	for i, forward := range c.Network.Forwards {
+		if forward.Protocol != "tcp" {
+			continue
+		}
+		if c.VNC.Port == forward.HostPort && tcpBindAddressesOverlap(c.VNC.Bind, forward.HostAddress) {
+			return configError("vnc port %d on %s conflicts with network forward %d on %s", c.VNC.Port, c.VNC.Bind, i, forward.HostAddress)
+		}
+	}
+	return nil
+}
+
 func validKeyboardLayout(layout string) bool {
 	_, ok := keyboardLayouts[layout]
 	return ok
@@ -653,6 +737,10 @@ func CanonicalJSON(config *Config) ([]byte, error) {
 
 func CanonicalBytes(config *Config) ([]byte, error) { return CanonicalJSON(config) }
 
+// ConfigSHA256 returns the SHA-256 of the validated running configuration
+// payload. Unlike CanonicalJSON, it hashes the config without the on-disk
+// $schema annotation so the durable schema URL does not affect running-config
+// identity.
 func ConfigSHA256(config *Config) ([sha256.Size]byte, error) {
 	if err := config.Validate(); err != nil {
 		return [sha256.Size]byte{}, err

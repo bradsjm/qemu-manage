@@ -146,6 +146,9 @@ func TestQMPMonitoringQueriesAndEvents(t *testing.T) {
 		}
 		responses := []string{
 			`{"event":"SHUTDOWN"}` + "\n" +
+				`{"event":"POWERDOWN"}` + "\n" +
+				`{"event":"SUSPEND_DISK"}` + "\n" +
+				`{"event":"BLOCK_IO_ERROR","data":{"device":"","operation":"read","nospace":false,"description":"redacted"}}` + "\n" +
 				`{"event":"BLOCK_IO_ERROR","data":{"device":"disk-b","operation":"write","nospace":true,"description":"redacted"}}` + "\n" +
 				`{"return":{"status":"guest-panicked","unknown":true},"id":%d}` + "\n",
 			`{"return":[{"device":"disk-b","stats":{"rd_bytes":0,"wr_operations":2,"rd_total_time_ns":1000000000},"idle_time_ns":0,"unknown":true},{"device":"","stats":{}},{"device":"disk-a","stats":{"unmap_bytes":3,"failed_rd_operations":0}}],"id":%d}` + "\n",
@@ -200,11 +203,29 @@ func TestQMPMonitoringQueriesAndEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if events.Lifecycle["shutdown"] != 1 || events.Lifecycle["reset"] != 0 {
-		t.Fatalf("lifecycle events = %#v", events.Lifecycle)
+	wantLifecycle := map[string]uint64{
+		"shutdown":       1,
+		"powerdown":      1,
+		"reset":          0,
+		"stop":           0,
+		"resume":         0,
+		"suspend":        0,
+		"suspend_disk":   1,
+		"wakeup":         0,
+		"guest_panicked": 0,
+		"watchdog":       0,
 	}
-	if len(events.BlockIO) != 1 || events.BlockIO[0].Device != "disk-b" ||
-		events.BlockIO[0].Operation != "write" || !events.BlockIO[0].NoSpace || events.BlockIO[0].Count != 1 {
+	if len(events.Lifecycle) != len(wantLifecycle) {
+		t.Fatalf("lifecycle event count = %d, want %d (%#v)", len(events.Lifecycle), len(wantLifecycle), events.Lifecycle)
+	}
+	for event, want := range wantLifecycle {
+		if got := events.Lifecycle[event]; got != want {
+			t.Fatalf("lifecycle %q = %d, want %d (%#v)", event, got, want, events.Lifecycle)
+		}
+	}
+	if len(events.BlockIO) != 2 ||
+		events.BlockIO[0].Device != "" || events.BlockIO[0].Operation != "read" || events.BlockIO[0].NoSpace || events.BlockIO[0].Count != 1 ||
+		events.BlockIO[1].Device != "disk-b" || events.BlockIO[1].Operation != "write" || !events.BlockIO[1].NoSpace || events.BlockIO[1].Count != 1 {
 		t.Fatalf("block I/O events = %#v", events.BlockIO)
 	}
 }
