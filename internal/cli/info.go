@@ -102,6 +102,8 @@ func (a *App) runLog(args []string, stdout io.Writer) (err error) {
 	return nil
 }
 
+// quotePOSIX wraps a shell word in single quotes and escapes embedded single
+// quotes for POSIX sh.
 func quotePOSIX(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
@@ -262,6 +264,8 @@ func writeSMBMountHelp(stdout io.Writer, hostPath string) error {
 	return err
 }
 
+// terminalReader reports whether input is an interactive terminal for prompt
+// gating.
 func terminalReader(input io.Reader) bool {
 	file, ok := input.(*os.File)
 	return ok && term.IsTerminal(int(file.Fd()))

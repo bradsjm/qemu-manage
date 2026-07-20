@@ -15,7 +15,9 @@ import (
 	"github.com/bradsjm/qemu-manage/internal/monitoring"
 )
 
+// listenMonitoring returns a loopback metrics listener or nil when metrics are disabled
 func listenMonitoring(config *model.Config) (*net.TCPListener, error) {
+	// A nil listener is the sentinel for configs that do not expose metrics.
 	if config.Metrics == nil {
 		return nil, nil
 	}
@@ -50,6 +52,8 @@ func (s *Service) startMonitoring(ctx context.Context, listener *net.TCPListener
 	if warningWriter == nil {
 		warningWriter = io.Discard
 	}
+	// Build the collector first, seed it with the current state, then start the
+	// HTTP endpoint that publishes its snapshots.
 	monitorService := monitoring.New(monitoring.Options{
 		Instance: monitoringInstance,
 		PID:      instance.PID(),
@@ -77,6 +81,7 @@ func (s *Service) startMonitoring(ctx context.Context, listener *net.TCPListener
 		MaxHeaderBytes:    8 << 10,
 	}
 	serverDone := make(chan struct{})
+	// Serve metrics in the background after the collector has started.
 	go func() {
 		defer close(serverDone)
 		if serveErr := server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
@@ -94,6 +99,8 @@ func (m *monitoringServer) stop() {
 		return
 	}
 	m.once.Do(func() {
+		// Cancel collection first, close the HTTP surfaces, then wait for both
+		// goroutines to finish before returning.
 		if m.cancel != nil {
 			m.cancel()
 		}

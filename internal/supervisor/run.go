@@ -12,6 +12,7 @@ import (
 	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
+// gracefulAttempt tracks one graceful shutdown attempt, including the request handoff and optional guest-agent path
 type gracefulAttempt struct {
 	done     chan struct{}
 	request  chan struct{}
@@ -19,6 +20,7 @@ type gracefulAttempt struct {
 	accepted bool
 }
 
+// supervisedRun tracks the full lifecycle of one supervised backend child, from startup state through shutdown and exit
 type supervisedRun struct {
 	mu             sync.Mutex
 	instance       backend.Instance
@@ -102,6 +104,8 @@ func (r *supervisedRun) stopWithProgress(ctx context.Context, force bool, timeou
 		}
 		return r.waitForce(ctx, done)
 	}
+	// Share one graceful attempt across callers so the backend sees at most one
+	// QGA/ACPI shutdown request before anyone escalates to a hard stop.
 	attempt := r.graceful
 	if attempt == nil {
 		attempt = &gracefulAttempt{done: make(chan struct{}), request: make(chan struct{})}
@@ -113,6 +117,8 @@ func (r *supervisedRun) stopWithProgress(ctx context.Context, force bool, timeou
 	forceDone := r.forceDone
 	r.mu.Unlock()
 
+	// Wait for the graceful request to be accepted, unless another caller has
+	// already escalated to the forced stop path.
 	select {
 	case <-attempt.request:
 		r.mu.Lock()
@@ -130,6 +136,8 @@ func (r *supervisedRun) stopWithProgress(ctx context.Context, force bool, timeou
 		return ctx.Err()
 	}
 
+	// Once the graceful request is in flight, wait for completion unless the
+	// shutdown has to escalate to the hard-stop path.
 	select {
 	case <-attempt.done:
 		r.mu.Lock()
@@ -147,6 +155,8 @@ func (r *supervisedRun) stopWithProgress(ctx context.Context, force bool, timeou
 }
 
 func (r *supervisedRun) runGraceful(ctx context.Context, attempt *gracefulAttempt) {
+	// RequestShutdown tries the guest agent when available and otherwise falls
+	// back to QMP system_powerdown for the ACPI path.
 	err := r.instance.RequestShutdown(ctx)
 	r.mu.Lock()
 	attempt.accepted = err == nil
@@ -220,6 +230,8 @@ func (r *supervisedRun) force(ctx context.Context) error {
 			r.gracefulCancel()
 		}
 		go func() {
+			// Once the graceful handoff is settled, ForceStop owns the backend's
+			// final hard-stop escalation.
 			if requestDone != nil {
 				// An in-flight graceful RequestShutdown must publish/close
 				// attempt.request before ForceStop begins. That handoff keeps
@@ -266,6 +278,8 @@ func (r *supervisedRun) completedForceError() error {
 	return err
 }
 
+// trackConnection records live control connections so shutdown can close any
+// non-stop clients before waiting for handlers to exit
 func (r *supervisedRun) trackConnection(connection *net.UnixConn) {
 	r.mu.Lock()
 	r.connections[connection] = false
@@ -281,6 +295,7 @@ func (r *supervisedRun) markStopConnection(connection *net.UnixConn) {
 	r.mu.Unlock()
 }
 
+// untrackConnection removes a finished control connection from the shutdown set
 func (r *supervisedRun) untrackConnection(connection *net.UnixConn) {
 	r.mu.Lock()
 	delete(r.connections, connection)
@@ -288,6 +303,8 @@ func (r *supervisedRun) untrackConnection(connection *net.UnixConn) {
 	r.handlers.Done()
 }
 
+// closeNonStopConnections drops non-stop control clients so server shutdown does
+// not hang on idle status connections
 func (r *supervisedRun) closeNonStopConnections() {
 	r.mu.Lock()
 	for connection, stop := range r.connections {

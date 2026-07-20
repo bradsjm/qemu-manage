@@ -139,6 +139,7 @@ func (s *Service) Start(ctx context.Context) <-chan struct{} {
 	return done
 }
 
+// tickSources returns the configured tick channels or package-owned ticker channels and their stop function
 func (s *Service) tickSources() (<-chan time.Time, <-chan time.Time, func()) {
 	if s.qmpTicks != nil && s.guestTicks != nil {
 		return s.qmpTicks, s.guestTicks, func() {}
@@ -250,6 +251,7 @@ func preserveSuccess(previous, current CollectorState) CollectorState {
 	return current
 }
 
+// markStale converts aging successful payloads into stale collector states once they pass their freshness window
 func markStale(snapshot *Snapshot, now time.Time) *Snapshot {
 	for key, state := range snapshot.Collectors {
 		threshold := qmpStaleAfter

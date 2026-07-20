@@ -73,6 +73,7 @@ var plistTemplate = template.Must(template.New("plist").Funcs(template.FuncMap{
 </plist>
 `))
 
+// plistData holds every template parameter needed to render one VM launchd job
 type plistData struct {
 	Label       string
 	Executable  string
@@ -168,6 +169,7 @@ func Render(cfg *model.Config, executable, workDir, stdoutLog, stderrLog, userna
 	return rendered.Bytes(), nil
 }
 
+// escapeXML safely escapes plist string data before template insertion
 func escapeXML(value string) string {
 	var escaped bytes.Buffer
 	_ = xml.EscapeText(&escaped, []byte(value))

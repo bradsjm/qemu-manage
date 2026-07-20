@@ -22,6 +22,8 @@ const (
 	quitWaitTimeout          = 5 * time.Second
 )
 
+// instance implements backend.Instance and backend.MonitoringInstance for one
+// QEMU child process
 type instance struct {
 	process *os.Process
 	qgaPath string
@@ -64,6 +66,8 @@ func (b *Backend) Start(ctx context.Context, config *model.Config, paths backend
 		return nil, fmt.Errorf("qemu: secure log: %w", err)
 	}
 
+	// Startup runs in three phases: prepare any VNC secret, fork QEMU, then
+	// wait for QMP and VNC readiness before returning the live instance.
 	secretPrepared := false
 	cleanupPreparedSecret := func(primary error) error {
 		if secretPrepared {
@@ -209,6 +213,8 @@ func waitForQMP(ctx context.Context, path string) (*QMPClient, error) {
 	}
 }
 
+// writeVNCSecret creates the password file exactly as QEMU expects: raw bytes,
+// 0600 permissions, and durable contents before launch continues.
 func writeVNCSecret(path, password string) error {
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("qemu: VNC secret path must be absolute")
@@ -250,6 +256,8 @@ func writeVNCSecret(path, password string) error {
 	return nil
 }
 
+// removeVNCSecret unlinks the temporary password file and flushes the directory
+// entry update as well as the file contents.
 func (b *Backend) removeVNCSecret(path string) error {
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("qemu: VNC secret path must be absolute")
@@ -267,6 +275,8 @@ func (b *Backend) removeVNCSecret(path string) error {
 	return nil
 }
 
+// syncDirectory flushes directory entry updates so VNC secret creation or
+// removal survives a crash after the file itself has been synced.
 func syncDirectory(path string) error {
 	directory, err := os.Open(path)
 	if err != nil {
@@ -280,6 +290,8 @@ func syncDirectory(path string) error {
 	return nil
 }
 
+// reap runs in the background to wait for QEMU exit, release shared resources,
+// and publish the final exit status exactly once.
 func (i *instance) reap(cmd *exec.Cmd, logFile *os.File) {
 	err := cmd.Wait()
 	code := 0
@@ -301,10 +313,12 @@ func (i *instance) reap(cmd *exec.Cmd, logFile *os.File) {
 	close(i.published)
 }
 
+// PID returns the QEMU child process ID.
 func (i *instance) PID() int {
 	return i.process.Pid
 }
 
+// VNCEndpoint returns the verified VNC listener address when VNC is enabled.
 func (i *instance) VNCEndpoint() (backend.VNCEndpoint, bool) {
 	if !i.hasVNC {
 		return backend.VNCEndpoint{}, false
@@ -312,6 +326,7 @@ func (i *instance) VNCEndpoint() (backend.VNCEndpoint, bool) {
 	return backend.VNCEndpoint{Host: i.vncHost, Port: i.vncPort}, true
 }
 
+// Status returns the current QMP-backed VM run state.
 func (i *instance) Status(ctx context.Context) (model.RunState, error) {
 	qmp, err := i.qmpClient()
 	if err != nil {
@@ -320,6 +335,8 @@ func (i *instance) Status(ctx context.Context) (model.RunState, error) {
 	return qmp.Status(ctx)
 }
 
+// qgaCommand serializes guest-agent calls so probes and control requests never
+// interleave on the shared QGA socket.
 func (i *instance) qgaCommand(ctx context.Context, request GuestAgentRequest) (json.RawMessage, error) {
 	select {
 	case <-ctx.Done():
@@ -346,6 +363,8 @@ func (i *instance) qgaShutdown(ctx context.Context) error {
 	return GuestShutdown(ctx, i.qgaPath)
 }
 
+// RequestShutdown asks the guest to shut down through QGA when configured,
+// falling back to QMP system_powerdown when the agent is unavailable.
 func (i *instance) RequestShutdown(ctx context.Context) error {
 	if i.useQGA {
 		qgaCtx, cancel := qgaResponsivenessContext(ctx)
@@ -376,6 +395,7 @@ func qgaResponsivenessContext(ctx context.Context) (context.Context, context.Can
 	return context.WithTimeout(ctx, timeout)
 }
 
+// ForceStop terminates QEMU once, even if multiple callers race to stop it.
 func (i *instance) ForceStop(ctx context.Context) error {
 	i.forceOnce.Do(func() {
 		defer close(i.forceDone)
@@ -392,6 +412,8 @@ func (i *instance) forceStop(ctx context.Context) error {
 	default:
 	}
 
+	// First ask QEMU to exit cleanly so it can flush state and close devices on
+	// its own before we consider a hard stop.
 	quitDelivered := false
 	if qmp, err := i.qmpClient(); err == nil {
 		quitCtx, cancel := context.WithTimeout(ctx, quitWaitTimeout)
@@ -409,6 +431,8 @@ func (i *instance) forceStop(ctx context.Context) error {
 		}
 	}
 
+	// If the graceful quit path did not produce process exit within the grace
+	// period, force termination with SIGKILL.
 	killErr := i.process.Kill()
 	if errors.Is(killErr, os.ErrProcessDone) {
 		killErr = nil
@@ -420,6 +444,7 @@ func (i *instance) forceStop(ctx context.Context) error {
 	return nil
 }
 
+// Wait returns the buffered exit publication channel for this process.
 func (i *instance) Wait() <-chan backend.Exit {
 	return i.published
 }

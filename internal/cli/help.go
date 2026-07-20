@@ -7,10 +7,12 @@ import (
 	"strings"
 )
 
+// helpTopic stores the rendered body for one help topic
 type helpTopic struct {
 	text string
 }
 
+// helpEnvVar describes one environment variable row in help output
 type helpEnvVar struct {
 	name        string
 	description string
@@ -565,10 +567,13 @@ Usage:
 `},
 }
 
+// isHelpFlag matches the supported help flag spellings
 func isHelpFlag(value string) bool {
 	return value == "-h" || value == "-help" || value == "--help"
 }
 
+// requestedHelp detects help in two phases: an explicit "help ..." topic first,
+// then generic help flags that should resolve to the inferred command topic.
 func requestedHelp(args []string) (string, bool, error) {
 	if len(args) == 0 {
 		return "", false, nil

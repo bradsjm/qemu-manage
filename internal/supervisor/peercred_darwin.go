@@ -8,6 +8,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// peerUID returns the peer UID for a Unix socket on Darwin via LOCAL_PEERCRED.
 func peerUID(conn *net.UnixConn) (uint32, error) {
 	rawConn, err := conn.SyscallConn()
 	if err != nil {

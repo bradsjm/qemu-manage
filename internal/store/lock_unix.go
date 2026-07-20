@@ -11,7 +11,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// openLock opens or creates a lock file, validates that the opened descriptor
+// still refers to an owned 0600 regular file, and only then acquires the flock
 func openLock(path string, nonblocking bool) (*Lock, bool, error) {
+	// Open or create the path without following symlinks so later validation and locking use one descriptor.
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	created := err == nil
 	if errors.Is(err, syscall.EEXIST) {
@@ -34,6 +37,7 @@ func openLock(path string, nonblocking bool) (*Lock, bool, error) {
 		}
 	}()
 
+	// Validate the opened descriptor after the open step so the locked inode is an owned 0600 regular file.
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
 		return nil, false, err
@@ -48,6 +52,7 @@ func openLock(path string, nonblocking bool) (*Lock, bool, error) {
 		return nil, false, fmt.Errorf("mode is %04o, want 0600", stat.Mode&0o777)
 	}
 
+	// Acquire the advisory flock only after the descriptor has passed validation.
 	operation := unix.LOCK_EX
 	if nonblocking {
 		operation |= unix.LOCK_NB
@@ -62,12 +67,15 @@ func openLock(path string, nonblocking bool) (*Lock, bool, error) {
 	return &Lock{file: file, path: path}, true, nil
 }
 
+// openOwnedRegular opens an existing file without following symlinks and
+// validates that the descriptor refers to an owned 0600 regular file
 func openOwnedRegular(path string) (*os.File, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
 	}
 	file := os.NewFile(uintptr(fd), path)
+	// Validate the opened descriptor before decoding or trusting file contents.
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
 		file.Close()
@@ -88,6 +96,7 @@ func openOwnedRegular(path string) (*os.File, error) {
 	return file, nil
 }
 
+// unlockFile releases the advisory flock on an opened lock file
 func unlockFile(file *os.File) error {
 	return unix.Flock(int(file.Fd()), unix.LOCK_UN)
 }

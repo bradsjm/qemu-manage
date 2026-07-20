@@ -14,6 +14,8 @@ const (
 	serialLogBufferSize       = 32 * 1024
 )
 
+// serialLogSink drains the serial FIFO and forwards it into a rotating durable
+// log file until the sink is finished or aborted
 type serialLogSink struct {
 	reader  io.ReadCloser
 	dummy   io.Closer
@@ -67,6 +69,8 @@ func (s *serialLogSink) abort() error {
 	return errors.Join(dummyErr, readerErr, copyErr)
 }
 
+// Keep copying until the FIFO closes. If durable writes fail, warn once and
+// keep draining serial output instead of blocking the VM on logging errors.
 func copySerialLog(input io.Reader, output io.WriteCloser, warningWriter io.Writer) error {
 	buffer := make([]byte, serialLogBufferSize)
 	for {
@@ -95,6 +99,8 @@ func copySerialLog(input io.Reader, output io.WriteCloser, warningWriter io.Writ
 	}
 }
 
+// rotatingSerialLog appends to the active log and renames numbered backups when
+// the active file reaches maxSize
 type rotatingSerialLog struct {
 	path       string
 	file       *os.File
@@ -103,6 +109,8 @@ type rotatingSerialLog struct {
 	maxBackups int
 }
 
+// openRotatingSerialLog validates the active log and numbered backups, removes
+// stale oversized files, and opens the active file ready for size-based rotation.
 func openRotatingSerialLog(path string, maxSize int64, maxBackups int) (*rotatingSerialLog, error) {
 	if maxSize <= 0 || maxBackups <= 0 {
 		return nil, errors.New("serial log: invalid rotation limits")

@@ -27,6 +27,7 @@ type QMPError struct {
 	Data        json.RawMessage
 }
 
+// Error returns the structured QMP error in printable form.
 func (e *QMPError) Error() string {
 	if e.Description == "" {
 		return fmt.Sprintf("QMP error %q", e.Class)
@@ -40,10 +41,12 @@ type UnexpectedStatusError struct {
 	Status string
 }
 
+// Error reports the unexpected status string returned by QMP.
 func (e *UnexpectedStatusError) Error() string {
 	return fmt.Sprintf("unexpected QMP status %q", e.Status)
 }
 
+// VNCInfo is the validated subset of query-vnc returned to callers.
 type VNCInfo struct {
 	Enabled bool
 	Host    string
@@ -89,6 +92,8 @@ type qmpGreeting struct {
 	} `json:"QMP"`
 }
 
+// qmpDeviceLabelPattern bounds the device labels we accept from monitoring
+// responses and events to QEMU's expected identifier shape.
 var qmpDeviceLabelPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
 // qmpLifecycleEventNames is the fixed, bounded monitoring allowlist. Unknown
@@ -113,12 +118,15 @@ type qmpBlockIOErrorKey struct {
 	NoSpace   bool
 }
 
+// qmpCommand is one outbound JSON-RPC request frame on the QMP stream.
 type qmpCommand struct {
 	Execute   string         `json:"execute"`
 	Arguments map[string]any `json:"arguments,omitempty"`
 	ID        int64          `json:"id"`
 }
 
+// qmpResponse captures either a command reply or an asynchronous event from
+// the shared QMP stream.
 type qmpResponse struct {
 	Return json.RawMessage `json:"return"`
 	Error  json.RawMessage `json:"error"`
@@ -134,6 +142,8 @@ func NewQMPClient(path string) (*QMPClient, error) {
 	return NewQMPClientContext(context.Background(), path)
 }
 
+// NewQMPClientContext is NewQMPClient with caller-supplied cancellation and
+// timeout control.
 func NewQMPClientContext(ctx context.Context, path string) (*QMPClient, error) {
 	callCtx, cancel := boundedQMPContext(ctx, qmpOperationTimeout)
 	defer cancel()
@@ -216,8 +226,10 @@ func (c *QMPClient) Close() error {
 	return c.conn.Close()
 }
 
+// Version returns the QEMU version advertised in the initial greeting.
 func (c *QMPClient) Version() backend.QEMUVersion { return c.version }
 
+// RawStatus returns the unmodified query-status state string from QMP.
 func (c *QMPClient) RawStatus(ctx context.Context) (string, error) {
 	result, err := c.execute(ctx, "query-status", nil)
 	if err != nil {
@@ -235,6 +247,8 @@ func (c *QMPClient) RawStatus(ctx context.Context) (string, error) {
 	return *status.Status, nil
 }
 
+// EventCounters snapshots the lifecycle and block I/O event counts accumulated
+// on this connection.
 func (c *QMPClient) EventCounters(ctx context.Context) (backend.QEMUEventCounters, error) {
 	select {
 	case <-ctx.Done():
@@ -301,6 +315,7 @@ func (c *QMPClient) Status(ctx context.Context) (model.RunState, error) {
 	}
 }
 
+// QueryVNC returns the validated query-vnc state for the current VM.
 func (c *QMPClient) QueryVNC(ctx context.Context) (VNCInfo, error) {
 	result, err := c.execute(ctx, "query-vnc", nil)
 	if err != nil {
@@ -335,6 +350,8 @@ func (c *QMPClient) QueryVNC(ctx context.Context) (VNCInfo, error) {
 	}, nil
 }
 
+// HumanMonitorCommand executes one HMP command through QMP and returns its
+// textual output.
 func (c *QMPClient) HumanMonitorCommand(ctx context.Context, commandLine string) (string, error) {
 	if strings.TrimSpace(commandLine) == "" {
 		return "", errors.New("human monitor command is empty")
@@ -357,17 +374,22 @@ func (c *QMPClient) HumanMonitorCommand(ctx context.Context, commandLine string)
 	return *output, nil
 }
 
+// SystemPowerdown asks QEMU to inject an ACPI power button event.
 func (c *QMPClient) SystemPowerdown(ctx context.Context) error {
 	_, err := c.execute(ctx, "system_powerdown", nil)
 	return err
 }
 
+// Quit asks QEMU to exit immediately through QMP.
 func (c *QMPClient) Quit(ctx context.Context) error {
 	_, err := c.execute(ctx, "quit", nil)
 	return err
 }
 
 func (c *QMPClient) execute(ctx context.Context, command string, arguments map[string]any) (json.RawMessage, error) {
+	// gate gives one caller exclusive ownership of the JSON-RPC stream so a
+	// single request can write and then drain replies without another caller
+	// consuming the matching response.
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -398,6 +420,8 @@ func (c *QMPClient) executeLocked(ctx context.Context, command string, arguments
 	}
 	defer finish()
 
+	// Tag each request with a monotonically increasing ID so the shared decode
+	// loop can distinguish our reply from asynchronous events or stale frames.
 	c.nextID++
 	id := c.nextID
 	frame, err := json.Marshal(qmpCommand{Execute: command, Arguments: arguments, ID: id})
@@ -412,6 +436,8 @@ func (c *QMPClient) executeLocked(ctx context.Context, command string, arguments
 		return nil, fmt.Errorf("write QMP command: %w", err)
 	}
 
+	// QMP multiplexes async events and command replies on the same socket, so
+	// keep draining until the response with our ID arrives.
 	for {
 		var response qmpResponse
 		if err := c.dec.Decode(&response); err != nil {
@@ -450,6 +476,8 @@ func (c *QMPClient) executeLocked(ctx context.Context, command string, arguments
 	}
 }
 
+// numericID extracts a JSON-RPC response ID only when QMP encoded it as an
+// integer.
 func numericID(raw json.RawMessage) (int64, bool) {
 	if len(raw) == 0 {
 		return 0, false
@@ -461,6 +489,9 @@ func numericID(raw json.RawMessage) (int64, bool) {
 	return id, true
 }
 
+// setContextDeadline installs the per-operation socket deadline and keeps a
+// watcher that forces an immediate timeout if the caller's context expires
+// before the current QMP operation finishes.
 func (c *QMPClient) setContextDeadline(ctx context.Context) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -499,6 +530,7 @@ type byteReader struct {
 	data []byte
 }
 
+// Read satisfies io.Reader over the remaining buffered frame bytes.
 func (r *byteReader) Read(p []byte) (int, error) {
 	if len(r.data) == 0 {
 		return 0, io.EOF

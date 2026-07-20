@@ -8,11 +8,13 @@ import (
 	"syscall"
 )
 
+// setUmaskPrivate forces supervisor-created files to default to owner-only access
 func setUmaskPrivate() func() {
 	old := syscall.Umask(0o077)
 	return func() { syscall.Umask(old) }
 }
 
+// closeOnExecFile is the *os.File helper for closeOnExec
 func closeOnExecFile(file *os.File) error {
 	if file == nil {
 		return nil

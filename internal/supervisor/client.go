@@ -37,6 +37,8 @@ func ControlWithProgress(ctx context.Context, socketPath string, request Request
 	if err := request.Validate(); err != nil {
 		return Response{}, fmt.Errorf("supervisor: %w", err)
 	}
+	// Tie the authenticated control connection to the caller's context so cancel
+	// or timeout interrupts both the write and the response stream.
 	connection, err := (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 	if err != nil {
 		return Response{}, fmt.Errorf("supervisor: connect control socket: %w", err)
@@ -52,6 +54,8 @@ func ControlWithProgress(ctx context.Context, socketPath string, request Request
 	if err := EncodeRequest(connection, &request); err != nil {
 		return Response{}, fmt.Errorf("supervisor: send control request: %w", err)
 	}
+	// Stop requests can yield progress frames before the final response, so keep
+	// reading until a non-progress terminal frame arrives.
 	reader := newFramedReader(connection)
 	for {
 		response, err := decodeResponseFrame(reader)
@@ -175,6 +179,8 @@ func validateStartOptions(options StartOptions) error {
 }
 
 func startDetached(ctx context.Context, options StartOptions) error {
+	// Fork/exec a detached supervisor and dedicate fd 3 to the one-shot readiness
+	// message that confirms startup.
 	readyReader, readyWriter, err := os.Pipe()
 	if err != nil {
 		return fmt.Errorf("supervisor: create readiness pipe: %w", err)
@@ -235,6 +241,8 @@ func startDetached(ctx context.Context, options StartOptions) error {
 func startForeground(ctx context.Context, options StartOptions) error {
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// Reuse the same ready-message protocol in-process so foreground supervision
+	// exercises the same startup handshake as the detached path.
 	reader, writer := io.Pipe()
 	result := make(chan error, 1)
 	go func() {
@@ -269,6 +277,8 @@ func detachedSupervisorArgv(options StartOptions) []string {
 	return argv
 }
 
+// awaitReady waits for the single newline-framed ready message and races it
+// against the caller's context and startup timeout
 func awaitReady(ctx context.Context, reader io.Reader, timeout time.Duration) (ReadyMessage, error) {
 	result := make(chan struct {
 		message ReadyMessage

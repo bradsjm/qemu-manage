@@ -13,6 +13,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// openSerialLogPipe creates the serial FIFO and keeps a dummy writer open so
+// the reader does not observe EOF before QEMU connects the real writer.
 func openSerialLogPipe(path string) (io.ReadCloser, io.Closer, error) {
 	if err := unix.Mkfifo(path, 0o600); err != nil {
 		return nil, nil, fmt.Errorf("serial log: create FIFO: %w", err)
@@ -39,6 +41,7 @@ func openSerialLogPipe(path string) (io.ReadCloser, io.Closer, error) {
 	return reader, dummy, nil
 }
 
+// inspectSerialLogDirectory enforces the private parent-directory invariants
 func inspectSerialLogDirectory(path string) error {
 	info, err := os.Lstat(filepath.Dir(path))
 	if err != nil {
@@ -57,6 +60,7 @@ func inspectSerialLogDirectory(path string) error {
 	return nil
 }
 
+// inspectSerialLogFile validates existing serial log files before reuse
 func inspectSerialLogFile(path string) (serialLogFileInfo, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -78,6 +82,8 @@ func inspectSerialLogFile(path string) (serialLogFileInfo, error) {
 	return serialLogFileInfo{exists: true, size: info.Size()}, nil
 }
 
+// openSecureSerialLog opens the active log and rejects files with the wrong
+// owner, type, or mode before rotation or append begins.
 func openSecureSerialLog(path string) (*os.File, int64, error) {
 	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_APPEND|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
 	if err != nil {

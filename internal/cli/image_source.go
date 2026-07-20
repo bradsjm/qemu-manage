@@ -32,6 +32,8 @@ const (
 
 var errImageBodyIdle = errors.New("image download made no progress for 2 minutes")
 
+// imageCompression records the on-wire or on-disk compression used by a source
+// image.
 type imageCompression uint8
 
 const (
@@ -40,6 +42,8 @@ const (
 	imageGzip
 )
 
+// imageSourceSpec describes either a local source path or a remote image URL
+// plus the compression inferred for that source.
 type imageSourceSpec struct {
 	localPath   string
 	remoteURL   *url.URL
@@ -188,6 +192,8 @@ func (a *App) materializeImage(ctx context.Context, source imageSourceSpec, vmDi
 	return destination, true, nil
 }
 
+// imageProgressReader forwards reads while counting transferred bytes into a
+// progress tracker.
 type imageProgressReader struct {
 	reader  io.Reader
 	tracker *progress.Tracker
@@ -201,6 +207,8 @@ func (r imageProgressReader) Read(buffer []byte) (int, error) {
 	return n, err
 }
 
+// imageIdleReader watches a download body for stalled reads and closes the body
+// so the blocked reader returns a timeout-style failure.
 type imageIdleReader struct {
 	ctx      context.Context
 	reader   io.Reader
@@ -220,6 +228,8 @@ func newImageIdleReader(ctx context.Context, body io.ReadCloser) *imageIdleReade
 		progress: make(chan struct{}, 1),
 		done:     make(chan struct{}),
 	}
+	// Watch progress notifications in the background and turn a quiet body into a
+	// read failure after the idle timeout elapses.
 	go reader.watch()
 	return reader
 }
@@ -250,11 +260,14 @@ func (r *imageIdleReader) Stop() {
 }
 
 func (r *imageIdleReader) watch() {
+	// Arm one timer and reset it after each successful read; expiry means the body
+	// stopped making forward progress.
 	timer := time.NewTimer(imageBodyIdleTimeout)
 	defer timer.Stop()
 	for {
 		select {
 		case <-r.progress:
+			// Drain an already-fired timer before rearming it to avoid a stale timeout.
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -266,6 +279,8 @@ func (r *imageIdleReader) watch() {
 			r.fail(context.Cause(r.ctx))
 			return
 		case <-timer.C:
+			// Closing the body here unblocks the active Read so callers observe the idle
+			// failure promptly.
 			r.fail(errImageBodyIdle)
 			return
 		case <-r.done:
@@ -281,6 +296,8 @@ func (r *imageIdleReader) fail(err error) {
 	_ = r.body.Close()
 }
 
+// decompressedImageReader wraps input with the decompressor implied by
+// compression and returns any closer that wrapper needs.
 func decompressedImageReader(input io.Reader, compression imageCompression) (io.Reader, func() error, error) {
 	switch compression {
 	case imageUncompressed:
@@ -299,6 +316,8 @@ func decompressedImageReader(input io.Reader, compression imageCompression) (io.
 	}
 }
 
+// publicURL redacts credentials, paths, and query strings so progress and
+// errors only show a stable scheme-and-host label.
 func publicURL(source *url.URL) string {
 	return source.Scheme + "://" + source.Host + "/..."
 }

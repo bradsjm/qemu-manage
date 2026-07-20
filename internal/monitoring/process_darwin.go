@@ -20,8 +20,10 @@ const (
 	procPIDTaskInfo       = uintptr(4)
 )
 
+// procInfoCall matches the proc_info syscall ABI used by collectProcessWith tests
 type procInfoCall func(trap, a1, a2, a3, a4, a5, a6 uintptr) (uintptr, uintptr, syscall.Errno)
 
+// rusageInfoV4 mirrors the macOS RUSAGE_INFO_V4 payload returned by proc_info
 type rusageInfoV4 struct {
 	UUID                         [16]byte
 	UserTime                     uint64
@@ -91,6 +93,7 @@ func collectProcessWith(pid int, call procInfoCall) (ProcessStats, error) {
 		return ProcessStats{}, fmt.Errorf("process stats: invalid PID %d", pid)
 	}
 	var usage rusageInfoV4
+	// First fetch the rusage payload for cumulative CPU, memory, wakeup, and I/O counters.
 	_, _, errno := call(
 		unix.SYS_PROC_INFO,
 		procInfoCallPIDRUsage,
@@ -106,6 +109,7 @@ func collectProcessWith(pid int, call procInfoCall) (ProcessStats, error) {
 	}
 
 	var task procTaskInfo
+	// Then fetch PROC_PIDTASKINFO for task-specific counters including the live thread count.
 	copied, _, errno := call(
 		unix.SYS_PROC_INFO,
 		procInfoCallPIDInfo,

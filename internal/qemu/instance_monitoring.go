@@ -7,6 +7,7 @@ import (
 	"github.com/bradsjm/qemu-manage/internal/backend"
 )
 
+// CollectQEMU gathers QMP-backed host observations for the running VM.
 func (i *instance) CollectQEMU(ctx context.Context) backend.QEMUObservation {
 	qmp, err := i.qmpClient()
 	if err != nil {
@@ -29,6 +30,8 @@ func (i *instance) CollectQEMU(ctx context.Context) backend.QEMUObservation {
 	return observation
 }
 
+// qmpObservationResult keeps timeouts separate from protocol or transport
+// failures so monitoring can distinguish a slow VM from a broken QMP session.
 func qmpObservationResult(err error) backend.ObservationResult {
 	if err == nil {
 		return backend.ObservationResult{}

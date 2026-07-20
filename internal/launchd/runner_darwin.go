@@ -7,6 +7,8 @@ import (
 	"os/exec"
 )
 
+// platformRunner wraps exec.CommandContext and optionally prefixes privileged
+// commands with sudo on Darwin
 type platformRunner struct{}
 
 func newPlatformRunner() Runner { return platformRunner{} }

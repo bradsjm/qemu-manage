@@ -31,6 +31,8 @@ import (
 // 15-second QMP readiness window, with ten seconds for process setup and IPC.
 const supervisorReadyTimeout = 45 * time.Second
 
+// runtimeAdapter adapts lifecycle.Service to the narrower RuntimeService
+// interface consumed by CLI status and delete checks.
 type runtimeAdapter struct {
 	service *lifecycle.Service
 }
@@ -289,11 +291,15 @@ func withConnectionProgress(output io.Writer, interactive bool, message string, 
 	done := make(chan error, 1)
 	completed := false
 	progressErr := withWaitingProgress(output, true, interactive, message, func() error {
+		// Dial in the background so the progress spinner can wait for either early
+		// readiness or terminal failure.
 		go func() {
 			done <- connect(func() {
 				readyOnce.Do(func() { close(ready) })
 			})
 		}()
+		// Stop the waiting progress as soon as setup reports the connection is ready;
+		// the full interactive session continues until connect returns.
 		select {
 		case err := <-done:
 			completed = true
@@ -359,6 +365,8 @@ func (a *App) runConsole(ctx context.Context, args []string, stdin io.Reader, st
 	})
 }
 
+// openActiveSerialLog opens the current serial log after re-validating that the
+// active path is the expected owner-only regular file for replay and tailing.
 func openActiveSerialLog(path string) (file *os.File, err error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
@@ -389,6 +397,8 @@ func openActiveSerialLog(path string) (file *os.File, err error) {
 	return openedFile, nil
 }
 
+// tailActiveSerialLog reads at most maxBytes from the active serial log and then
+// trims that window to the last maxLines complete lines.
 func tailActiveSerialLog(path string, maxLines int, maxBytes int64) ([]byte, error) {
 	if maxLines <= 0 || maxBytes <= 0 {
 		return nil, nil
@@ -474,6 +484,8 @@ func (a *App) runMonitor(ctx context.Context, args []string, stdin io.Reader, st
 		return errors.New("runtime: monitor is unavailable")
 	}
 	var client MonitorClient
+	// Dial QMP first so one-shot monitor commands fail before entering the control
+	// path.
 	if err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Connecting to QEMU monitor", func() error {
 		var err error
 		client, err = a.DialQMP(ctx, paths.QMPCommand)
@@ -484,11 +496,14 @@ func (a *App) runMonitor(ctx context.Context, args []string, stdin io.Reader, st
 	}); err != nil {
 		return err
 	}
+	// Always close the QMP client after the command path finishes.
 	defer func() {
 		if closeErr := client.Close(); closeErr != nil && err == nil {
 			err = fmt.Errorf("runtime: monitor: %w", closeErr)
 		}
 	}()
+	// Run one human monitor command, print its response, and normalize the trailing
+	// newline for terminal callers.
 	output, err := client.HumanMonitorCommand(ctx, rest[0])
 	if err != nil {
 		return fmt.Errorf("runtime: monitor: %w", err)
@@ -683,6 +698,8 @@ func (a *App) loadQEMUConfig(name string) (*model.Config, error) {
 	return a.Store.Load(name)
 }
 
+// backendPaths projects store-managed paths into the runtime/backend view
+// shared by diagnostics and supervision.
 func backendPaths(paths store.Paths) backend.RuntimePaths {
 	return backend.RuntimePaths{
 		VMDir:         paths.VMDir,

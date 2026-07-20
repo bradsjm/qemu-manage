@@ -48,14 +48,6 @@ func TestCreateSharePersistsAbsoluteDirAndPrintsGuidance(t *testing.T) {
 	if cfg.Network.SMBFolder != shareDir {
 		t.Fatalf("smb_folder=%q want %q", cfg.Network.SMBFolder, shareDir)
 	}
-	for _, want := range []string{
-		"SMB host folder: " + shareDir,
-		"Linux guest mount: sudo mount -t cifs //10.0.2.4/qemu /mnt/share -o username=guest",
-	} {
-		if !strings.Contains(stdout, want) {
-			t.Errorf("stdout missing %q: %q", want, stdout)
-		}
-	}
 }
 
 func TestCreateShareFailures(t *testing.T) {

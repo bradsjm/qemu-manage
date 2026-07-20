@@ -25,6 +25,7 @@ type pingCall struct {
 	at       time.Time
 }
 
+// Handler returns the monitoring HTTP handler for the current VM snapshot service
 func (s *Service) Handler() http.Handler { return http.HandlerFunc(s.serveHTTP) }
 
 func (s *Service) serveHTTP(response http.ResponseWriter, request *http.Request) {
@@ -57,6 +58,7 @@ func (s *Service) serveHTTP(response http.ResponseWriter, request *http.Request)
 	}
 }
 
+// writeJSON marshals a JSON response body and falls back to a fixed render-failure payload
 func (s *Service) writeJSON(response http.ResponseWriter, request *http.Request, status int, value any) {
 	body, err := json.Marshal(value)
 	if err != nil {
@@ -66,6 +68,7 @@ func (s *Service) writeJSON(response http.ResponseWriter, request *http.Request,
 	s.write(response, request, status, jsonContentType, append(body, '\n'))
 }
 
+// write sets the content headers and writes the body unless the caller issued HEAD
 func (*Service) write(response http.ResponseWriter, request *http.Request, status int, contentType string, body []byte) {
 	response.Header().Set("Content-Type", contentType)
 	response.Header().Set("Content-Length", strconv.Itoa(len(body)))
@@ -295,6 +298,7 @@ func (s *Service) renderPing(ctx context.Context, snapshot *Snapshot) (int, map[
 	return pingFailure(http.StatusServiceUnavailable, code, message, call.at)
 }
 
+// joinPing coalesces concurrent /ping requests onto one in-flight guest probe so only the first caller starts work
 func (s *Service) joinPing(requestContext context.Context) *pingCall {
 	s.pingMu.Lock()
 	if s.ping != nil {

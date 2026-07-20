@@ -17,6 +17,8 @@ type controlServer struct {
 func (s *Service) startControlServer(listener *net.UnixListener, id string, run *supervisedRun) *controlServer {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	// Serve the control socket in the background so startup can return while the
+	// listener continues accepting authenticated requests.
 	go func() {
 		defer close(done)
 		s.serve(ctx, listener, id, run)
@@ -64,6 +66,7 @@ func (s *Service) serve(ctx context.Context, listener *net.UnixListener, id stri
 
 func (s *Service) handleConnection(connection *net.UnixConn, id string, run *supervisedRun) {
 	defer connection.Close()
+	// Authenticate the peer before decoding or dispatching any control command.
 	uid, err := peerUID(connection)
 	if err != nil || uid != uint32(os.Getuid()) {
 		_ = EncodeResponse(connection, failure(id, ErrorUnauthorized, "control connection is not authorized"))
@@ -81,6 +84,7 @@ func (s *Service) handleConnection(connection *net.UnixConn, id string, run *sup
 	if request.Command == CommandStop {
 		run.markStopConnection(connection)
 	}
+	// Dispatch the authenticated request against the current supervised run.
 	switch request.Command {
 	case CommandStatus:
 		status, err := run.currentStatus(context.Background())
@@ -110,6 +114,7 @@ func (s *Service) handleConnection(connection *net.UnixConn, id string, run *sup
 	}
 }
 
+// failure builds a protocol error response
 func failure(id string, code ErrorCode, message string) *Response {
 	return &Response{Version: ProtocolVersion, ID: id, OK: false, Error: &ProtocolError{Code: code, Message: message}}
 }

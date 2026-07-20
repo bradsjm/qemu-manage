@@ -182,10 +182,14 @@ func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths, optio
 	return backend.Command{Path: commandPath, Args: args}, nil
 }
 
+// keyval escapes literal commas for QEMU's key=value option syntax, where a
+// single comma separates fields
 func keyval(value string) string {
 	return strings.ReplaceAll(value, ",", ",,")
 }
 
+// sortedForwards returns a sorted copy so rendered port-forward argv stays
+// deterministic regardless of config input order
 func sortedForwards(forwards []model.PortForward) []model.PortForward {
 	result := append([]model.PortForward(nil), forwards...)
 	sort.Slice(result, func(i, j int) bool {
@@ -204,6 +208,8 @@ func sortedForwards(forwards []model.PortForward) []model.PortForward {
 	return result
 }
 
+// validateSocketVMNet rejects network features this backend cannot express and
+// enforces absolute helper paths before argv rendering
 func validateSocketVMNet(network model.NetworkConfig) (*model.SocketVMNetConfig, error) {
 	if len(network.Forwards) != 0 {
 		return nil, fmt.Errorf("qemu: socket_vmnet network cannot have port forwards")

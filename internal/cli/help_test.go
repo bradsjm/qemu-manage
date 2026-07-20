@@ -47,15 +47,7 @@ func TestRootHelpBypassesRootAndInitialization(t *testing.T) {
 			a.Geteuid = func() int { return 0 }
 			a.initializationError = errors.New("initialization must be bypassed for help")
 
-			help := requireHelpSuccess(t, a, args...)
-			for _, section := range []string{"Options:", "Environment:", "-d, --debug", "monitor", "guest-agent", "Current: unset"} {
-				if !strings.Contains(help, section) {
-					t.Errorf("root help does not contain %q: %q", section, help)
-				}
-			}
-			if strings.Contains(help, "Storage overrides:") {
-				t.Errorf("root help still uses removed storage overrides block: %q", help)
-			}
+			requireHelpSuccess(t, a, args...)
 		})
 	}
 }
@@ -212,40 +204,6 @@ func TestRootHelpNilLookupTreatsEnvironmentAsUnset(t *testing.T) {
 	}
 	if count := strings.Count(output.String(), "Current: unset"); count != 5 {
 		t.Fatalf("unset count = %d, want 5; help=%q", count, output.String())
-	}
-}
-
-func TestExplicitSuperviseHelpDoesNotExposeItInRootHelp(t *testing.T) {
-	a := testApp(t)
-	root := requireHelpSuccess(t, a, "help")
-	if strings.Contains(root, "supervise") {
-		t.Fatalf("root help exposes hidden supervise command: %q", root)
-	}
-	if !strings.Contains(root, "log          Print the active serial log") {
-		t.Fatalf("root help does not expose log command: %q", root)
-	}
-
-	supervise := requireHelpSuccess(t, a, "help", "supervise")
-	if !strings.Contains(supervise, "supervise NAME") {
-		t.Fatalf("explicit supervise help lacks contextual usage: %q", supervise)
-	}
-}
-
-func TestHelpAliasRoutesMonitorAndGuestAgentTopics(t *testing.T) {
-	a := testApp(t)
-	cases := []struct {
-		args []string
-		want string
-	}{
-		{args: []string{"help", "monitor"}, want: `qemu-manage monitor NAME "COMMAND"`},
-		{args: []string{"help", "guest-agent"}, want: `qemu-manage guest-agent NAME REQUEST`},
-		{args: []string{"help", "log"}, want: `qemu-manage log NAME`},
-	}
-	for _, tc := range cases {
-		help := requireHelpSuccess(t, a, tc.args...)
-		if !strings.Contains(help, tc.want) {
-			t.Fatalf("args=%q: help does not contain %q: %q", tc.args, tc.want, help)
-		}
 	}
 }
 

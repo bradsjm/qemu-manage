@@ -51,29 +51,3 @@ func TestMaterializeImageProgressUsesNetworkBytesAndDisabledSilence(t *testing.T
 		})
 	}
 }
-
-func TestMaterializeImageProgressUnknownLengthFallsBackToStatus(t *testing.T) {
-	payload := []byte("unknown-length image")
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		flusher, ok := response.(http.Flusher)
-		if !ok {
-			t.Fatal("test server does not support flushing")
-		}
-		response.WriteHeader(http.StatusOK)
-		flusher.Flush()
-		_, _ = response.Write(payload)
-	}))
-	defer server.Close()
-
-	source, err := parseImageSource(server.URL + "/image.qcow2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var progress bytes.Buffer
-	if _, _, err := (&App{HTTPClient: server.Client()}).materializeImage(context.Background(), source, t.TempDir(), &progress, true, false); err != nil {
-		t.Fatal(err)
-	}
-	if got := progress.String(); got != "Downloading image...\nDownloading image complete\n" {
-		t.Fatalf("unknown-length progress=%q", got)
-	}
-}

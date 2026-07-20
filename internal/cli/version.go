@@ -14,6 +14,7 @@ const repositoryURL = "https://github.com/bradsjm/qemu-manage"
 // releaseVersion is populated from the release tag by the release build.
 var releaseVersion string
 
+// buildInfo holds the build metadata reported by the version command.
 type buildInfo struct {
 	version    string
 	revision   string
@@ -22,6 +23,8 @@ type buildInfo struct {
 	goVersion  string
 }
 
+// currentBuildInfo reports embedded build metadata, falling back to
+// development defaults when release data is unavailable.
 func currentBuildInfo() buildInfo {
 	info := buildInfo{
 		version:    "devel",
@@ -55,6 +58,7 @@ func currentBuildInfo() buildInfo {
 	return info
 }
 
+// writeVersion prints the build metadata table
 func writeVersion(output io.Writer) error {
 	info := currentBuildInfo()
 	rows := []table.Row{

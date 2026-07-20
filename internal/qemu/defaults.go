@@ -6,6 +6,8 @@ import (
 	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
+// firmwareInstallation describes one install layout whose code image must pair
+// with one of the candidate variables images.
 type firmwareInstallation struct {
 	codePath      string
 	variablesPath []string
@@ -42,6 +44,8 @@ var firmwareInstallations = []firmwareInstallation{
 	},
 }
 
+// socketVMNetInstallation is one packaged socket_vmnet client, daemon, and
+// socket path layout to probe as a unit.
 type socketVMNetInstallation struct {
 	clientPath string
 	daemonPath string
@@ -147,10 +151,14 @@ func discoverSocketVMNet(installations []socketVMNetInstallation) *model.SocketV
 	}
 }
 
+// executableAvailable reports whether doctor-style executable validation would
+// accept path as a usable helper.
 func executableAvailable(path string) bool {
 	return artifactCheck("default", path, path, true).Status == CheckPass
 }
 
+// readableRegularFile reports whether path can be opened and resolves to a
+// regular file.
 func readableRegularFile(path string) bool {
 	file, err := os.Open(path)
 	if err != nil {

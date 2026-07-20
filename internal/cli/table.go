@@ -7,6 +7,8 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 )
 
+// writeTable renders headers and rows in the CLI's consistent light table style
+// without color codes.
 func writeTable(output io.Writer, headers table.Row, rows []table.Row) error {
 	writer := table.NewWriter()
 	style := table.StyleLight

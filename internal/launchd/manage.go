@@ -29,6 +29,8 @@ type Runner interface {
 	Run(ctx context.Context, privileged bool, path string, args ...string) ([]byte, error)
 }
 
+// Manager coordinates launchd plist installation, loading, and rollback for VM
+// autostart jobs and related privileged helpers.
 type Manager struct {
 	Store                  *store.Store
 	Runner                 Runner
@@ -57,13 +59,18 @@ type StatusReport struct {
 	Boot            DomainStatus         `json:"boot"`
 }
 
+// domain selects which launchd namespace owns a VM job
 type domain int
 
+// Login jobs live in the per-user GUI domain; system jobs live in the root
+// bootstrap domain.
 const (
 	domainLogin domain = iota
 	domainSystem
 )
 
+// pathInspection captures whether a managed path exists and, when present, the
+// bytes used to compare it against the expected plist contents
 type pathInspection struct {
 	Path    string
 	Present bool
@@ -288,6 +295,8 @@ func (m *Manager) domainTarget(d domain) string {
 }
 
 func (m *Manager) installCandidate(ctx context.Context, d domain, candidate, destination string) error {
+	// System plists rely on /usr/bin/install to set root:wheel ownership and
+	// replace the destination in one privileged step.
 	if d == domainSystem {
 		output, err := m.runner().Run(ctx, true, "/usr/bin/install", "-o", "root", "-g", "wheel", "-m", "0644", candidate, destination)
 		if err != nil {
@@ -302,6 +311,8 @@ func (m *Manager) installCandidate(ctx context.Context, d domain, candidate, des
 	if err != nil {
 		return fmt.Errorf("launchd: read candidate: %w", err)
 	}
+	// User plists are published by creating a new file, writing the full
+	// contents, syncing, and only then leaving it in place.
 	file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return fmt.Errorf("launchd: install %s: %w", destination, err)
@@ -339,6 +350,7 @@ func (m *Manager) removePlist(ctx context.Context, d domain, path string) error 
 	return nil
 }
 
+// commandError appends trimmed command output when available
 func commandError(action string, output []byte, err error) error {
 	text := strings.TrimSpace(string(output))
 	if text == "" {

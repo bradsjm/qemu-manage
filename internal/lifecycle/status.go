@@ -177,6 +177,7 @@ func (s *Service) DeleteAllowed(ctx context.Context, cfg *model.Config) error {
 	}
 }
 
+// controlUnavailable reports transport failures that mean authenticated supervisor control could not be reached
 func controlUnavailable(err error) bool {
 	var networkErr *net.OpError
 	return errors.As(err, &networkErr) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)

@@ -30,6 +30,7 @@ type RuntimePaths struct {
 // paths are returned after filepath cleaning.
 func ResolvePath(vmDir, configuredPath string) string {
 	if filepath.IsAbs(configuredPath) {
+		// Clean absolute inputs so configuration cannot preserve redundant path components.
 		return filepath.Clean(configuredPath)
 	}
 	return filepath.Join(vmDir, configuredPath)

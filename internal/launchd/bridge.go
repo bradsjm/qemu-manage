@@ -56,6 +56,8 @@ var socketVMNetBridgePlistTemplate = template.Must(template.New("socket_vmnet_br
 </plist>
 `))
 
+// socketVMNetBridgePlistData holds the template fields for one bridged
+// socket_vmnet LaunchDaemon plist
 type socketVMNetBridgePlistData struct {
 	Label       string
 	DaemonPath  string
@@ -165,6 +167,7 @@ func (m *Manager) ProvisionSocketVMNetBridge(ctx context.Context, sourceClientPa
 	return config, nil
 }
 
+// validSocketVMNetInterface enforces the interface-name character and length rules
 func validSocketVMNetInterface(name string) bool {
 	if name == "" || len(name) > 15 {
 		return false
@@ -182,6 +185,8 @@ func validSocketVMNetInterface(name string) bool {
 	return true
 }
 
+// validateSocketVMNetExecutable resolves an absolute path and verifies that it
+// points to an executable regular file.
 func validateSocketVMNetExecutable(path string, kind string) (string, error) {
 	if !filepath.IsAbs(path) {
 		return "", fmt.Errorf("socket_vmnet: %s path must be absolute", kind)
@@ -214,6 +219,8 @@ func resolveSocketVMNetDaemon(sourceClientPath string) (string, error) {
 	return "", fmt.Errorf("socket_vmnet: Homebrew daemon not found: %w", lastErr)
 }
 
+// socketVMNetInstallRoot returns the root-owned prefix that receives the
+// installed socket_vmnet binaries
 func (m *Manager) socketVMNetInstallRoot() string {
 	if m != nil && m.SocketVMNetInstallRoot != "" {
 		return m.SocketVMNetInstallRoot
@@ -221,6 +228,7 @@ func (m *Manager) socketVMNetInstallRoot() string {
 	return socketVMNetInstallRootDefault
 }
 
+// socketVMNetRunRoot returns the runtime directory that holds bridged sockets
 func (m *Manager) socketVMNetRunRoot() string {
 	if m != nil && m.SocketVMNetRunRoot != "" {
 		return m.SocketVMNetRunRoot
@@ -228,6 +236,7 @@ func (m *Manager) socketVMNetRunRoot() string {
 	return socketVMNetRunRootDefault
 }
 
+// socketVMNetSystemDir returns the LaunchDaemons directory for root-scoped bridge plists
 func (m *Manager) socketVMNetSystemDir() string {
 	if m != nil && m.SystemDir != "" {
 		return m.SystemDir
@@ -235,6 +244,7 @@ func (m *Manager) socketVMNetSystemDir() string {
 	return "/Library/LaunchDaemons"
 }
 
+// socketVMNetBridgeWaiter returns the readiness probe, letting tests override it
 func (m *Manager) socketVMNetBridgeWaiter() func(context.Context, string) error {
 	if m != nil && m.WaitForSocketVMNet != nil {
 		return m.WaitForSocketVMNet
@@ -242,26 +252,32 @@ func (m *Manager) socketVMNetBridgeWaiter() func(context.Context, string) error 
 	return waitForSocketVMNetReady
 }
 
+// socketVMNetBinDir groups the installed socket_vmnet binaries under one prefix
 func (m *Manager) socketVMNetBinDir() string {
 	return filepath.Join(m.socketVMNetInstallRoot(), "bin")
 }
 
+// socketVMNetClientPath returns the managed client binary path
 func (m *Manager) socketVMNetClientPath() string {
 	return filepath.Join(m.socketVMNetBinDir(), "socket_vmnet_client")
 }
 
+// socketVMNetDaemonPath returns the managed daemon binary path
 func (m *Manager) socketVMNetDaemonPath() string {
 	return filepath.Join(m.socketVMNetBinDir(), "socket_vmnet")
 }
 
+// socketVMNetBridgeSocketPath names the per-interface bridged socket
 func (m *Manager) socketVMNetBridgeSocketPath(interfaceName string) string {
 	return filepath.Join(m.socketVMNetRunRoot(), "socket_vmnet.bridged."+interfaceName)
 }
 
+// socketVMNetBridgePlistPath returns the LaunchDaemon plist path for one bridge
 func (m *Manager) socketVMNetBridgePlistPath(interfaceName string) string {
 	return filepath.Join(m.socketVMNetSystemDir(), socketVMNetBridgeLabel(interfaceName)+".plist")
 }
 
+// socketVMNetBridgeLabel builds the stable launchd label for one bridge
 func socketVMNetBridgeLabel(interfaceName string) string {
 	return "io.github.bradsjm.qemu-manage.socket_vmnet.bridged." + interfaceName
 }

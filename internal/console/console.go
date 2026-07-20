@@ -162,14 +162,18 @@ func copyLocalInput(prefix string, conn net.Conn, stdin io.Reader, results chan<
 	}
 }
 
+// readDeadliner is the optional cooperative deadline interface for local input
 type readDeadliner interface {
 	SetReadDeadline(time.Time) error
 }
 
+// writeDeadliner is the optional cooperative deadline interface for local output
 type writeDeadliner interface {
 	SetWriteDeadline(time.Time) error
 }
 
+// setReadDeadline uses a reader-provided deadline hook when the concrete type
+// supports interrupting a blocked read
 func setReadDeadline(reader io.Reader, deadline time.Time) bool {
 	deadliner, ok := reader.(readDeadliner)
 	if !ok {
@@ -186,6 +190,8 @@ func resetReadDeadline(prefix string, reader io.Reader) error {
 	return nil
 }
 
+// setWriteDeadline uses a writer-provided deadline hook when the concrete type
+// supports interrupting a blocked write
 func setWriteDeadline(writer io.Writer, deadline time.Time) bool {
 	deadliner, ok := writer.(writeDeadliner)
 	if !ok {

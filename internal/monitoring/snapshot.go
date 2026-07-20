@@ -131,6 +131,7 @@ type snapshotStore struct {
 func (s *snapshotStore) load() *Snapshot          { return s.value.Load() }
 func (s *snapshotStore) store(snapshot *Snapshot) { s.value.Store(snapshot) }
 
+// cloneSnapshot deep-copies the published snapshot so readers never share mutable maps or slices
 func cloneSnapshot(source *Snapshot) *Snapshot {
 	if source == nil {
 		return &Snapshot{Collectors: make(map[string]CollectorState)}
@@ -147,6 +148,7 @@ func cloneSnapshot(source *Snapshot) *Snapshot {
 	return &clone
 }
 
+// cloneUintMap copies string-to-counter maps used inside snapshot payloads
 func cloneUintMap(source map[string]uint64) map[string]uint64 {
 	if source == nil {
 		return nil
@@ -158,6 +160,7 @@ func cloneUintMap(source map[string]uint64) map[string]uint64 {
 	return clone
 }
 
+// cloneBlocks deep-copies block-device slices and their nested operation maps
 func cloneBlocks(source []backend.QEMUBlockDevice) []backend.QEMUBlockDevice {
 	if source == nil {
 		return nil
@@ -170,6 +173,7 @@ func cloneBlocks(source []backend.QEMUBlockDevice) []backend.QEMUBlockDevice {
 	return clone
 }
 
+// cloneGuestObservation deep-copies guest payload slices, maps, and nested address lists
 func cloneGuestObservation(source backend.GuestObservation) backend.GuestObservation {
 	clone := source
 	clone.Info.Capabilities = make(map[string]bool, len(source.Info.Capabilities))
@@ -194,6 +198,7 @@ func cloneGuestObservation(source backend.GuestObservation) backend.GuestObserva
 	return clone
 }
 
+// cloneFloatMap copies string-to-float maps used in guest CPU payloads
 func cloneFloatMap(source map[string]float64) map[string]float64 {
 	if source == nil {
 		return nil

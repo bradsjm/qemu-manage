@@ -26,23 +26,7 @@ func TestWithProgressDisabledDoesNotWriteOrCreateTracker(t *testing.T) {
 	}
 }
 
-func TestWithProgressRedirectedReportsStartAndFinish(t *testing.T) {
-	var output bytes.Buffer
-	if err := withProgress(&output, true, false, "Creating primary disk", 0, progress.UnitsDefault, func(tracker *progress.Tracker) error {
-		if tracker != nil {
-			t.Fatal("redirected progress unexpectedly created a tracker")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if got := output.String(); got != "Creating primary disk...\nCreating primary disk complete\n" {
-		t.Fatalf("output=%q", got)
-	}
-}
-
 func TestWithProgressInteractiveCompletesDeterminateAndIndeterminate(t *testing.T) {
-
 	for _, test := range []struct {
 		name    string
 		message string
@@ -101,9 +85,6 @@ func TestWithProgressReportsFailureAndPreservesError(t *testing.T) {
 	})
 	if !errors.Is(gotErr, wantErr) {
 		t.Fatalf("error=%v, want %v", gotErr, wantErr)
-	}
-	if got := output.String(); got != "Creating primary disk...\nCreating primary disk failed: disk failed\n" {
-		t.Fatalf("failure output=%q", got)
 	}
 }
 

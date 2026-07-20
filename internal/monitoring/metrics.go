@@ -7,6 +7,7 @@ import (
 	"github.com/bradsjm/qemu-manage/internal/backend"
 )
 
+// metricDefinition describes one metric family emitted by the Prometheus renderer
 type metricDefinition struct{ name, help, kind string }
 
 var metricDefinitions = []metricDefinition{
@@ -64,6 +65,7 @@ var metricDefinitions = []metricDefinition{
 	{"qemu_manage_guest_filesystems_frozen", "Whether guest filesystems are frozen.", "gauge"},
 }
 
+// renderMetrics renders the snapshot in Prometheus text exposition format 0.0.4
 func renderMetrics(snapshot *Snapshot) []byte {
 	var headers, output strings.Builder
 	for _, definition := range metricDefinitions {
@@ -256,15 +258,20 @@ func renderGuestDiskMetrics(output *strings.Builder, disks []backend.GuestDisk) 
 	}
 }
 
+// collectorOK reports whether a collector currently has a fresh successful snapshot
 func collectorOK(snapshot *Snapshot, key string) bool {
 	return snapshot.Collectors[key].Status == CollectorOK
 }
+
+// boolMetric encodes a boolean as the Prometheus 0-or-1 sample value
 func boolMetric(value bool) string {
 	if value {
 		return "1"
 	}
 	return "0"
 }
+
+// boolString encodes a boolean for use in metric labels
 func boolString(value bool) string {
 	if value {
 		return "true"

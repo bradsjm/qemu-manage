@@ -9,15 +9,19 @@ import (
 	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
+// ErrLocked reports that a nonblocking lifetime-lock attempt found an existing holder
 var ErrLocked = errors.New("lock is held")
 
+// Lock is an acquired flock on a lifetime lock file or name lock file
 type Lock struct {
 	file *os.File
 	path string
 }
 
+// Path returns the locked file path
 func (l *Lock) Path() string { return l.path }
 
+// Close releases the flock and closes the underlying file
 func (l *Lock) Close() error {
 	if l == nil || l.file == nil {
 		return nil
@@ -29,12 +33,14 @@ func (l *Lock) Close() error {
 	return errors.Join(unlockErr, closeErr)
 }
 
+// NameLock serializes access to one VM's durable config by holding its lock file
 type NameLock struct {
 	*Lock
 	store *Store
 	name  string
 }
 
+// LockName acquires the per-name lock that guards a VM's durable config
 func (s *Store) LockName(name string) (*NameLock, error) {
 	if err := validateName(name); err != nil {
 		return nil, err
@@ -53,6 +59,7 @@ func (s *Store) LockName(name string) (*NameLock, error) {
 	return &NameLock{Lock: lock, store: s, name: name}, nil
 }
 
+// Load reads the locked VM config while the name lock is still held
 func (l *NameLock) Load() (*model.Config, error) {
 	if l == nil || l.Lock == nil || l.file == nil {
 		return nil, errors.New("store: name lock is not held")
@@ -60,6 +67,7 @@ func (l *NameLock) Load() (*model.Config, error) {
 	return l.store.loadUnlocked(l.name)
 }
 
+// Save rewrites the locked VM config after confirming its immutable ID is unchanged
 func (l *NameLock) Save(config *model.Config) error {
 	if l == nil || l.Lock == nil || l.file == nil {
 		return errors.New("store: name lock is not held")
@@ -77,6 +85,7 @@ func (l *NameLock) Save(config *model.Config) error {
 	return writeConfigAtomic(l.store.Paths(config).Config, config)
 }
 
+// LockLifetime acquires the runtime lifetime lock for the config protected by this name lock
 func (l *NameLock) LockLifetime(config *model.Config) (*Lock, error) {
 	if l == nil || l.Lock == nil || l.file == nil {
 		return nil, errors.New("store: name lock is not held")
@@ -87,6 +96,7 @@ func (l *NameLock) LockLifetime(config *model.Config) (*Lock, error) {
 	return l.store.lockLifetime(config.ID, false)
 }
 
+// TryLockLifetime attempts the runtime lifetime lock for the config protected by this name lock
 func (l *NameLock) TryLockLifetime(config *model.Config) (*Lock, bool, error) {
 	if l == nil || l.Lock == nil || l.file == nil {
 		return nil, false, errors.New("store: name lock is not held")
@@ -98,6 +108,7 @@ func (l *NameLock) TryLockLifetime(config *model.Config) (*Lock, bool, error) {
 	return lock, acquired, err
 }
 
+// TryLifetime is the public wrapper around the internal nonblocking lifetime-lock helper
 func (s *Store) TryLifetime(id string) (*Lock, bool, error) {
 	return s.tryLifetime(id)
 }

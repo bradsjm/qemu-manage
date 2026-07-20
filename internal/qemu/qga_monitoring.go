@@ -20,6 +20,8 @@ var guestCommands = map[string]string{
 	"filesystems": "guest-get-fsinfo", "network": "guest-network-get-interfaces", "disk": "guest-get-diskstats",
 }
 
+// CollectGuest gathers guest-agent observations for every supported telemetry
+// family exposed by the current VM.
 func (i *instance) CollectGuest(ctx context.Context) backend.GuestObservation {
 	observation := backend.GuestObservation{Results: make(map[string]backend.ObservationResult)}
 	if !i.useQGA {
@@ -67,6 +69,8 @@ func (i *instance) CollectGuest(ctx context.Context) backend.GuestObservation {
 	return observation
 }
 
+// PingGuest checks whether the guest agent is currently reachable and
+// responding to commands.
 func (i *instance) PingGuest(ctx context.Context) backend.GuestProbe {
 	if !i.useQGA {
 		return backend.GuestProbe{Result: backend.ObservationResult{Code: "guest_agent_not_configured", Err: errors.New("guest agent is not configured")}}

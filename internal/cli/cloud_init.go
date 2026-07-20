@@ -13,6 +13,8 @@ import (
 const cloudInitSeedFilename = "cloud-init.iso"
 const hdiutilPath = "/usr/bin/hdiutil"
 
+// cloudInitMetadata supplies the fixed instance-id metadata that cloud-init's
+// NoCloud datasource expects on every seed image.
 type cloudInitMetadata struct {
 	InstanceID string `json:"instance-id"`
 }

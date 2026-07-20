@@ -22,12 +22,14 @@ const (
 	configFilename = "config.json"
 )
 
+// Store owns the root directories and locking conventions for durable and runtime VM state
 type Store struct {
 	DataRoot    string
 	RuntimeRoot string
 	LogRoot     string
 }
 
+// Paths names the derived durable, runtime, socket, and log paths for one VM
 type Paths struct {
 	VMDir            string
 	Config           string
@@ -49,14 +51,18 @@ type Paths struct {
 	SerialLogPipe    string
 }
 
+// CreateArtifacts populates VM-specific files after the store creates its directories
 type CreateArtifacts func(config *model.Config, paths Paths) error
 
+// DeleteInspector verifies no external delete preconditions remain before removal
 type DeleteInspector func(config *model.Config, paths Paths) error
 
+// Default constructs a Store from the current process environment
 func Default() (*Store, error) {
 	return DefaultFromEnv(os.Getenv)
 }
 
+// DefaultFromEnv constructs a Store from the supplied environment lookup
 func DefaultFromEnv(getenv func(string) string) (*Store, error) {
 	if getenv == nil {
 		return nil, errors.New("store: environment lookup is nil")
@@ -85,6 +91,7 @@ func resolveDefaultRoots(home, temp string, uid int, getenv func(string) string)
 	return dataRoot, runtimeRoot, logRoot
 }
 
+// New constructs a Store rooted at absolute data, runtime, and log directories
 func New(dataRoot, runtimeRoot, logRoot string) (*Store, error) {
 	store := &Store{DataRoot: dataRoot, RuntimeRoot: runtimeRoot, LogRoot: logRoot}
 	if err := store.ensureRoots(); err != nil {
@@ -93,6 +100,7 @@ func New(dataRoot, runtimeRoot, logRoot string) (*Store, error) {
 	return store, nil
 }
 
+// Paths derives the canonical filesystem layout for config
 func (s *Store) Paths(config *model.Config) Paths {
 	vmDir := filepath.Join(s.DataRoot, config.Name)
 	runtimeDir := s.RuntimeDir(config.ID)
@@ -132,6 +140,7 @@ func (s *Store) RuntimeDir(id string) string {
 	return filepath.Join(s.RuntimeRoot, prefix)
 }
 
+// Create validates config, creates the owned directory layout, invokes artifact creation, and persists the config
 func (s *Store) Create(config *model.Config, createArtifacts CreateArtifacts) error {
 	if config == nil {
 		return errors.New("store: nil config")
@@ -179,6 +188,7 @@ func (s *Store) Create(config *model.Config, createArtifacts CreateArtifacts) er
 	return nil
 }
 
+// Load decodes and validates the durable config for name
 func (s *Store) Load(name string) (*model.Config, error) {
 	if err := validateName(name); err != nil {
 		return nil, err
@@ -207,6 +217,7 @@ func (s *Store) loadUnlocked(name string) (*model.Config, error) {
 	return config, nil
 }
 
+// Save rewrites an existing durable config under its per-name lock
 func (s *Store) Save(config *model.Config) error {
 	if config == nil {
 		return errors.New("store: nil config")
@@ -222,6 +233,7 @@ func (s *Store) Save(config *model.Config) error {
 	return nameLock.Save(config)
 }
 
+// List loads every durable VM config in sorted name order
 func (s *Store) List() ([]*model.Config, error) {
 	entries, err := os.ReadDir(s.DataRoot)
 	if err != nil {
@@ -245,6 +257,7 @@ func (s *Store) List() ([]*model.Config, error) {
 	return configs, nil
 }
 
+// Delete removes a VM only after autostart, runtime, and caller-supplied checks pass
 func (s *Store) Delete(name string, inspect DeleteInspector) error {
 	if inspect == nil {
 		return errors.New("store: delete requires autostart and running inspection")
@@ -339,6 +352,9 @@ func createOwnedDirectory(path string) error {
 	return ensureOwnedDirectory(path)
 }
 
+// writeConfigAtomic writes canonical JSON to a 0600 temporary file in the target
+// directory, fsyncs the file, renames it into place, and fsyncs the directory so
+// readers either observe the old config or the fully installed new one
 func writeConfigAtomic(path string, config *model.Config) error {
 	if err := config.Validate(); err != nil {
 		return fmt.Errorf("config: %w", err)
@@ -387,12 +403,14 @@ func writeConfigAtomic(path string, config *model.Config) error {
 	return nil
 }
 
+// rollbackDirectories removes directories in reverse creation order during Create cleanup
 func rollbackDirectories(paths []string) {
 	for index := len(paths) - 1; index >= 0; index-- {
 		_ = os.RemoveAll(paths[index])
 	}
 }
 
+// validateName enforces the store's filesystem-safe VM naming rules
 func validateName(name string) error {
 	if name == "" || len(name) > 63 {
 		return errors.New("store: invalid VM name")
@@ -406,6 +424,7 @@ func validateName(name string) error {
 	return nil
 }
 
+// validateIDForPath enforces the lowercase hexadecimal ID shape used in derived paths
 func validateIDForPath(id string) error {
 	if len(id) != 32 || strings.Trim(id, "0123456789abcdef") != "" {
 		return errors.New("store: invalid VM id")

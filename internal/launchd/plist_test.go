@@ -2,11 +2,14 @@ package launchd
 
 import (
 	"bytes"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/bradsjm/qemu-manage/internal/model"
 )
+
+var collapseXMLWhitespace = regexp.MustCompile(`>\s+<`)
 
 func TestRenderPlistScopesPoliciesAndEscaping(t *testing.T) {
 	for _, scope := range []model.AutostartScope{model.AutostartLogin, model.AutostartBoot} {
@@ -29,33 +32,33 @@ func TestRenderPlistScopesPoliciesAndEscaping(t *testing.T) {
 				if !bytes.Equal(got, again) {
 					t.Fatal("render is not deterministic")
 				}
-				s := string(got)
+				compact := collapseXMLWhitespace.ReplaceAllString(string(got), "><")
 				for _, want := range []string{
 					"<string>io.qemu-manage.vm.0123456789ab</string>", "<string>/Applications/QEMU &amp; Tools/qemu-manage</string>",
 					"<string>vm</string>", "<string>/tmp/out&lt;log</string>", "<string>/tmp/err&gt;log</string>",
-					"<key>RunAtLoad</key>\n  <true/>", "<key>ThrottleInterval</key>\n  <integer>30</integer>",
-					"<key>ExitTimeOut</key>\n  <integer>195</integer>", "<key>Umask</key>\n  <integer>63</integer>",
-					"<key>PATH</key>\n    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>",
-					"<key>QEMU_MANAGE_DATA_ROOT</key>\n    <string>/tmp/data&amp;root</string>",
-					"<key>QEMU_MANAGE_RUNTIME_ROOT</key>\n    <string>/tmp/runtime&lt;root</string>",
-					"<key>QEMU_MANAGE_LOG_ROOT</key>\n    <string>/tmp/log&gt;root</string>",
+					"<key>RunAtLoad</key><true/>", "<key>ThrottleInterval</key><integer>30</integer>",
+					"<key>ExitTimeOut</key><integer>195</integer>", "<key>Umask</key><integer>63</integer>",
+					"<key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>",
+					"<key>QEMU_MANAGE_DATA_ROOT</key><string>/tmp/data&amp;root</string>",
+					"<key>QEMU_MANAGE_RUNTIME_ROOT</key><string>/tmp/runtime&lt;root</string>",
+					"<key>QEMU_MANAGE_LOG_ROOT</key><string>/tmp/log&gt;root</string>",
 				} {
-					if !strings.Contains(s, want) {
+					if !strings.Contains(compact, want) {
 						t.Errorf("missing %q", want)
 					}
 				}
-				if strings.Contains(s, "Crashed") || strings.Contains(s, "<key>KeepAlive</key>\n  <true/>") {
+				if strings.Contains(compact, "Crashed") || strings.Contains(compact, "<key>KeepAlive</key><true/>") {
 					t.Fatal("unsafe KeepAlive policy rendered")
 				}
 				wantKeepAlive := policy == model.RestartOnFailure
-				if strings.Contains(s, "<key>KeepAlive</key>") != wantKeepAlive {
+				if strings.Contains(compact, "<key>KeepAlive</key>") != wantKeepAlive {
 					t.Errorf("KeepAlive presence mismatch")
 				}
-				if wantKeepAlive && !strings.Contains(s, "<key>SuccessfulExit</key>\n    <false/>") {
+				if wantKeepAlive && !strings.Contains(compact, "<key>SuccessfulExit</key><false/>") {
 					t.Fatal("on-failure policy lacks SuccessfulExit=false")
 				}
 				wantUser := scope == model.AutostartBoot
-				if strings.Contains(s, "<key>UserName</key>") != wantUser {
+				if strings.Contains(compact, "<key>UserName</key>") != wantUser {
 					t.Errorf("UserName presence mismatch")
 				}
 			})
@@ -112,8 +115,9 @@ func TestRenderWatchPathsOnlyForSocketVMNet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	watchSnippet := "<key>WatchPaths</key>\n  <array>\n    <string>/var/run/socket_vmnet.bridged.vlan0</string>\n  </array>"
-	if !strings.Contains(string(got), watchSnippet) {
+	compact := collapseXMLWhitespace.ReplaceAllString(string(got), "><")
+	watchSnippet := "<key>WatchPaths</key><array><string>/var/run/socket_vmnet.bridged.vlan0</string></array>"
+	if !strings.Contains(compact, watchSnippet) {
 		t.Fatalf("socket_vmnet boot job missing WatchPaths:\n%s", got)
 	}
 

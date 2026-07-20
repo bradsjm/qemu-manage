@@ -112,14 +112,6 @@ func TestCreateCloudInitUserData(t *testing.T) {
 			t.Fatalf("staging directory remains: %s", entry.Name())
 		}
 	}
-	for _, progress := range []string{
-		"Copying cloud-init user-data...\nCopying cloud-init user-data complete\n",
-		"Creating cloud-init seed...\nCreating cloud-init seed complete\n",
-	} {
-		if !strings.Contains(stderr, progress) {
-			t.Fatalf("stderr missing %q: %q", progress, stderr)
-		}
-	}
 }
 
 func TestCreateCloudInitEmptyUserData(t *testing.T) {

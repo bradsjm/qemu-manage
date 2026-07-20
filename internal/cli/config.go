@@ -14,6 +14,8 @@ import (
 	"github.com/bradsjm/qemu-manage/internal/model"
 )
 
+// optionalValue wraps a parsed flag value with an explicit set bit so callers
+// can distinguish an omitted flag from a zero or false value.
 type optionalValue[T any] struct {
 	set   bool
 	value T
@@ -37,6 +39,8 @@ func (v *optionalValue[T]) Set(raw string) error {
 	return nil
 }
 
+// forwardValues accumulates repeatable --forward flags as guest port-forward
+// entries.
 type forwardValues []model.PortForward
 
 const (
@@ -484,6 +488,7 @@ func warnStaleAutostart(stderr io.Writer, name string, scope model.AutostartScop
 	)
 }
 
+// parseMemoryMiB accepts whole MiB or GiB sizes and returns the value in MiB.
 func parseMemoryMiB(raw string) (int, error) {
 	multiplier := 1
 	number := raw
@@ -503,6 +508,8 @@ func parseMemoryMiB(raw string) (int, error) {
 	return int(value) * multiplier, nil
 }
 
+// parseSetWholeSeconds requires whole seconds because the stored supervisor
+// timeout is represented as an integer second count.
 func parseSetWholeSeconds(raw string) (int, error) {
 	duration, err := time.ParseDuration(raw)
 	if err != nil || duration <= 0 || duration%time.Second != 0 {
@@ -515,6 +522,7 @@ func parseSetWholeSeconds(raw string) (int, error) {
 	return int(seconds), nil
 }
 
+// parsePort validates one non-zero TCP or UDP port number.
 func parsePort(raw string) (uint16, error) {
 	value, err := strconv.ParseUint(raw, 10, 16)
 	if err != nil || value == 0 {

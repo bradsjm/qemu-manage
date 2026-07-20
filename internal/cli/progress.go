@@ -82,6 +82,8 @@ func copyWithProgress(input io.Reader, output io.Writer, total int64, tracker *p
 	return err
 }
 
+// progressWriter forwards bytes to an output writer while reporting written
+// progress to a tracker.
 type progressWriter struct {
 	output  io.Writer
 	tracker *progress.Tracker

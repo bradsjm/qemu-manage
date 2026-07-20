@@ -21,6 +21,7 @@ import (
 // CheckStatus is the result of one doctor check.
 type CheckStatus string
 
+// Doctor check statuses.
 const (
 	CheckPass CheckStatus = "pass"
 	CheckWarn CheckStatus = "warn"
@@ -223,6 +224,8 @@ func checkVersion(ctx context.Context, binary string) Check {
 	return Check{Name: "qemu_version", Status: CheckPass, Evidence: "QEMU " + version.String()}
 }
 
+// DiscoverVersionedMachine derives the current virt-X.Y machine name from
+// qemu-system-aarch64 --version output.
 func DiscoverVersionedMachine(ctx context.Context, binary string) (string, error) {
 	output, err := probe(ctx, binary, "--version")
 	if err != nil {
@@ -243,10 +246,13 @@ func DiscoverVersionedMachine(ctx context.Context, binary string) (string, error
 	return machine, nil
 }
 
+// probeTimeoutError marks probe failures that timed out so callers can treat
+// them differently from hard command failures.
 type probeTimeoutError struct {
 	message string
 }
 
+// Error returns the timeout message captured by the probe helper.
 func (err probeTimeoutError) Error() string {
 	return err.message
 }
@@ -257,14 +263,18 @@ type qemuVersion struct {
 	Patch string
 }
 
+// String renders the semantic version triplet.
 func (version qemuVersion) String() string {
 	return strings.Join([]string{version.Major, version.Minor, version.Patch}, ".")
 }
 
+// Machine renders the matching virt-X.Y machine name for this QEMU version.
 func (version qemuVersion) Machine() string {
 	return "virt-" + version.Major + "." + version.Minor
 }
 
+// parseQEMUVersion extracts the semantic version triplet from
+// qemu-system-aarch64 --version output.
 func parseQEMUVersion(output string) (qemuVersion, bool) {
 	match := qemuVersionPattern.FindStringSubmatch(output)
 	if match == nil {
@@ -273,6 +283,8 @@ func parseQEMUVersion(output string) (qemuVersion, bool) {
 	return qemuVersion{Major: match[1], Minor: match[2], Patch: match[3]}, true
 }
 
+// probeHasToken looks for a capability token as a whole field or key=value
+// prefix in normalized help output.
 func probeHasToken(output, token string) bool {
 	for _, field := range strings.Fields(output) {
 		field = strings.Trim(field, " ,:()[]")
@@ -314,6 +326,8 @@ func probe(parent context.Context, binary string, args ...string) (string, error
 	return text, nil
 }
 
+// configuredPath resolves configured paths against VMDir when present while
+// preserving PATH-based executable lookup when VMDir is empty.
 func configuredPath(vmDir, configured string) string {
 	if configured == "" {
 		return ""

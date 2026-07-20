@@ -30,6 +30,9 @@ func run() int {
 	return app.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 }
 
+// ownsLifecycleSignals reports whether the selected invocation installs and manages
+// its own signal policy, so the top-level CLI should not add the default
+// interrupt and terminate handlers on top.
 func ownsLifecycleSignals(args []string) bool {
 	args = stripLeadingDebugFlags(args)
 	if len(args) == 0 {
@@ -61,6 +64,8 @@ func ownsLifecycleSignals(args []string) bool {
 	return foreground
 }
 
+// stripLeadingDebugFlags removes global debug flags before helper detection looks
+// at the real subcommand.
 func stripLeadingDebugFlags(args []string) []string {
 	for len(args) > 0 {
 		switch args[0] {

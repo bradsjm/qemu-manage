@@ -10,6 +10,8 @@ import (
 	"github.com/bradsjm/qemu-manage/internal/backend"
 )
 
+// qmpBlockStats captures the raw counters returned by query-blockstats before
+// they are normalized into backend.QEMUBlockDevice values.
 type qmpBlockStats struct {
 	ReadBytes              *int64 `json:"rd_bytes"`
 	WriteBytes             *int64 `json:"wr_bytes"`
@@ -32,12 +34,16 @@ type qmpBlockStats struct {
 	InvalidUnmapOperations *int64 `json:"invalid_unmap_operations"`
 }
 
+// qmpBlockStatsRecord is one query-blockstats array entry keyed by device
+// label.
 type qmpBlockStatsRecord struct {
 	Device     string         `json:"device"`
 	Stats      *qmpBlockStats `json:"stats"`
 	IdleTimeNS *int64         `json:"idle_time_ns"`
 }
 
+// QueryBlocks returns normalized block-device counters merged from
+// query-blockstats and query-block.
 func (c *QMPClient) QueryBlocks(ctx context.Context) ([]backend.QEMUBlockDevice, error) {
 	statsResult, err := c.execute(ctx, "query-blockstats", nil)
 	if err != nil {
@@ -172,6 +178,8 @@ func normalizeBlockStats(record qmpBlockStatsRecord) (backend.QEMUBlockDevice, e
 	return device, nil
 }
 
+// optionalUint64 converts optional nonnegative signed counters to the unsigned
+// form used by backend telemetry.
 func optionalUint64(field string, value *int64) (*uint64, error) {
 	if value == nil {
 		return nil, nil
@@ -183,6 +191,8 @@ func optionalUint64(field string, value *int64) (*uint64, error) {
 	return &normalized, nil
 }
 
+// optionalNanoseconds converts optional QMP nanosecond counters to fractional
+// seconds for API output.
 func optionalNanoseconds(field string, value *int64) (*float64, error) {
 	normalized, err := optionalUint64(field, value)
 	if err != nil || normalized == nil {

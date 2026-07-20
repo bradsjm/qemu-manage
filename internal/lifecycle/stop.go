@@ -128,6 +128,7 @@ func (s *Service) StopWithProgress(ctx context.Context, cfg *model.Config, timeo
 }
 
 func stopTimeoutSeconds(cfg *model.Config, timeout time.Duration) (int, error) {
+	// A zero override means use the validated config default.
 	if timeout == 0 {
 		if cfg.ShutdownTimeoutSeconds < 1 || cfg.ShutdownTimeoutSeconds > 3600 {
 			return 0, &InvalidStopTimeoutError{Timeout: time.Duration(cfg.ShutdownTimeoutSeconds) * time.Second}

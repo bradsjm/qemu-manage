@@ -29,10 +29,13 @@ const (
 	defaultVNCPortTo = 5999
 )
 
+// usbValues accumulates repeatable --usb selectors for create
 type usbValues []model.USBDeviceConfig
 
 func (v *usbValues) String() string { return "" }
 
+// createDrive holds one parsed --drive specification before it becomes a
+// persisted disk entry.
 type createDrive struct {
 	Source   string
 	Format   string
@@ -41,6 +44,7 @@ type createDrive struct {
 	ReadOnly bool
 }
 
+// driveValues accumulates repeatable --drive specifications for create
 type driveValues []createDrive
 
 func (v *driveValues) String() string { return "" }
@@ -82,6 +86,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		defaultFirmwareCode, defaultFirmwareVars = a.DiscoverFirmware()
 	}
 
+	// Parse flags.
 	flags := quietFlagSet("create")
 	cpus := flags.Int("cpus", 2, "number of virtual CPUs")
 	memory := flags.String("memory", "2GiB", "guest memory (whole MiB or GiB)")
@@ -196,6 +201,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 			"create: --firmware-code and --firmware-vars are required when they cannot be auto-detected; install QEMU with `brew install qemu` or provide both paths",
 		)
 	}
+	// Validate network and network-dependent flag combinations.
 	if networkMode == model.NetworkUser && *socketVMNetInterface != "" {
 		return usageErrorf("create: --socket-vmnet-interface requires --network socket_vmnet")
 	}
@@ -294,6 +300,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		}
 	}
 
+	// Build config.
 	networkConfig := model.NetworkConfig{Mode: networkMode, MAC: mac, Forwards: []model.PortForward{}}
 	switch networkMode {
 	case model.NetworkUser:
@@ -375,6 +382,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 		return err
 	}
 
+	// Persist config.
 	if err := a.Store.Create(config, func(_ *model.Config, paths store.Paths) error {
 		if err := copyRegularFile(*firmwareCode, filepath.Join(paths.VMDir, config.Firmware.Code), 0o400, stderr, true, a.progressInteractive(stderr), "Copying firmware code"); err != nil {
 			return fmt.Errorf("copy firmware code: %w", err)
@@ -399,6 +407,7 @@ func (a *App) runCreate(ctx context.Context, name string, args []string, stdin i
 				return err
 			}
 		}
+		// Create image.
 		diskPath := filepath.Join(paths.VMDir, config.Disks[0].Path)
 		if *image == "" {
 			if err := withWaitingProgress(stderr, true, a.progressInteractive(stderr), "Creating primary disk", func() error {
@@ -620,6 +629,8 @@ func parseUSBDecimalValue(raw string, maximum int) (int, error) {
 	return value, nil
 }
 
+// splitDriveItems splits a --drive specification on commas, with doubled commas
+// escaping a literal comma inside one item.
 func splitDriveItems(raw string) ([]string, error) {
 	if raw == "" {
 		return nil, errors.New("specification is empty")
@@ -649,6 +660,8 @@ func splitDriveItems(raw string) ([]string, error) {
 	return items, nil
 }
 
+// validDriveCache reports whether value is one of QEMU's accepted cache modes
+// for create-time extra drives.
 func validDriveCache(value string) bool {
 	switch value {
 	case "none", "writeback", "writethrough", "directsync", "unsafe":
@@ -658,6 +671,8 @@ func validDriveCache(value string) bool {
 	}
 }
 
+// detectDriveFormat peeks at the drive header to distinguish qcow2 from raw
+// when --drive omits an explicit format.
 func detectDriveFormat(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -681,6 +696,7 @@ func detectDriveFormat(path string) (string, error) {
 	return "raw", nil
 }
 
+// parseMiB converts a whole-number MiB or GiB size into MiB.
 func parseMiB(value string) (int, error) {
 	bytes, err := parseSizeBytes(value)
 	if err != nil {
@@ -693,6 +709,7 @@ func parseMiB(value string) (int, error) {
 	return int(mib), nil
 }
 
+// parseSizeBytes accepts whole-number MiB or GiB sizes and returns bytes.
 func parseSizeBytes(value string) (uint64, error) {
 	var multiplier uint64
 	switch {
@@ -721,6 +738,8 @@ func parseSizeBytes(value string) (uint64, error) {
 	return amount * multiplier, nil
 }
 
+// parseCreateWholeSeconds keeps create-time shutdown timeouts aligned with the
+// stored integer-second config field.
 func parseCreateWholeSeconds(value string) (int, error) {
 	duration, err := time.ParseDuration(value)
 	if err != nil || duration <= 0 || duration%time.Second != 0 {
@@ -733,6 +752,8 @@ func parseCreateWholeSeconds(value string) (int, error) {
 	return int(seconds), nil
 }
 
+// resolveExecutable turns an absolute path or PATH lookup name into an absolute
+// executable file path.
 func resolveExecutable(value string) (string, error) {
 	if value == "" {
 		return "", errors.New("executable path is empty")
@@ -761,6 +782,8 @@ func resolveExecutable(value string) (string, error) {
 	return path, nil
 }
 
+// requireRegularSource verifies that create inputs refer to existing regular
+// files before they are copied or attached.
 func requireRegularSource(path string) error {
 	file, err := os.Open(path)
 	if err != nil {
@@ -777,6 +800,9 @@ func requireRegularSource(path string) error {
 	return nil
 }
 
+// copyRegularFile copies one verified regular file into a newly created
+// destination, preserves the requested mode, and removes partial output on
+// failure.
 func copyRegularFile(source, destination string, mode os.FileMode, progressOutput io.Writer, progressEnabled, interactive bool, message string) error {
 	input, err := os.Open(source)
 	if err != nil {
@@ -818,6 +844,8 @@ func copyRegularFile(source, destination string, mode os.FileMode, progressOutpu
 	committed = true
 	return nil
 }
+
+// requireSharedDirectory verifies that --share points at an existing directory.
 func requireSharedDirectory(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -840,6 +868,8 @@ func requireSMBDDefault() error {
 	return errors.New("smbd not found; install with `brew install samba` (provides /opt/homebrew/sbin/samba-dot-org-smbd on Apple Silicon, which QEMU's user-network SMB server invokes)")
 }
 
+// qcow2VirtualSize reads a qcow2 header to recover the converted image's
+// virtual size without invoking qemu-img again.
 func qcow2VirtualSize(path string) (uint64, error) {
 	file, err := os.Open(path)
 	if err != nil {

@@ -26,6 +26,7 @@ const (
 
 var qgaRequestID atomic.Uint64
 
+// qgaRequest is the JSON command envelope QGA expects on the wire.
 type qgaRequest struct {
 	Execute   string `json:"execute"`
 	Arguments any    `json:"arguments,omitempty"`
@@ -40,11 +41,15 @@ type qgaShutdownArguments struct {
 	Mode string `json:"mode"`
 }
 
+// GuestAgentRequest is the decoded guest-agent command shape accepted by the
+// backend's passthrough APIs.
 type GuestAgentRequest struct {
 	Execute   string
 	Arguments json.RawMessage
 }
 
+// qgaConnection wraps one synchronized QGA session, including the Unix socket,
+// buffered reader, and deadline/context lifetime.
 type qgaConnection struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -66,6 +71,7 @@ type QGAError struct {
 	Desc  string `json:"desc"`
 }
 
+// Error returns the structured QGA error in printable form.
 func (e *QGAError) Error() string {
 	if e.Desc == "" {
 		return fmt.Sprintf("QGA command error %q", e.Class)
@@ -73,6 +79,8 @@ func (e *QGAError) Error() string {
 	return fmt.Sprintf("QGA command error %q: %s", e.Class, e.Desc)
 }
 
+// DecodeGuestAgentRequest validates and normalizes one external guest-agent
+// request payload before it is sent to QGA.
 func DecodeGuestAgentRequest(data []byte) (GuestAgentRequest, error) {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
@@ -147,6 +155,8 @@ func GuestShutdown(ctx context.Context, path string) error {
 	return err
 }
 
+// GuestAgentCommand sends one validated QGA request and returns its raw JSON
+// result payload.
 func GuestAgentCommand(ctx context.Context, path string, request GuestAgentRequest) (json.RawMessage, error) {
 	if strings.TrimSpace(request.Execute) == "" {
 		return nil, errors.New("QGA execute name is empty")
@@ -176,6 +186,8 @@ func GuestAgentCommand(ctx context.Context, path string, request GuestAgentReque
 	return awaitQGAResult(conn.ctx, conn.reader, requestID)
 }
 
+// validateGuestAgentArguments keeps the passthrough arguments field restricted
+// to a single JSON object, which is the only shape accepted here.
 func validateGuestAgentArguments(raw json.RawMessage, present bool) (json.RawMessage, error) {
 	if !present {
 		return nil, nil
@@ -234,6 +246,7 @@ func openQGAConnection(ctx context.Context, path string) (*qgaConnection, error)
 	return connection, nil
 }
 
+// Close releases the per-call context, deadline watcher, and Unix socket.
 func (c *qgaConnection) Close() error {
 	c.cancel()
 	c.finishDeadline()
@@ -441,6 +454,8 @@ func readUntilQGADelimiter(reader *bufio.Reader, maximum int) error {
 	}
 }
 
+// readQGAFrame reads one newline-terminated JSON frame while discarding QGA's
+// 0xff resynchronization delimiters and blank noise frames.
 func readQGAFrame(reader *bufio.Reader, maximum int) ([]byte, error) {
 	count := 0
 	for {
@@ -471,6 +486,8 @@ func readQGAFrame(reader *bufio.Reader, maximum int) ([]byte, error) {
 	}
 }
 
+// decodeQGAResponse parses one framed QGA JSON object and rejects trailing
+// data.
 func decodeQGAResponse(frame []byte) (qgaResponse, error) {
 	var response qgaResponse
 	decoder := json.NewDecoder(bytes.NewReader(frame))
@@ -499,6 +516,8 @@ func qgaResponseMatches(response qgaResponse, expectedID uint64) (bool, error) {
 	return id == expectedID, nil
 }
 
+// qgaSyncReturnMatches verifies that guest-sync-delimited echoed the sync ID
+// back in its bare numeric return payload.
 func qgaSyncReturnMatches(raw json.RawMessage, expectedID uint64) bool {
 	if len(raw) == 0 {
 		return false
