@@ -3,22 +3,24 @@
 All notable changes to qemu-manage are documented in this file.
 
 
-## [Unreleased]
+## [0.5.0] - 2026-07-20
 
 ### Added
-- Optional per-VM loopback monitoring server with Prometheus metrics, cached health/status/info JSON, live guest-agent ping, validated guest IP reporting, and an API reference
-- `MetricsConfig` type with port-conflict validation against VNC and port forwards
-- POWERDOWN and SUSPEND_DISK QMP lifecycle events to the monitoring allowlist
+
+- Optional per-VM loopback monitoring server with Prometheus metrics, cached health/status/info JSON, live guest-agent ping, validated guest IP reporting, and an API reference (`API.md`).
+- `MetricsConfig` type with port-conflict validation against VNC and port forwards.
+- POWERDOWN and SUSPEND_DISK QMP lifecycle events to the monitoring allowlist.
+- Bounded rotating serial log capture (2 MiB, three backups) via a supervisor-controlled FIFO pipe with security hardening, plus the `qemu-manage log NAME` command to print the active serial log to stdout.
 
 ### Changed
-- CLI progress now uses “complete” instead of “done,” and `stop` reports the
-- Extracted supervisor run logic, control server, and monitoring server into separate files (`run.go`, `control_server.go`, `monitoring_server.go`)
-- Introduced newline-framed reader (`framedReader`) for protocol decoding and split Request/Response message types
-- Added `StopProgress` type with non-terminal progress frames (`acknowledged`, `forcing`) to the stop lifecycle
-- Updated CLI progress terminology to "complete" and `stop` reports authenticated shutdown acknowledgment, wait duration, and graceful or forced completion path
+
+- Extracted supervisor run logic, control server, and monitoring server into separate files (`run.go`, `control_server.go`, `monitoring_server.go`).
+- Introduced newline-framed reader (`framedReader`) for protocol decoding and split `Request`/`Response` message types.
+- Added `StopProgress` type with non-terminal progress frames (`acknowledged`, `forcing`) to the stop lifecycle; CLI progress now uses "complete" instead of "done", and `stop` reports the authenticated shutdown acknowledgment, wait duration, and graceful or forced completion path.
 
 ### Fixed
-- Empty-device BLOCK_IO_ERROR events from QEMU now correctly recorded instead of silently dropped
+
+- Empty-device BLOCK_IO_ERROR events from QEMU are now correctly recorded instead of being silently dropped.
 ## [0.4.0] - 2026-07-19
 
 ### Added
@@ -71,6 +73,7 @@ All notable changes to qemu-manage are documented in this file.
 
 - Initial release.
 
+[0.5.0]: https://github.com/bradsjm/qemu-manage/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/bradsjm/qemu-manage/compare/v0.3.0...v0.4.0
 
 [0.3.0]: https://github.com/bradsjm/qemu-manage/compare/v0.2.0...v0.3.0
