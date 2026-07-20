@@ -223,7 +223,7 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		}
 	case "config":
 		err = a.dispatchConfig(ctx, args[1:], stdin, stdout, stderr)
-	case "showcmd", "status", "list", "delete":
+	case "showcmd", "log", "status", "list", "delete":
 		err = a.runInfoCommand(ctx, args[0], args[1:], stdin, stdout, stderr)
 	case "start", "stop", "console", "monitor", "guest-agent", "vnc", "doctor", "supervise":
 		err = a.runRuntimeCommand(ctx, args[0], args[1:], stdin, stdout, stderr)

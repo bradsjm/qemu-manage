@@ -42,6 +42,7 @@ type Paths struct {
 	SupervisorStderr string
 	QEMULog          string
 	SerialLog        string
+	SerialLogPipe    string
 }
 
 type CreateArtifacts func(config *model.Config, paths Paths) error
@@ -110,6 +111,7 @@ func (s *Store) Paths(config *model.Config) Paths {
 		SupervisorStderr: filepath.Join(logDir, "supervisor.stderr.log"),
 		QEMULog:          filepath.Join(logDir, "qemu.log"),
 		SerialLog:        filepath.Join(logDir, "serial.log"),
+		SerialLogPipe:    filepath.Join(runtimeDir, "serial-log.pipe"),
 	}
 }
 

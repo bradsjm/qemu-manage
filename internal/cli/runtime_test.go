@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -32,6 +33,14 @@ type fakeRuntime struct {
 func (f *fakeRuntime) Status(context.Context, *model.Config) (StatusRow, error) { return f.row, f.err }
 func (f *fakeRuntime) DeleteAllowed(context.Context, *model.Config) (bool, error) {
 	return f.deleteAllowed, f.err
+}
+
+type errorWriter struct {
+	err error
+}
+
+func (w errorWriter) Write([]byte) (int, error) {
+	return 0, w.err
 }
 
 type fakeMonitorClient struct {
@@ -335,6 +344,367 @@ func TestConsoleAdmissionRejectsStoppedVMWithoutDialing(t *testing.T) {
 	code, _, stderr := runCLI(a, "console", "vm")
 	if code != 1 || !strings.Contains(stderr, "console requires running or paused") {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestTailActiveSerialLog(t *testing.T) {
+	t.Helper()
+	numberedLines := func(start, end int, trailingNewline bool) string {
+		var builder strings.Builder
+		for line := start; line <= end; line++ {
+			_, _ = fmt.Fprintf(&builder, "line %02d", line)
+			if trailingNewline || line < end {
+				builder.WriteByte('\n')
+			}
+		}
+		return builder.String()
+	}
+	tests := []struct {
+		name     string
+		active   string
+		rotated  string
+		validate func(t *testing.T, got []byte)
+	}{
+		{
+			name:   "returns final twenty newline terminated lines",
+			active: numberedLines(1, 25, true),
+			validate: func(t *testing.T, got []byte) {
+				t.Helper()
+				want := numberedLines(6, 25, true)
+				if string(got) != want {
+					t.Fatalf("tail = %q, want %q", string(got), want)
+				}
+			},
+		},
+		{
+			name:   "returns all lines when under limit",
+			active: numberedLines(1, 5, true),
+			validate: func(t *testing.T, got []byte) {
+				t.Helper()
+				want := numberedLines(1, 5, true)
+				if string(got) != want {
+					t.Fatalf("tail = %q, want %q", string(got), want)
+				}
+			},
+		},
+		{
+			name:   "retains trailing partial line",
+			active: "alpha\nbeta\ngamma",
+			validate: func(t *testing.T, got []byte) {
+				t.Helper()
+				want := "alpha\nbeta\ngamma"
+				if string(got) != want {
+					t.Fatalf("tail = %q, want %q", string(got), want)
+				}
+			},
+		},
+		{
+			name:   "bounds oversized files to final window",
+			active: strings.Repeat("x", 70*1024) + "\nlast line\n",
+			validate: func(t *testing.T, got []byte) {
+				t.Helper()
+				if len(got) > 64*1024 {
+					t.Fatalf("tail length = %d, want <= %d", len(got), 64*1024)
+				}
+				if string(got) != "last line\n" {
+					t.Fatalf("tail = %q, want %q", string(got), "last line\n")
+				}
+			},
+		},
+		{
+			name:    "ignores rotated backups",
+			active:  "active line\n",
+			rotated: "SERIAL-BACKUP-SENTINEL\n",
+			validate: func(t *testing.T, got []byte) {
+				t.Helper()
+				if string(got) != "active line\n" {
+					t.Fatalf("tail = %q, want %q", string(got), "active line\n")
+				}
+				if bytes.Contains(got, []byte("SERIAL-BACKUP-SENTINEL")) {
+					t.Fatalf("tail unexpectedly included rotated backup bytes: %q", string(got))
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "serial.log")
+			if err := os.WriteFile(path, []byte(tt.active), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tt.rotated != "" {
+				if err := os.WriteFile(path+".0", []byte(tt.rotated), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := tailActiveSerialLog(path, 20, 64*1024)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt.validate(t, got)
+		})
+	}
+}
+
+func TestLogPrintsCompleteActiveFile(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	saveTestConfig(t, a, cfg)
+	paths := a.Store.Paths(cfg)
+	if err := os.MkdirAll(filepath.Dir(paths.SerialLog), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	active := []byte(strings.Repeat("complete-active-log\n", 4096))
+	if len(active) <= 64*1024 {
+		t.Fatalf("fixture length = %d, want > 64 KiB", len(active))
+	}
+	if err := os.WriteFile(paths.SerialLog, active, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runCLI(a, "log", "vm")
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	if !bytes.Equal([]byte(stdout), active) {
+		t.Fatalf("stdout length=%d, want complete %d-byte active log", len(stdout), len(active))
+	}
+	if stderr != "" {
+		t.Fatalf("stderr=%q, want empty", stderr)
+	}
+}
+
+func TestLogExcludesRotatedBackups(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	saveTestConfig(t, a, cfg)
+	paths := a.Store.Paths(cfg)
+	if err := os.MkdirAll(filepath.Dir(paths.SerialLog), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const active = "ACTIVE-ONLY-SENTINEL\n"
+	if err := os.WriteFile(paths.SerialLog, []byte(active), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.SerialLog+".0", []byte("BACKUP-ONLY-SENTINEL\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runCLI(a, "log", "vm")
+	if code != 0 || stdout != active || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestLogEmptyActiveFileSucceeds(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	saveTestConfig(t, a, cfg)
+	paths := a.Store.Paths(cfg)
+	if err := os.MkdirAll(filepath.Dir(paths.SerialLog), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.SerialLog, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runCLI(a, "log", "vm")
+	if code != 0 || stdout != "" || stderr != "" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestLogRejectsUnsafeOrMissingActiveFile(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, path string)
+	}{
+		{name: "missing"},
+		{
+			name: "symlink",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				target := filepath.Join(t.TempDir(), "target.log")
+				if err := os.WriteFile(target, []byte("target\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, path); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "wrong mode",
+			setup: func(t *testing.T, path string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte("unsafe\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := testApp(t)
+			cfg := testConfig("vm")
+			saveTestConfig(t, a, cfg)
+			path := a.Store.Paths(cfg).SerialLog
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if tt.setup != nil {
+				tt.setup(t, path)
+			}
+
+			code, stdout, stderr := runCLI(a, "log", "vm")
+			if code != 1 || stdout != "" || !strings.Contains(stderr, "serial log:") {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestLogRejectsExtraPositional(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	saveTestConfig(t, a, cfg)
+
+	code, stdout, stderr := runCLI(a, "log", "vm", "extra")
+	if code != 2 || stdout != "" || !strings.Contains(stderr, `log vm: unexpected argument "extra"`) ||
+		!strings.Contains(stderr, "qemu-manage log NAME") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestRunLogWrapsStdoutWriteFailure(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	saveTestConfig(t, a, cfg)
+	paths := a.Store.Paths(cfg)
+	if err := os.MkdirAll(filepath.Dir(paths.SerialLog), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.SerialLog, []byte("active\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := errors.New("write failed")
+
+	err := a.runLog([]string{"vm"}, errorWriter{err: sentinel})
+	if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "serial log: copy to stdout:") {
+		t.Fatalf("runLog error = %v", err)
+	}
+}
+
+func TestConsoleReplaysActiveTailBeforeLiveOutputOnlyForTerminal(t *testing.T) {
+	numberedLines := func(start, end int) string {
+		var builder strings.Builder
+		for line := start; line <= end; line++ {
+			_, _ = fmt.Fprintf(&builder, "line %02d\n", line)
+		}
+		return builder.String()
+	}
+	newConsoleApp := func(t *testing.T) *App {
+		t.Helper()
+		root, err := os.MkdirTemp("", "qm-cli-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(root) })
+		s, err := store.New(filepath.Join(root, "vms"), filepath.Join(root, "run"), filepath.Join(root, "logs"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &App{
+			Store:           s,
+			Geteuid:         func() int { return 501 },
+			LookupEnv:       func(string) (string, bool) { return "", false },
+			DiscoverMachine: func(context.Context, string) (string, error) { return "virt-11.0", nil },
+		}
+	}
+	const (
+		replayPrefix = "\r\n--- serial log: active file, up to 20 lines ---\r\n"
+		replaySuffix = "\r\n--- live console; Ctrl-] to disconnect ---\r\n"
+		liveOutput   = "live console bytes\n"
+	)
+	history := numberedLines(1, 25)
+	historyTail := numberedLines(6, 25)
+	tests := []struct {
+		name        string
+		terminal    bool
+		writeActive bool
+		wantStdout  string
+	}{
+		{
+			name:        "terminal replay",
+			terminal:    true,
+			writeActive: true,
+			wantStdout:  replayPrefix + historyTail + replaySuffix + liveOutput,
+		},
+		{
+			name:        "nonterminal",
+			terminal:    false,
+			writeActive: true,
+			wantStdout:  liveOutput,
+		},
+		{
+			name:        "missing active log",
+			terminal:    true,
+			writeActive: false,
+			wantStdout:  liveOutput,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newConsoleApp(t)
+			cfg := testConfig("vm")
+			saveTestConfig(t, a, cfg)
+			a.Lifecycle = lifecycle.NewService(a.Store)
+			paths := a.Store.Paths(cfg)
+			if tt.writeActive {
+				if err := os.MkdirAll(filepath.Dir(paths.SerialLog), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(paths.SerialLog, []byte(history), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			statusErr := serveRuntimeStatus(t, paths.ControlSocket, supervisor.Status{
+				State:               model.RunStateRunning,
+				Backend:             model.BackendQEMU,
+				SupervisorPID:       11,
+				BackendPID:          22,
+				StartedAt:           time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+				RunningConfigSHA256: strings.Repeat("b", 64),
+			})
+			serveUnixSocket(t, paths.Console, func(conn net.Conn) error {
+				_, err := conn.Write([]byte(liveOutput))
+				return err
+			})
+			stdin, input := net.Pipe()
+			t.Cleanup(func() {
+				_ = stdin.Close()
+				_ = input.Close()
+			})
+			stdout := &signalBuffer{written: make(chan struct{})}
+			var stderr bytes.Buffer
+			a.IsTerminalOutput = func(w io.Writer) bool {
+				return tt.terminal && w == stdout
+			}
+			code := a.Run(context.Background(), []string{"console", "vm"}, stdin, stdout, &stderr)
+			if err := <-statusErr; err != nil {
+				t.Fatal(err)
+			}
+			if code != 0 {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			if stdout.String() != tt.wantStdout {
+				t.Fatalf("stdout = %q, want %q", stdout.String(), tt.wantStdout)
+			}
+		})
 	}
 }
 
@@ -883,7 +1253,7 @@ func TestAbsoluteStorePathsIncludesMonitorSocketsAndVNCSecret(t *testing.T) {
 		QGA: "qga.sock", Console: "console.sock", Monitor: "monitor.sock",
 		VNCSecret: "vnc-password", RuntimeMetadata: "runtime.json", LastExitMetadata: "last_exit.json",
 		SupervisorStdout: "supervisor.stdout.log", SupervisorStderr: "supervisor.stderr.log",
-		QEMULog: "qemu.log", SerialLog: "serial.log",
+		QEMULog: "qemu.log", SerialLog: "serial.log", SerialLogPipe: "serial-log.pipe",
 	}
 	got, err := absoluteStorePaths(paths)
 	if err != nil {
@@ -892,7 +1262,7 @@ func TestAbsoluteStorePathsIncludesMonitorSocketsAndVNCSecret(t *testing.T) {
 	for _, path := range []string{
 		got.VMDir, got.Config, got.RuntimeDir, got.ControlSocket, got.LifetimeLock, got.QMP, got.QMPCommand,
 		got.QGA, got.Console, got.Monitor, got.VNCSecret, got.RuntimeMetadata, got.LastExitMetadata,
-		got.SupervisorStdout, got.SupervisorStderr, got.QEMULog, got.SerialLog,
+		got.SupervisorStdout, got.SupervisorStderr, got.QEMULog, got.SerialLog, got.SerialLogPipe,
 	} {
 		if !filepath.IsAbs(path) {
 			t.Fatalf("path %q is not absolute", path)
@@ -910,12 +1280,12 @@ func TestAbsoluteStorePathsIncludesMonitorSocketsAndVNCSecret(t *testing.T) {
 func TestBackendPathsIncludePrivateMonitorSockets(t *testing.T) {
 	paths := store.Paths{
 		VMDir: "/vm", QMP: "/run/qmp.sock", QMPCommand: "/run/qmp-command.sock", QGA: "/run/qga.sock",
-		Console: "/run/console.sock", Monitor: "/run/monitor.sock", QEMULog: "/logs/qemu.log", SerialLog: "/logs/serial.log",
+		Console: "/run/console.sock", Monitor: "/run/monitor.sock", QEMULog: "/logs/qemu.log", SerialLogPipe: "/run/serial-log.pipe",
 	}
 	got := backendPaths(paths)
 	if got.VMDir != paths.VMDir || got.QMP != paths.QMP || got.QMPCommand != paths.QMPCommand ||
 		got.QGA != paths.QGA || got.Console != paths.Console || got.Monitor != paths.Monitor ||
-		got.QEMULog != paths.QEMULog || got.SerialLog != paths.SerialLog {
+		got.QEMULog != paths.QEMULog || got.SerialLogPipe != paths.SerialLogPipe {
 		t.Fatalf("backend paths = %#v", got)
 	}
 }

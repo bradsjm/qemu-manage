@@ -124,7 +124,10 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	}
 	defer lifetime.Close()
 
-	var run *supervisedRun
+	var (
+		run  *supervisedRun
+		sink *serialLogSink
+	)
 	finalized := false
 	startupIntent := make(chan struct{})
 	defer func() {
@@ -143,6 +146,9 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 			if forceErr != nil {
 				intentionalStartup = false
 			}
+		}
+		if sink != nil {
+			resultErr = errors.Join(resultErr, sink.abort())
 		}
 		cleanupErr := CleanupRuntime(paths)
 		resultErr = errors.Join(resultErr, cleanupErr)
@@ -169,7 +175,7 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 	}
 	paths = s.Store.Paths(config)
 
-	debugf(options.Debug, options.DebugWriter, "preflight name=%q backend=%q runtime_dir=%q control_socket=%q qmp=%q qmp_command=%q qga=%q console=%q monitor=%q qemu_log=%q serial_log=%q",
+	debugf(options.Debug, options.DebugWriter, "preflight name=%q backend=%q runtime_dir=%q control_socket=%q qmp=%q qmp_command=%q qga=%q console=%q monitor=%q qemu_log=%q serial_log=%q serial_log_pipe=%q",
 		config.Name,
 		config.Backend,
 		paths.RuntimeDir,
@@ -180,7 +186,8 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 		paths.Console,
 		paths.Monitor,
 		paths.QEMULog,
-		paths.SerialLog)
+		paths.SerialLog,
+		paths.SerialLogPipe)
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
@@ -253,6 +260,14 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 		return fmt.Errorf("qemu: render: %w", err)
 	}
 	debugf(options.Debug, options.DebugWriter, "rendered argv=%s extra_args_count=%d", formatManagedCommand(command, len(config.QEMU.ExtraArgs)), len(config.QEMU.ExtraArgs))
+	warningWriter := options.DebugWriter
+	if warningWriter == nil {
+		warningWriter = io.Discard
+	}
+	sink, err = startSerialLogSink(paths.SerialLogPipe, paths.SerialLog, warningWriter)
+	if err != nil {
+		return err
+	}
 	instance, err := implementation.Start(startCtx, config, runtimePaths, command)
 	if err != nil {
 		return fmt.Errorf("qemu: start: %w", err)
@@ -338,6 +353,9 @@ func (s *Service) Supervise(ctx context.Context, name, expectedID string, ready 
 		}
 	}
 	<-run.done
+	if err := sink.finish(); err != nil {
+		_, _ = fmt.Fprintf(warningWriter, "serial log: sink failed: %v\n", err)
+	}
 	cancelServe()
 	_ = listener.Close()
 	<-serveDone
@@ -692,14 +710,14 @@ func (s *Service) now() time.Time {
 
 func backendPaths(paths store.Paths) backend.RuntimePaths {
 	return backend.RuntimePaths{
-		VMDir:      paths.VMDir,
-		QMP:        paths.QMP,
-		QMPCommand: paths.QMPCommand,
-		QGA:        paths.QGA,
-		Console:    paths.Console,
-		Monitor:    paths.Monitor,
-		QEMULog:    paths.QEMULog,
-		SerialLog:  paths.SerialLog,
+		VMDir:         paths.VMDir,
+		QMP:           paths.QMP,
+		QMPCommand:    paths.QMPCommand,
+		QGA:           paths.QGA,
+		Console:       paths.Console,
+		Monitor:       paths.Monitor,
+		QEMULog:       paths.QEMULog,
+		SerialLogPipe: paths.SerialLogPipe,
 	}
 }
 

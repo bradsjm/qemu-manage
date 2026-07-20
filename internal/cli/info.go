@@ -24,6 +24,8 @@ func (a *App) runInfoCommand(ctx context.Context, command string, args []string,
 	switch command {
 	case "showcmd":
 		return a.runShowcmd(args, stdout)
+	case "log":
+		return a.runLog(args, stdout)
 	case "status":
 		return a.runStatus(ctx, args, stdout, stderr)
 	case "list":
@@ -71,6 +73,33 @@ func (a *App) runShowcmd(args []string, stdout io.Writer) error {
 	}
 	_, err = io.WriteString(stdout, "\n")
 	return err
+}
+
+func (a *App) runLog(args []string, stdout io.Writer) (err error) {
+	name, remaining, err := nameBeforeFlags("log", args)
+	if err != nil {
+		return err
+	}
+	if len(remaining) != 0 {
+		return usageErrorf("log %s: unexpected argument %q", name, remaining[0])
+	}
+	config, err := a.Store.Load(name)
+	if err != nil {
+		return err
+	}
+	file, err := openActiveSerialLog(a.Store.Paths(config).SerialLog)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("serial log: close: %w", closeErr))
+		}
+	}()
+	if _, err := io.Copy(stdout, file); err != nil {
+		return fmt.Errorf("serial log: copy to stdout: %w", err)
+	}
+	return nil
 }
 
 func quotePOSIX(value string) string {

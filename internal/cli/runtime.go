@@ -213,6 +213,7 @@ func withConnectionProgress(output io.Writer, interactive bool, message string, 
 	ready := make(chan struct{})
 	var readyOnce sync.Once
 	done := make(chan error, 1)
+	completed := false
 	progressErr := withWaitingProgress(output, true, interactive, message, func() error {
 		go func() {
 			done <- connect(func() {
@@ -221,6 +222,7 @@ func withConnectionProgress(output io.Writer, interactive bool, message string, 
 		}()
 		select {
 		case err := <-done:
+			completed = true
 			return err
 		case <-ready:
 			return nil
@@ -228,6 +230,9 @@ func withConnectionProgress(output io.Writer, interactive bool, message string, 
 	})
 	if progressErr != nil {
 		return progressErr
+	}
+	if completed {
+		return nil
 	}
 	return <-done
 }
@@ -254,9 +259,113 @@ func (a *App) runConsole(ctx context.Context, args []string, stdin io.Reader, st
 	if status.State != model.RunStateRunning && status.State != model.RunStatePaused {
 		return fmt.Errorf("runtime: VM %q is %s; console requires running or paused", name, status.State)
 	}
+	paths := a.Store.Paths(config)
+	var replay io.Reader
+	if a.IsTerminalOutput != nil && a.IsTerminalOutput(stdout) {
+		history, tailErr := tailActiveSerialLog(paths.SerialLog, 20, 64*1024)
+		if tailErr != nil {
+			a.debugf("console replay unavailable: %v", tailErr)
+		} else if len(history) != 0 {
+			replay = io.MultiReader(
+				strings.NewReader("\r\n--- serial log: active file, up to 20 lines ---\r\n"),
+				bytes.NewReader(history),
+				strings.NewReader("\r\n--- live console; Ctrl-] to disconnect ---\r\n"),
+			)
+		}
+	}
 	return withConnectionProgress(stderr, a.progressInteractive(stderr), "Connecting to VM console", func(setup func()) error {
-		return console.ConnectWithSetup(ctx, a.Store.Paths(config).Console, stdin, stdout, setup)
+		return console.ConnectWithSetup(ctx, paths.Console, stdin, stdout, func() {
+			setup()
+			if replay != nil {
+				if _, copyErr := io.Copy(stdout, replay); copyErr != nil {
+					a.debugf("console replay unavailable: %v", copyErr)
+				}
+			}
+		})
 	})
+}
+
+func openActiveSerialLog(path string) (file *os.File, err error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("serial log: open: %w", err)
+	}
+	openedFile := os.NewFile(uintptr(fd), path)
+	defer func() {
+		if err == nil {
+			return
+		}
+		if closeErr := openedFile.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("serial log: close: %w", closeErr))
+		}
+	}()
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return nil, fmt.Errorf("serial log: stat: %w", err)
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil, errors.New("serial log: file is not a regular file")
+	}
+	if stat.Uid != uint32(os.Getuid()) {
+		return nil, fmt.Errorf("serial log: file is owned by uid %d, want %d", stat.Uid, os.Getuid())
+	}
+	if stat.Mode&0o777 != 0o600 {
+		return nil, fmt.Errorf("serial log: file mode is %04o, want 0600", stat.Mode&0o777)
+	}
+	return openedFile, nil
+}
+
+func tailActiveSerialLog(path string, maxLines int, maxBytes int64) ([]byte, error) {
+	if maxLines <= 0 || maxBytes <= 0 {
+		return nil, nil
+	}
+	file, err := openActiveSerialLog(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := stat.Size()
+	offset := int64(0)
+	if size > maxBytes {
+		offset = size - maxBytes
+	}
+	history := make([]byte, size-offset)
+	if len(history) != 0 {
+		n, readErr := file.ReadAt(history, offset)
+		history = history[:n]
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return nil, readErr
+		}
+	}
+	if offset > 0 {
+		if newline := bytes.IndexByte(history, '\n'); newline >= 0 {
+			history = history[newline+1:]
+		}
+	}
+	if len(history) == 0 {
+		return nil, nil
+	}
+	separators := maxLines - 1
+	startIndex := len(history) - 1
+	if history[len(history)-1] == '\n' {
+		separators = maxLines
+		startIndex--
+	}
+	for index := startIndex; index >= 0; index-- {
+		if history[index] != '\n' {
+			continue
+		}
+		separators--
+		if separators == 0 {
+			history = history[index+1:]
+			break
+		}
+	}
+	return history, nil
 }
 
 func (a *App) runMonitor(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
@@ -502,14 +611,14 @@ func (a *App) loadQEMUConfig(name string) (*model.Config, error) {
 
 func backendPaths(paths store.Paths) backend.RuntimePaths {
 	return backend.RuntimePaths{
-		VMDir:      paths.VMDir,
-		QMP:        paths.QMP,
-		QMPCommand: paths.QMPCommand,
-		QGA:        paths.QGA,
-		Console:    paths.Console,
-		Monitor:    paths.Monitor,
-		QEMULog:    paths.QEMULog,
-		SerialLog:  paths.SerialLog,
+		VMDir:         paths.VMDir,
+		QMP:           paths.QMP,
+		QMPCommand:    paths.QMPCommand,
+		QGA:           paths.QGA,
+		Console:       paths.Console,
+		Monitor:       paths.Monitor,
+		QEMULog:       paths.QEMULog,
+		SerialLogPipe: paths.SerialLogPipe,
 	}
 }
 
@@ -523,7 +632,7 @@ func absoluteStorePaths(paths store.Paths) (store.Paths, error) {
 		&paths.VMDir, &paths.Config, &paths.RuntimeDir, &paths.ControlSocket, &paths.LifetimeLock,
 		&paths.QMP, &paths.QMPCommand, &paths.QGA, &paths.Console, &paths.Monitor, &paths.VNCSecret,
 		&paths.RuntimeMetadata, &paths.LastExitMetadata, &paths.SupervisorStdout, &paths.SupervisorStderr,
-		&paths.QEMULog, &paths.SerialLog,
+		&paths.QEMULog, &paths.SerialLog, &paths.SerialLogPipe,
 	}
 	for _, value := range values {
 		absolute, err := filepath.Abs(*value)

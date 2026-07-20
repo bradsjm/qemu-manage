@@ -12,15 +12,15 @@ import (
 // RuntimePaths contains the durable VM directory and the ephemeral or log paths
 // owned by a backend process.
 type RuntimePaths struct {
-	VMDir      string
-	QMP        string
-	QMPCommand string
-	QGA        string
-	Console    string
-	Monitor    string
-	QEMULog    string
-	SerialLog  string
-	VNCSecret  string
+	VMDir         string
+	QMP           string
+	QMPCommand    string
+	QGA           string
+	Console       string
+	Monitor       string
+	QEMULog       string
+	SerialLogPipe string
+	VNCSecret     string
 }
 
 // ResolvePath resolves a configured path relative to the VM directory. Absolute

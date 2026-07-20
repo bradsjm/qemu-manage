@@ -322,6 +322,17 @@ Examples:
   qemu-manage stop home-assistant --timeout 5m
   qemu-manage stop home-assistant --force
 `},
+	"log": {text: `Print the active bounded serial log verbatim to stdout.
+
+Usage:
+  qemu-manage log NAME
+
+The command works while the VM is running or stopped, and rotated backups are
+not included.
+
+Examples:
+  qemu-manage log home-assistant | less
+`},
 	"console": {text: `Connect the terminal to a running or paused VM's serial console.
 
 Usage:
@@ -621,6 +632,7 @@ Commands:
   start        Start a VM in the background
   stop         Gracefully stop a VM, or explicitly force it
   console      Connect to a running VM's serial console
+  log          Print the active serial log
   monitor      Connect to the QEMU human monitor or run one HMP command
   guest-agent  Send one JSON request to the guest agent and print its return
   vnc          Copy the VNC password and open Screen Sharing (macOS)

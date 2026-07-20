@@ -28,7 +28,7 @@ func renderFixture() (*model.Config, backend.RuntimePaths) {
 		}, backend.RuntimePaths{
 			VMDir: "/vms/ha", QMP: "/run/qmp,0.sock", QMPCommand: "/run/qmp-command,0.sock",
 			QGA: "/run/qga.sock", Console: "/run/console.sock", Monitor: "/run/monitor,0.sock",
-			SerialLog: "/logs/serial,0.log",
+			SerialLogPipe: "/run/serial-log,0.pipe",
 		}
 }
 
@@ -50,7 +50,7 @@ func TestRenderUserNetworkGolden(t *testing.T) {
 		"-device", "virtio-blk-pci,drive=disk1,serial=recovery,bootindex=2", "-device", "virtio-rng-pci",
 		"-device", "virtio-scsi-pci,id=scsi0", "-drive", "if=none,media=cdrom,id=install,file.filename=/vms/ha/install/os,,arm.iso,format=raw,readonly=on",
 		"-device", "scsi-cd,drive=install,bus=scsi0.0,bootindex=0",
-		"-chardev", "socket,id=console0,path=/run/console.sock,server=on,wait=off,logfile=/logs/serial,,0.log,logappend=on", "-serial", "chardev:console0",
+		"-chardev", "socket,id=console0,path=/run/console.sock,server=on,wait=off,logfile=/run/serial-log,,0.pipe,logappend=on", "-serial", "chardev:console0",
 		"-qmp", "unix:/run/qmp,,0.sock,server=on,wait=off",
 		"-chardev", "socket,id=qmpcommand0,path=/run/qmp-command,,0.sock,server=on,wait=off",
 		"-mon", "chardev=qmpcommand0,mode=control",
@@ -138,7 +138,7 @@ func TestRenderSocketVMNetGolden(t *testing.T) {
 		"/var/run/socket_vmnet.bridged.vlan0", "/vms/ha/bin/qemu-system-aarch64", "-nodefaults", "-display", "none", "-machine", "virt-11.0", "-accel", "hvf", "-cpu", "host", "-smp", "cpus=4,sockets=1,cores=4,threads=1", "-m", "4096", "-name", "ha", "-uuid", "123e4567-e89b-42d3-a456-426614174000", "-run-with", "exit-with-parent=on",
 		"-rtc", "base=localtime",
 		"-drive", "if=pflash,unit=0,format=raw,readonly=on,file.locking=off,file.filename=/fw/code.fd", "-drive", "if=pflash,unit=1,format=raw,file.filename=/fw/vars.fd", "-device", "virtio-rng-pci",
-		"-chardev", "socket,id=console0,path=/run/console.sock,server=on,wait=off,logfile=/logs/serial,,0.log,logappend=on", "-serial", "chardev:console0",
+		"-chardev", "socket,id=console0,path=/run/console.sock,server=on,wait=off,logfile=/run/serial-log,,0.pipe,logappend=on", "-serial", "chardev:console0",
 		"-qmp", "unix:/run/qmp,,0.sock,server=on,wait=off",
 		"-chardev", "socket,id=qmpcommand0,path=/run/qmp-command,,0.sock,server=on,wait=off",
 		"-mon", "chardev=qmpcommand0,mode=control",
@@ -220,6 +220,20 @@ func TestRenderRequiresAbsolutePrivateMonitorPaths(t *testing.T) {
 		mutate func(*backend.RuntimePaths)
 		want   string
 	}{
+		{
+			name: "console",
+			mutate: func(paths *backend.RuntimePaths) {
+				paths.Console = "relative/console.sock"
+			},
+			want: "qemu: console socket path must be absolute",
+		},
+		{
+			name: "serial log pipe",
+			mutate: func(paths *backend.RuntimePaths) {
+				paths.SerialLogPipe = "relative/serial-log.pipe"
+			},
+			want: "qemu: serial log pipe path must be absolute",
+		},
 		{
 			name: "qmp command",
 			mutate: func(paths *backend.RuntimePaths) {

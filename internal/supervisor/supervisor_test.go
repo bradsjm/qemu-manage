@@ -71,7 +71,7 @@ func (f *fakeInstance) exit(exit backend.Exit)    { f.exits <- exit; close(f.exi
 
 type fakeBackend struct {
 	instance *fakeInstance
-	start    func() error
+	start    func(context.Context, *model.Config, backend.RuntimePaths, backend.Command) error
 	render   func(*model.Config, backend.RuntimePaths, backend.RenderOptions) (backend.Command, error)
 }
 
@@ -81,9 +81,9 @@ func (f *fakeBackend) Render(config *model.Config, paths backend.RuntimePaths, o
 	}
 	return backend.Command{Path: "/fake/qemu"}, nil
 }
-func (f *fakeBackend) Start(context.Context, *model.Config, backend.RuntimePaths, backend.Command) (backend.Instance, error) {
+func (f *fakeBackend) Start(ctx context.Context, config *model.Config, paths backend.RuntimePaths, command backend.Command) (backend.Instance, error) {
 	if f.start != nil {
-		if err := f.start(); err != nil {
+		if err := f.start(ctx, config, paths, command); err != nil {
 			return nil, err
 		}
 	}
@@ -328,13 +328,79 @@ func supervisorFixture(t *testing.T, instance *fakeInstance) (*Service, *model.C
 func TestBackendPathsIncludePrivateMonitorSockets(t *testing.T) {
 	paths := store.Paths{
 		VMDir: "/vm", QMP: "/run/qmp.sock", QMPCommand: "/run/qmp-command.sock", QGA: "/run/qga.sock",
-		Console: "/run/console.sock", Monitor: "/run/monitor.sock", QEMULog: "/logs/qemu.log", SerialLog: "/logs/serial.log",
+		Console: "/run/console.sock", Monitor: "/run/monitor.sock", QEMULog: "/logs/qemu.log", SerialLogPipe: "/run/serial-log.pipe",
 	}
 	got := backendPaths(paths)
 	if got.VMDir != paths.VMDir || got.QMP != paths.QMP || got.QMPCommand != paths.QMPCommand ||
 		got.QGA != paths.QGA || got.Console != paths.Console || got.Monitor != paths.Monitor ||
-		got.QEMULog != paths.QEMULog || got.SerialLog != paths.SerialLog {
+		got.QEMULog != paths.QEMULog || got.SerialLogPipe != paths.SerialLogPipe {
 		t.Fatalf("backend paths = %#v", got)
+	}
+}
+
+func TestSuperviseSerialLogPipeLifecycle(t *testing.T) {
+	instance := newFakeInstance()
+	service, cfg, paths := supervisorFixture(t, instance)
+	sentinel := []byte("serial-log-sentinel\n")
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	registry := backend.NewRegistry()
+	if err := registry.RegisterInstance(string(model.BackendQEMU), &fakeBackend{
+		instance: instance,
+		start: func(_ context.Context, _ *model.Config, runtimePaths backend.RuntimePaths, _ backend.Command) error {
+			info, err := os.Stat(runtimePaths.SerialLogPipe)
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeNamedPipe == 0 {
+				return errors.New("serial log pipe was not created before backend start")
+			}
+			writer, err := os.OpenFile(runtimePaths.SerialLogPipe, os.O_WRONLY, 0)
+			if err != nil {
+				return err
+			}
+			if _, err := writer.Write(sentinel); err != nil {
+				_ = writer.Close()
+				return err
+			}
+			go func() {
+				<-release
+				_ = writer.Close()
+				instance.exit(backend.Exit{})
+			}()
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service.Registry = registry
+	writer := &readinessWriter{ready: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() { done <- service.Supervise(context.Background(), cfg.Name, cfg.ID, writer, SuperviseOptions{}) }()
+	select {
+	case <-writer.ready:
+	case err := <-done:
+		t.Fatalf("supervisor exited before readiness: %v", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(paths.SerialLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, sentinel) {
+		t.Fatalf("serial log = %q, want sentinel %q", data, sentinel)
+	}
+	if _, err := os.Stat(paths.SerialLogPipe); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("serial log pipe remains: %v", err)
 	}
 }
 

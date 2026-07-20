@@ -12,7 +12,7 @@
 
 - **VM lifecycle** — Create, start, stop, and inspect VMs with straightforward commands.
 - **Disk import** — Pull images from HTTP(S) URLs (auto-decompresses `.xz`/`.gz`), copy local qcow2/raw images, or boot installer ISOs.
-- **Serial console** — Connect to any guest with `Ctrl-]` disconnect handling.
+- **Serial logs & console** — Print the active bounded serial log verbatim or connect to any guest with `Ctrl-]` disconnect handling.
 - **Monitor & guest agent** — Use the interactive QEMU human monitor, run one-shot HMP commands, and send strict JSON guest-agent requests with pipe-safe stdout.
 - **VNC passthrough** — Optional VNC with password auth; `qemu-manage vnc NAME` opens it in Screen Sharing with the password on your clipboard.
 - **Networking** — User-mode NAT out of the box; optional `socket_vmnet` for shared or bridged mode without running QEMU as root, plus optional user-network SMB host-folder share.
@@ -118,6 +118,7 @@ qemu-manage doctor my-vm
 qemu-manage showcmd my-vm
 qemu-manage --debug start my-vm
 qemu-manage status my-vm
+qemu-manage log my-vm
 
 # Ctrl-] to disconnect
 qemu-manage console my-vm
@@ -547,6 +548,9 @@ Supported environment variables:
 Autostart jobs preserve explicit roots and persisted `socket_vmnet` paths
 because launchd does not inherit your shell environment.
 Configuration files are strict, versioned JSON with owner-only mode `0600`. Use `qemu-manage config show`, `config validate`, and `config apply` for full configuration management. Generated `config.json` files begin with `$schema` pointing to the repository’s raw [`schema.json`](https://raw.githubusercontent.com/bradsjm/qemu-manage/main/schema.json), so compatible editors can validate them automatically. `qemu-manage config validate` remains the authoritative full validator because some cross-field and cross-item semantics are described but cannot be enforced portably by JSON Schema.
+
+`qemu-manage log NAME` prints `<LogRoot>/<NAME>/serial.log` verbatim. The
+`.0`, `.1`, and `.2` files are rotation backups and are not included.
 
 > **VNC security note:** An enabled VNC password is stored in plaintext in the config file, and `qemu-manage config show NAME` prints it. VNC transport is not encrypted; binding to an address other than loopback exposes it to the network.
 

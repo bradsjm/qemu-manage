@@ -39,6 +39,12 @@ func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths, optio
 	if !filepath.IsAbs(paths.Monitor) {
 		return backend.Command{}, fmt.Errorf("qemu: monitor socket path must be absolute")
 	}
+	if !filepath.IsAbs(paths.Console) {
+		return backend.Command{}, fmt.Errorf("qemu: console socket path must be absolute")
+	}
+	if !filepath.IsAbs(paths.SerialLogPipe) {
+		return backend.Command{}, fmt.Errorf("qemu: serial log pipe path must be absolute")
+	}
 	args := []string{
 		"-nodefaults",
 		"-display", "none",
@@ -93,7 +99,7 @@ func (b *Backend) Render(config *model.Config, paths backend.RuntimePaths, optio
 	}
 
 	args = append(args,
-		"-chardev", "socket,id=console0,path="+keyval(paths.Console)+",server=on,wait=off,logfile="+keyval(paths.SerialLog)+",logappend=on",
+		"-chardev", "socket,id=console0,path="+keyval(paths.Console)+",server=on,wait=off,logfile="+keyval(paths.SerialLogPipe)+",logappend=on",
 		"-serial", "chardev:console0",
 		"-qmp", "unix:"+keyval(paths.QMP)+",server=on,wait=off",
 		"-chardev", "socket,id=qmpcommand0,path="+keyval(paths.QMPCommand)+",server=on,wait=off",

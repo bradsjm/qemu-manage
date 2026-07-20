@@ -121,6 +121,9 @@ func TestDefaultFromEnv(t *testing.T) {
 	if got, want := paths.VNCSecret, filepath.Join(paths.RuntimeDir, "vnc-password"); got != want {
 		t.Fatalf("VNC secret = %q, want %q", got, want)
 	}
+	if got, want := paths.SerialLogPipe, filepath.Join(paths.RuntimeDir, "serial-log.pipe"); got != want {
+		t.Fatalf("serial log pipe = %q, want %q", got, want)
+	}
 
 	overrides["QEMU_MANAGE_DATA_ROOT"] = "relative"
 	if _, err := DefaultFromEnv(func(name string) string { return overrides[name] }); err == nil || !strings.Contains(err.Error(), "data root must be absolute") {

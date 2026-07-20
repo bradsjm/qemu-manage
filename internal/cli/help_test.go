@@ -124,6 +124,7 @@ func TestCommandAndNestedHelp(t *testing.T) {
 		},
 		{name: "start", args: []string{"start", "--help"}, want: []string{"start NAME", "--foreground", "--boot-menu", "not persisted", "showcmd"}},
 		{name: "showcmd", args: []string{"showcmd", "--help"}, want: []string{"showcmd NAME", "--boot-menu", "durable VM configuration"}},
+		{name: "log", args: []string{"log", "--help"}, want: []string{"log NAME", "active", "rotated backups", "stdout"}},
 		{name: "monitor", args: []string{"monitor", "--help"}, want: []string{"monitor NAME", "\"info status\"", "Stdout is only the", "Ctrl-]", "restarted once", "Examples:"}},
 		{name: "guest-agent", args: []string{"guest-agent", "--help"}, want: []string{"guest-agent NAME REQUEST", `{"execute":"guest-info"}`, "set NAME --guest-agent on", "compact JSON return value", "Examples:"}},
 		{name: "config", args: []string{"config", "--help"}, want: []string{"config", "show", "validate", "apply", "Examples:"}},
@@ -218,6 +219,9 @@ func TestExplicitSuperviseHelpDoesNotExposeItInRootHelp(t *testing.T) {
 	if strings.Contains(root, "supervise") {
 		t.Fatalf("root help exposes hidden supervise command: %q", root)
 	}
+	if !strings.Contains(root, "log          Print the active serial log") {
+		t.Fatalf("root help does not expose log command: %q", root)
+	}
 
 	supervise := requireHelpSuccess(t, a, "help", "supervise")
 	if !strings.Contains(supervise, "supervise NAME") {
@@ -233,6 +237,7 @@ func TestHelpAliasRoutesMonitorAndGuestAgentTopics(t *testing.T) {
 	}{
 		{args: []string{"help", "monitor"}, want: `qemu-manage monitor NAME "COMMAND"`},
 		{args: []string{"help", "guest-agent"}, want: `qemu-manage guest-agent NAME REQUEST`},
+		{args: []string{"help", "log"}, want: `qemu-manage log NAME`},
 	}
 	for _, tc := range cases {
 		help := requireHelpSuccess(t, a, tc.args...)
