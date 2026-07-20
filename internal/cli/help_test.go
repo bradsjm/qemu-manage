@@ -124,6 +124,7 @@ func TestCommandAndNestedHelp(t *testing.T) {
 			avoid: []string{"--socket-vmnet-client", "--socket-vmnet-socket"},
 		},
 		{name: "start", args: []string{"start", "--help"}, want: []string{"start NAME", "--foreground", "--boot-menu", "not persisted", "showcmd"}},
+		{name: "restart", args: []string{"restart", "--help"}, want: []string{"restart NAME", "--timeout DURATION", "--force", "--boot-menu", "--foreground", "already stopped", "abort", "Examples:"}},
 		{name: "showcmd", args: []string{"showcmd", "--help"}, want: []string{"showcmd NAME", "--boot-menu", "durable VM configuration"}},
 		{name: "log", args: []string{"log", "--help"}, want: []string{"log NAME", "active", "rotated backups", "stdout"}},
 		{name: "monitor", args: []string{"monitor", "--help"}, want: []string{"monitor NAME", "\"info status\"", "Stdout is only the", "Ctrl-]", "restarted once", "Examples:"}},

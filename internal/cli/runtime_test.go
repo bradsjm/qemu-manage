@@ -1333,6 +1333,49 @@ func TestStopReportsForcedKillProgress(t *testing.T) {
 	}
 }
 
+func TestRestartReportsMissingLifecycleService(t *testing.T) {
+	a := testApp(t)
+	saveTestConfig(t, a, testConfig("vm"))
+	code, _, stderr := runCLI(a, "restart", "vm")
+	if code != 1 || !strings.Contains(stderr, "lifecycle service is unavailable") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	if strings.Contains(stderr, "supervisor service is unavailable") {
+		t.Fatalf("restart reached the start phase after a stop-phase failure: %q", stderr)
+	}
+}
+
+func TestRestartRunsStopThenStartForStoppedVM(t *testing.T) {
+	a := testApp(t)
+	saveTestConfig(t, a, testConfig("vm"))
+	a.Lifecycle = lifecycle.NewService(a.Store)
+	code, _, stderr := runCLI(a, "restart", "vm")
+	if code != 1 {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stderr, "Stopping VM: VM was already stopped; complete") {
+		t.Fatalf("stop phase did not complete for a stopped VM: %q", stderr)
+	}
+	if !strings.Contains(stderr, "supervisor service is unavailable") {
+		t.Fatalf("restart did not attempt start after stop completed: %q", stderr)
+	}
+}
+
+func TestRestartInvalidStopTimeoutAbortsBeforeStart(t *testing.T) {
+	a := testApp(t)
+	saveTestConfig(t, a, testConfig("vm"))
+	a.Lifecycle = lifecycle.NewService(a.Store)
+	code, _, stderr := runCLI(a, "restart", "vm", "--timeout", "250ms")
+	if code != 1 || !strings.Contains(stderr, "stop timeout 250ms must be a whole number of seconds") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	for _, unexpected := range []string{"supervisor service is unavailable", "Stopping VM:"} {
+		if strings.Contains(stderr, unexpected) {
+			t.Fatalf("restart progressed past stop validation: %q", stderr)
+		}
+	}
+}
+
 func TestAbsoluteStorePathsIncludesMonitorSocketsAndVNCSecret(t *testing.T) {
 	paths := store.Paths{
 		VMDir: "vm", Config: "config.json", RuntimeDir: "runtime", ControlSocket: "control.sock",

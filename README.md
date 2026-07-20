@@ -448,6 +448,21 @@ qemu-manage status linux --json    # shows live VNC endpoint when enabled
 qemu-manage vnc linux              # opens in Screen Sharing, password on clipboard
 ```
 
+`restart` stops and then starts a VM in one step. It performs the configured
+graceful or forced stop, waits for the VM to reach a fully stopped state, and
+then starts it again under its supervisor, accepting the stop-phase and
+start-phase options together:
+
+```sh
+qemu-manage restart home-assistant
+qemu-manage restart home-assistant --timeout 5m   # override the shutdown timeout
+qemu-manage restart linux --force                  # force-kill during the stop phase
+qemu-manage restart linux --boot-menu              # one-shot boot menu on the next start
+```
+
+If the VM is already stopped, the stop phase reports that and the start
+proceeds. A stop failure aborts the restart before the start is attempted.
+
 ## Log management
 
 Each VM has a private log directory under `<LogRoot>/<NAME>/`. The default

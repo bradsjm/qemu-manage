@@ -80,6 +80,8 @@ func (a *App) runRuntimeCommand(ctx context.Context, command string, args []stri
 		return a.runStart(ctx, args, stderr)
 	case "stop":
 		return a.runStop(ctx, args, stderr)
+	case "restart":
+		return a.runRestart(ctx, args, stderr)
 	case "console":
 		return a.runConsole(ctx, args, stdin, stdout, stderr)
 	case "monitor":
@@ -112,73 +114,7 @@ func (a *App) runStart(ctx context.Context, args []string, stderr io.Writer) err
 	if err != nil {
 		return err
 	}
-	if a.Supervisor == nil {
-		return errors.New("runtime: supervisor service is unavailable")
-	}
-	executable, err := filepath.Abs(a.ExecutablePath)
-	if err != nil || a.ExecutablePath == "" {
-		if err == nil {
-			err = errors.New("executable path is empty")
-		}
-		return fmt.Errorf("runtime: resolve executable path: %w", err)
-	}
-	paths, err := absoluteStorePaths(a.Store.Paths(config))
-	if err != nil {
-		return err
-	}
-	a.debugf(
-		"start name=%q foreground=%t boot_menu=%t supervisor_stdout=%q supervisor_stderr=%q",
-		config.Name,
-		*foreground,
-		*bootMenu,
-		paths.SupervisorStdout,
-		paths.SupervisorStderr,
-	)
-	ready := make(chan struct{})
-	var readyOnce sync.Once
-	startDone := make(chan error, 1)
-	progressErr := withProgress(stderr, true, a.progressInteractive(stderr), "Starting VM (checking prerequisites and waiting for readiness)", 0, progress.UnitsDefault, func(tracker *progress.Tracker) error {
-		go func() {
-			startDone <- supervisor.StartProcess(ctx, supervisor.StartOptions{
-				Name:         config.Name,
-				ExpectedID:   config.ID,
-				Executable:   executable,
-				Paths:        paths,
-				Foreground:   *foreground,
-				BootMenu:     *bootMenu,
-				Debug:        a.debug,
-				DebugWriter:  a.debugWriter,
-				ReadyTimeout: supervisorReadyTimeout,
-				OnReady: func() {
-					if tracker != nil {
-						tracker.MarkAsDone()
-					}
-					readyOnce.Do(func() { close(ready) })
-				},
-				RunForeground: func(runCtx context.Context, ready io.Writer) error {
-					return a.Supervisor.Supervise(runCtx, config.Name, config.ID, ready, supervisor.SuperviseOptions{
-						BootMenu:    *bootMenu,
-						Debug:       a.debug,
-						DebugWriter: a.debugWriter,
-					})
-				},
-			})
-		}()
-		select {
-		case err := <-startDone:
-			return err
-		case <-ready:
-			return nil
-		}
-	})
-	if progressErr != nil {
-		return fmt.Errorf("runtime: start %q: %w", name, progressErr)
-	}
-	startErr := <-startDone
-	if startErr != nil {
-		return fmt.Errorf("runtime: start %q: %w", name, startErr)
-	}
-	return nil
+	return a.startVM(ctx, config, *foreground, *bootMenu, stderr)
 }
 
 func (a *App) runStop(ctx context.Context, args []string, stderr io.Writer) error {
@@ -192,21 +128,52 @@ func (a *App) runStop(ctx context.Context, args []string, stderr io.Writer) erro
 	if err := parseNoPositionals(flags, "stop", rest); err != nil {
 		return err
 	}
-	config, err := a.Store.Load(name)
+	config, err := a.loadQEMUConfig(name)
 	if err != nil {
 		return err
 	}
+	return a.stopVM(ctx, config, *timeout, *force, stderr)
+}
+
+func (a *App) runRestart(ctx context.Context, args []string, stderr io.Writer) error {
+	name, rest, err := nameBeforeFlags("restart", args)
+	if err != nil {
+		return err
+	}
+	flags := quietFlagSet("restart")
+	timeout := flags.Duration("timeout", 0, "")
+	force := flags.Bool("force", false, "")
+	foreground := flags.Bool("foreground", false, "")
+	bootMenu := flags.Bool("boot-menu", false, "")
+	if err := parseNoPositionals(flags, "restart", rest); err != nil {
+		return err
+	}
+	config, err := a.loadQEMUConfig(name)
+	if err != nil {
+		return err
+	}
+	if err := a.stopVM(ctx, config, *timeout, *force, stderr); err != nil {
+		return err
+	}
+	return a.startVM(ctx, config, *foreground, *bootMenu, stderr)
+}
+
+// stopVM asks the authenticated supervisor to stop config and reports the same
+// progress frames to stderr as an interactive stop. A timeout of zero selects
+// the VM's configured shutdown timeout. It is shared by stop and restart so the
+// two paths cannot drift.
+func (a *App) stopVM(ctx context.Context, config *model.Config, timeout time.Duration, force bool, stderr io.Writer) error {
 	if a.Lifecycle == nil {
 		return errors.New("runtime: lifecycle service is unavailable")
 	}
-	effectiveTimeout := *timeout
+	effectiveTimeout := timeout
 	if effectiveTimeout == 0 {
 		effectiveTimeout = time.Duration(config.ShutdownTimeoutSeconds) * time.Second
 	}
 	if effectiveTimeout < time.Second || effectiveTimeout > time.Hour || effectiveTimeout%time.Second != 0 {
 		return &lifecycle.InvalidStopTimeoutError{Timeout: effectiveTimeout}
 	}
-	if *force {
+	if force {
 		_, _ = fmt.Fprintln(stderr, "Stopping VM: Requesting forced kill...")
 		_, _ = fmt.Fprintln(
 			stderr,
@@ -220,7 +187,7 @@ func (a *App) runStop(ctx context.Context, args []string, stderr io.Writer) erro
 
 	acknowledged := false
 	forcing := false
-	err = a.Lifecycle.StopWithProgress(ctx, config, *timeout, *force, func(progress supervisor.StopProgress) {
+	err := a.Lifecycle.StopWithProgress(ctx, config, timeout, force, func(progress supervisor.StopProgress) {
 		switch progress {
 		case supervisor.StopProgressAcknowledged:
 			acknowledged = true
@@ -240,6 +207,79 @@ func (a *App) runStop(ctx context.Context, args []string, stderr io.Writer) erro
 		_, _ = fmt.Fprintln(stderr, "Stopping VM: VM shut down on its own; complete")
 	default:
 		_, _ = fmt.Fprintln(stderr, "Stopping VM: VM was already stopped; complete")
+	}
+	return nil
+}
+
+// startVM launches config under its authenticated supervisor and waits for
+// readiness, reporting the same progress as an interactive start. It is shared
+// by start and restart so the two paths cannot drift.
+func (a *App) startVM(ctx context.Context, config *model.Config, foreground, bootMenu bool, stderr io.Writer) error {
+	if a.Supervisor == nil {
+		return errors.New("runtime: supervisor service is unavailable")
+	}
+	executable, err := filepath.Abs(a.ExecutablePath)
+	if err != nil || a.ExecutablePath == "" {
+		if err == nil {
+			err = errors.New("executable path is empty")
+		}
+		return fmt.Errorf("runtime: resolve executable path: %w", err)
+	}
+	paths, err := absoluteStorePaths(a.Store.Paths(config))
+	if err != nil {
+		return err
+	}
+	a.debugf(
+		"start name=%q foreground=%t boot_menu=%t supervisor_stdout=%q supervisor_stderr=%q",
+		config.Name,
+		foreground,
+		bootMenu,
+		paths.SupervisorStdout,
+		paths.SupervisorStderr,
+	)
+	ready := make(chan struct{})
+	var readyOnce sync.Once
+	startDone := make(chan error, 1)
+	progressErr := withProgress(stderr, true, a.progressInteractive(stderr), "Starting VM (checking prerequisites and waiting for readiness)", 0, progress.UnitsDefault, func(tracker *progress.Tracker) error {
+		go func() {
+			startDone <- supervisor.StartProcess(ctx, supervisor.StartOptions{
+				Name:         config.Name,
+				ExpectedID:   config.ID,
+				Executable:   executable,
+				Paths:        paths,
+				Foreground:   foreground,
+				BootMenu:     bootMenu,
+				Debug:        a.debug,
+				DebugWriter:  a.debugWriter,
+				ReadyTimeout: supervisorReadyTimeout,
+				OnReady: func() {
+					if tracker != nil {
+						tracker.MarkAsDone()
+					}
+					readyOnce.Do(func() { close(ready) })
+				},
+				RunForeground: func(runCtx context.Context, ready io.Writer) error {
+					return a.Supervisor.Supervise(runCtx, config.Name, config.ID, ready, supervisor.SuperviseOptions{
+						BootMenu:    bootMenu,
+						Debug:       a.debug,
+						DebugWriter: a.debugWriter,
+					})
+				},
+			})
+		}()
+		select {
+		case err := <-startDone:
+			return err
+		case <-ready:
+			return nil
+		}
+	})
+	if progressErr != nil {
+		return fmt.Errorf("runtime: start %q: %w", config.Name, progressErr)
+	}
+	startErr := <-startDone
+	if startErr != nil {
+		return fmt.Errorf("runtime: start %q: %w", config.Name, startErr)
 	}
 	return nil
 }

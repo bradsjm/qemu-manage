@@ -335,6 +335,30 @@ not included.
 Examples:
   qemu-manage log home-assistant | less
 `},
+	"restart": {text: `Stop a VM and then start it again in one step.
+
+Usage:
+  qemu-manage restart NAME [OPTIONS]
+
+restart performs the configured graceful or forced stop, waits for the VM to
+reach a fully stopped state, and then starts it under its supervisor. It accepts
+the stop-phase and start-phase options together.
+
+Options:
+  --timeout DURATION  Override the configured whole-second shutdown timeout
+  --force             Kill QEMU without guest cooperation during the stop phase
+  --boot-menu         Request the firmware boot menu for the following start only
+  --foreground        Keep the supervisor attached to this terminal after start
+
+If the VM is already stopped, the stop phase reports that and the start proceeds.
+A stop failure aborts the restart before the start is attempted.
+
+Examples:
+  qemu-manage restart home-assistant
+  qemu-manage restart home-assistant --timeout 5m
+  qemu-manage restart linux --force
+  qemu-manage restart linux --boot-menu
+`},
 	"console": {text: `Connect the terminal to a running or paused VM's serial console.
 
 Usage:
@@ -633,6 +657,7 @@ Commands:
   showcmd      Print the exact QEMU command without running it
   start        Start a VM in the background
   stop         Gracefully stop a VM, or explicitly force it
+  restart      Stop a VM and start it again in one step
   console      Connect to a running VM's serial console
   log          Print the active serial log
   monitor      Connect to the QEMU human monitor or run one HMP command

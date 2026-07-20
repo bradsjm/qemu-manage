@@ -244,7 +244,7 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		err = a.dispatchConfig(ctx, args[1:], stdin, stdout, stderr)
 	case "showcmd", "log", "status", "list", "delete":
 		err = a.runInfoCommand(ctx, args[0], args[1:], stdin, stdout, stderr)
-	case "start", "stop", "console", "monitor", "guest-agent", "vnc", "doctor", "supervise":
+	case "start", "stop", "restart", "console", "monitor", "guest-agent", "vnc", "doctor", "supervise":
 		err = a.runRuntimeCommand(ctx, args[0], args[1:], stdin, stdout, stderr)
 	case "autostart":
 		err = a.runAutostart(ctx, args[1:], stdout, stderr)
