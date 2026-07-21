@@ -123,17 +123,20 @@ func TestStatusReportsBytesAndUsesStableExecutableTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.Executable = link
-	resolved, err := stableExecutable(m.Executable)
+	pinned, err := stableExecutable(m.Executable)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if pinned != link {
+		t.Fatalf("stableExecutable resolved the symlink: got %q want %q", pinned, link)
 	}
 	paths := m.Store.Paths(cfg)
-	data, err := Render(cfg, resolved, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home, m.Store.DataRoot, m.Store.RuntimeRoot, m.Store.LogRoot)
+	data, err := Render(cfg, pinned, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home, m.Store.DataRoot, m.Store.RuntimeRoot, m.Store.LogRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "<string>"+resolved+"</string>") {
-		t.Fatal("plist did not pin resolved executable")
+	if !strings.Contains(string(data), "<string>"+link+"</string>") {
+		t.Fatalf("plist did not pin invoked executable path %q: %s", link, data)
 	}
 	if err = os.MkdirAll(m.LoginDir, 0700); err != nil {
 		t.Fatal(err)
@@ -163,5 +166,24 @@ func TestStatusReportsBytesAndUsesStableExecutableTarget(t *testing.T) {
 		if c.privileged {
 			t.Fatalf("status used privilege: %#v", c)
 		}
+	}
+}
+
+func TestPlistProgramArguments(t *testing.T) {
+	m, _, cfg := launchdTestManager(t)
+	cfg.Autostart.Scope = model.AutostartLogin
+	paths := m.Store.Paths(cfg)
+	const exe = "/custom/path/qemu-manage"
+	data, err := Render(cfg, exe, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home, m.Store.DataRoot, m.Store.RuntimeRoot, m.Store.LogRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := plistProgramArguments(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{exe, "start", cfg.Name, "--foreground"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("ProgramArguments = %#v, want %#v", args, want)
 	}
 }

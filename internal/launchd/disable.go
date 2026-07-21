@@ -29,15 +29,19 @@ var ErrVMRunning = errors.New("launchd: VM is running")
 // Disable transactionally removes the VM's autostart job from both launchd
 // domains and records scope none. It does NOT stop the VM.
 //
-// If a job is currently loaded, Disable assumes the VM may be running under it
-// and refuses without making any changes, returning a wrapped ErrVMRunning.
-// Unloading a loaded job would terminate the foreground supervisor and QEMU,
-// and a KeepAlive job could restart the VM; both outcomes are destructive
-// surprises the user must perform explicitly via stop.
+// Disable refuses while the VM is running, returning a wrapped ErrVMRunning,
+// because booting out a loaded job would terminate the foreground supervisor
+// and QEMU, and a KeepAlive job could restart the VM. The running check uses
+// Stopped when the caller wires it (the CLI uses authenticated lifecycle
+// state): a boot-scope LaunchDaemon stays loaded for the whole boot session
+// even while the VM is stopped, so the runtime state, not launchd
+// registration, is the real signal. When Stopped is nil, Disable falls back to
+// refusing whenever a job is loaded.
 //
-// When no job is loaded, Disable removes the on-disk plists and updates the
-// durable scope to none. The name mutation lock is held for the whole
-// transaction and rollback restores a removed plist if a later step fails.
+// When the VM is stopped, Disable bootouts any loaded job (privileged for the
+// system domain), removes the on-disk plists, and updates the durable scope to
+// none. The name mutation lock is held for the whole transaction and rollback
+// restores a removed or bootout-ed plist if a later step fails.
 func (m *Manager) Disable(ctx context.Context, name string) error {
 	if m == nil || m.Store == nil {
 		return errors.New("launchd: manager has no store")
@@ -82,11 +86,21 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 		}
 	}
 
-	// Safety gate: a loaded job means launchd may be running the VM, and
-	// booting it out would terminate that VM. Refuse without any mutation.
-	for _, s := range states {
-		if s.loaded {
+	// Safety gate: refuse only while the VM is actually running. A boot-scope
+	// LaunchDaemon stays loaded for the whole boot session even while the VM
+	// is stopped, so the real signal is the runtime running-state, not launchd
+	// registration. When Stopped is wired, a stopped VM with a loaded job is
+	// bootout-ed below (privileged for the system domain). When Stopped is
+	// unset, fall back to the conservative loaded-job gate.
+	if m.Stopped != nil {
+		if err := m.Stopped(ctx, cfg); err != nil {
 			return fmt.Errorf("launchd: VM %q is running; stop it before disabling autostart: %w", name, ErrVMRunning)
+		}
+	} else {
+		for _, s := range states {
+			if s.loaded {
+				return fmt.Errorf("launchd: VM %q is running; stop it before disabling autostart: %w", name, ErrVMRunning)
+			}
 		}
 	}
 

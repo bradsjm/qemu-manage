@@ -487,6 +487,9 @@ later starts and launchd do not need those variables.
 
 A named check also verifies copied firmware, disks, configured machine support,
 configured socket_vmnet paths, and whether the helper socket is connectable.
+When the VM has autostart configured, it also checks the installed launchd plist
+matches the current configuration and that the executable it references still
+exists, so a stale job left by a Homebrew upgrade is reported as a failure.
 `},
 	"autostart": {text: `Manage automatic VM startup through launchd.
 
@@ -495,7 +498,7 @@ Usage:
 
 Subcommands:
   enable NAME [--scope VALUE]  Install an autostart job without starting the VM
-  disable NAME                 Remove an autostart job for a stopped VM
+  disable NAME [--scope VALUE] Remove an autostart job for a stopped VM
   status NAME                  Compare configured and installed launchd state
 
 Valid scopes:
@@ -526,14 +529,30 @@ Examples:
 
 Boot scope installs a system LaunchDaemon with sudo. QEMU itself continues to
 run as the configured non-root user.
+
+The plist records the pathname used to run qemu-manage (not a resolved Homebrew
+Cellar path), so upgrades no longer orphan autostart jobs. If a plist has
+already drifted (for example after upgrading qemu-manage), re-running enable
+rewrites it in place and reports "Reconciled"; run "qemu-manage doctor NAME" to
+confirm.
 `},
 	"autostart disable": {text: `Remove a launchd job for a stopped VM.
 
 Usage:
-  qemu-manage autostart disable NAME
+  qemu-manage autostart disable NAME [--scope VALUE]
+
+Options:
+  --scope VALUE  Optional; accepted for symmetry with enable. A VM has one
+                 autostart scope at a time, so disable always removes it.
+
+Disable refuses while the VM is running; stop it first. When the VM is stopped
+it bootouts any loaded job (sudo for boot scope) and removes the plist, so
+qemu-manage itself still runs as a normal user and only the privileged launchd
+steps use sudo.
 
 Examples:
   qemu-manage autostart disable home-assistant
+  qemu-manage autostart disable home-assistant --scope boot
 `},
 	"autostart status": {text: `Show configured, installed, matching, and loaded launchd state.
 

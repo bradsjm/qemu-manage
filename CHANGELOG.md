@@ -5,6 +5,10 @@ All notable changes to qemu-manage are documented in this file.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.6.0] - 2026-07-21
+
 ### Added
 - `qemu-manage restart NAME` convenience command that stops and starts a VM in sequence, accepting the stop-phase (`--timeout`, `--force`) and start-phase (`--boot-menu`, `--foreground`) options together; a stop failure aborts before the start is attempted.
 - Added output abstraction layer with presentation writers, ANSI stripping, and animated spinners
@@ -13,6 +17,13 @@ All notable changes to qemu-manage are documented in this file.
 - Replaced go-pretty with pterm as the unified terminal output library
 - Rewrote progress bars with custom pterm-styled byte-level bars and waiting helpers
 - Switched table rendering to pterm with conditional ANSI stripping for redirected output
+
+### Fixed
+- Boot- and login-scope autostart no longer break after a `brew upgrade`: launchd plists now record the pathname used to run `qemu-manage` (for example `/opt/homebrew/bin/qemu-manage`) instead of a resolved Homebrew Cellar path that the upgrade removes. Re-running `autostart enable` reconciles already-drifted plists in place and reports `Reconciled`.
+- `autostart disable` now removes a boot-scope LaunchDaemon when the VM is stopped instead of refusing whenever the job is loaded (a boot daemon stays loaded for the whole boot session). It invokes `sudo` only for the privileged `bootout` and plist removal.
+- `autostart disable NAME [--scope VALUE]` accepts `--scope` for symmetry with `enable` instead of failing with "unexpected arguments".
+- `doctor NAME` now checks the installed launchd autostart plist and the executable it references, so a stale job left by a Homebrew upgrade is reported as a failure with a fix command.
+
 ## [0.5.0] - 2026-07-20
 
 ### Added
@@ -82,6 +93,9 @@ All notable changes to qemu-manage are documented in this file.
 ## [0.1.0] - 2026-07-18
 
 - Initial release.
+
+[Unreleased]: https://github.com/bradsjm/qemu-manage/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/bradsjm/qemu-manage/compare/v0.5.0...v0.6.0
 
 [0.5.0]: https://github.com/bradsjm/qemu-manage/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/bradsjm/qemu-manage/compare/v0.3.0...v0.4.0

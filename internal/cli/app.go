@@ -166,6 +166,21 @@ func NewApp() *App {
 		return qemu.RequiredPassed(qemu.Doctor(ctx, *config, backendPaths(paths)))
 	}
 	a.Launchd = launchd.NewManager(a.Store, a.ExecutablePath, a.User.Name, a.User.Home, a.User.UID)
+	a.Launchd.Stopped = func(ctx context.Context, cfg *model.Config) error {
+		// Treat the VM as running only when the authenticated lifecycle state
+		// proves it. A boot-scope LaunchDaemon stays loaded for the whole boot
+		// session even while the VM is stopped, so launchd registration alone
+		// is not a safe signal for autostart disable.
+		result, err := a.Lifecycle.Status(ctx, cfg)
+		if err != nil {
+			return fmt.Errorf("determine run state: %w", err)
+		}
+		switch result.State {
+		case model.RunStateStarting, model.RunStateRunning, model.RunStatePaused, model.RunStateStopping:
+			return fmt.Errorf("VM is %s", result.State)
+		}
+		return nil
+	}
 	a.ProvisionSocketVMNetBridge = a.Launchd.ProvisionSocketVMNetBridge
 	a.Runtime = newRuntimeAdapter(a.Lifecycle)
 	return a

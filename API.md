@@ -291,7 +291,7 @@ Capability keys are `ping`, `cpu`, `load`, `vcpus`, `clock`,
 `filesystem_freeze`, `filesystems`, `network`, and `disk`.
 
 ```json
-{"api_version":1,"service":{"name":"qemu-manage","version":"0.5.0","metrics_format":"prometheus","metrics_format_version":"0.0.4"},"vm":{"id":"0123456789abcdef0123456789abcdef","name":"home-assistant","backend":"qemu","architecture":"aarch64","cpus":4,"memory_mib":4096},"qemu":{"version":{"major":11,"minor":0,"micro":1,"package":""},"accelerator":"hvf"},"guest_agent":{"configured":true,"version":"9.1","capabilities":{"ping":true,"network":true}},"routes":["/health","/info","/metrics","/ping","/status"]}
+{"api_version":1,"service":{"name":"qemu-manage","version":"0.6.0","metrics_format":"prometheus","metrics_format_version":"0.0.4"},"vm":{"id":"0123456789abcdef0123456789abcdef","name":"home-assistant","backend":"qemu","architecture":"aarch64","cpus":4,"memory_mib":4096},"qemu":{"version":{"major":11,"minor":0,"micro":1,"package":""},"accelerator":"hvf"},"guest_agent":{"configured":true,"version":"9.1","capabilities":{"ping":true,"network":true}},"routes":["/health","/info","/metrics","/ping","/status"]}
 ```
 
 ```sh

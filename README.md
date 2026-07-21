@@ -104,10 +104,10 @@ The formula installs QEMU as a dependency. Optional `socket_vmnet` networking re
 
 Download the latest archive from [GitHub Releases](https://github.com/bradsjm/qemu-manage/releases/latest). Archives are unsigned and target Apple Silicon only. macOS may ask you to approve the binary in Privacy & Security.
 
-Replace `0.5.0` with the version you want to install:
+Replace `0.6.0` with the version you want to install:
 
 ```sh
-VERSION=0.5.0
+VERSION=0.6.0
 curl -fLO "https://github.com/bradsjm/qemu-manage/releases/download/v${VERSION}/qemu-manage_${VERSION}_darwin_arm64.tar.gz"
 curl -fLO "https://github.com/bradsjm/qemu-manage/releases/download/v${VERSION}/checksums.txt"
 shasum -a 256 -c checksums.txt
@@ -125,7 +125,7 @@ Make sure `$HOME/.local/bin` is on your `PATH`.
 go install github.com/bradsjm/qemu-manage/cmd/qemu-manage@latest
 
 # Specific version
-go install github.com/bradsjm/qemu-manage/cmd/qemu-manage@v0.5.0
+go install github.com/bradsjm/qemu-manage/cmd/qemu-manage@v0.6.0
 ```
 
 Requires Go 1.25+ and builds locally — no unsigned binary needed.
@@ -628,12 +628,26 @@ qemu-manage autostart enable home-assistant --scope login
 qemu-manage autostart enable home-assistant --scope boot
 
 qemu-manage autostart status home-assistant
-qemu-manage autostart disable home-assistant
+qemu-manage autostart disable home-assistant      # --scope is optional
 ```
 
 Boot-scope installation requires `sudo` for the narrow LaunchDaemon install.
 QEMU itself still runs as the non-root VM owner, and enabling autostart does
-not start the VM immediately.
+not start the VM immediately. `disable` refuses while the VM is running; stop it
+first, then it bootouts any loaded job and removes the plist (using `sudo` for
+the boot-scope LaunchDaemon).
+
+The launchd plist records the pathname used to run `qemu-manage` (for example
+`/opt/homebrew/bin/qemu-manage`), not a resolved Homebrew Cellar path, so a
+`brew upgrade` no longer orphans existing autostart jobs. If a plist predates
+this behavior or has drifted after an upgrade, re-running `enable` rewrites it
+in place and reports `Reconciled`:
+
+```sh
+brew upgrade qemu-manage
+qemu-manage autostart enable home-assistant --scope boot   # rewrites the plist
+qemu-manage doctor home-assistant                           # confirms it is healthy
+```
 
 ## Storage & security
 

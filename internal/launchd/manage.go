@@ -229,6 +229,104 @@ func plistLabel(data []byte) (string, error) {
 	return label, nil
 }
 
+// plistProgramArguments extracts the ProgramArguments strings from a launchd
+// plist in document order. It inspects the executable a job will run without
+// invoking launchd, so doctor can flag a plist that references a binary
+// removed by a Homebrew upgrade.
+func plistProgramArguments(data []byte) ([]string, error) {
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	inDict, depth := false, 0
+	wantArray, inArray := false, false
+	var args []string
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		switch value := token.(type) {
+		case xml.StartElement:
+			if value.Name.Local == "dict" && !inDict {
+				inDict, depth = true, 1
+				continue
+			}
+			if !inDict {
+				continue
+			}
+			depth++
+			if !inArray && depth == 2 && value.Name.Local == "key" {
+				var key string
+				if err := decoder.DecodeElement(&key, &value); err != nil {
+					return nil, err
+				}
+				depth--
+				wantArray = key == "ProgramArguments"
+				continue
+			}
+			if wantArray && !inArray && depth == 2 && value.Name.Local == "array" {
+				inArray = true
+				continue
+			}
+			if inArray && depth == 3 && value.Name.Local == "string" {
+				var arg string
+				if err := decoder.DecodeElement(&arg, &value); err != nil {
+					return nil, err
+				}
+				args = append(args, arg)
+				depth--
+			}
+		case xml.EndElement:
+			if inDict {
+				depth--
+				if depth == 0 {
+					inDict = false
+				}
+				if inArray && value.Name.Local == "array" {
+					inArray = false
+					wantArray = false
+				}
+			}
+		}
+	}
+	if args == nil {
+		return nil, errors.New("missing ProgramArguments array")
+	}
+	return args, nil
+}
+
+// InstalledExecutable returns the executable path referenced by the installed
+// autostart plist for the VM's configured scope. It returns ("", false, nil)
+// when no plist is installed for that scope. The path is read verbatim from
+// the on-disk plist so a stale reference (for example a Cellar path removed by
+// a Homebrew upgrade) is reported faithfully rather than recomputed.
+func (m *Manager) InstalledExecutable(ctx context.Context, name string) (string, bool, error) {
+	cfg, err := m.Store.Load(name)
+	if err != nil {
+		return "", false, err
+	}
+	d := domainLogin
+	if cfg.Autostart.Scope == model.AutostartBoot {
+		d = domainSystem
+	}
+	inspection, err := m.inspectPath(d, cfg.ID)
+	if err != nil {
+		return "", false, err
+	}
+	if !inspection.Present {
+		return "", false, nil
+	}
+	args, err := plistProgramArguments(inspection.Bytes)
+	if err != nil {
+		return "", true, err
+	}
+	if len(args) == 0 {
+		return "", true, errors.New("ProgramArguments has no strings")
+	}
+	return args[0], true, nil
+}
+
 func (m *Manager) printLoaded(ctx context.Context, d domain, id string) (bool, error) {
 	target := m.target(d, id)
 	output, err := m.runner().Run(ctx, false, launchctlPath, "print", target)

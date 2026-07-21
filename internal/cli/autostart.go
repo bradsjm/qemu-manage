@@ -59,8 +59,19 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 		}
 		return writeAutostartEnableStatus(stdout, stdoutInteractive, name, result)
 	case "disable":
-		if len(remaining) != 0 {
-			return usageErrorf("autostart disable: unexpected arguments")
+		flags := quietFlagSet("autostart disable")
+		scopeValue := flags.String("scope", "", "")
+		if err := parseNoPositionals(flags, "autostart disable", remaining); err != nil {
+			return err
+		}
+		// --scope is accepted for symmetry with enable but is informational
+		// only: a VM has one autostart scope at a time, so disable always
+		// removes the configured autostart regardless of the value passed.
+		if value := *scopeValue; value != "" {
+			scope := model.AutostartScope(value)
+			if scope != model.AutostartBoot && scope != model.AutostartLogin {
+				return usageErrorf("autostart disable: --scope %q is invalid; valid values: boot, login", value)
+			}
 		}
 		if a.Launchd == nil {
 			return fmt.Errorf("launchd: manager is unavailable")
@@ -105,22 +116,39 @@ func withLaunchdPrefix(err error) error {
 }
 
 func writeAutostartEnableStatus(output io.Writer, interactive bool, name string, result launchd.EnableResult) error {
-	if result.AlreadyEnabled {
+	switch {
+	case result.Reconciled:
+		if err := writeMessage(output, interactive, messageSuccess, fmt.Sprintf("Reconciled autostart plist for %q at %s.", name, result.Scope)); err != nil {
+			return err
+		}
+		if err := writeMessage(output, interactive, messageInfo, "The installed launchd job was rewritten to match the current executable."); err != nil {
+			return err
+		}
+	case result.AlreadyEnabled:
 		if err := writeMessage(output, interactive, messageInfo, fmt.Sprintf("Autostart already enabled for %q at %s.", name, result.Scope)); err != nil {
 			return err
 		}
-	} else if err := writeMessage(output, interactive, messageSuccess, fmt.Sprintf("Autostart enabled for %q at %s.", name, result.Scope)); err != nil {
-		return err
+	default:
+		if err := writeMessage(output, interactive, messageSuccess, fmt.Sprintf("Autostart enabled for %q at %s.", name, result.Scope)); err != nil {
+			return err
+		}
 	}
 	if result.Loaded {
 		if err := writeMessage(output, interactive, messageInfo, "VM is already loaded; its current state was not changed."); err != nil {
 			return err
 		}
+		if result.Reconciled {
+			if err := writeMessage(output, interactive, messageInfo, "The loaded job picks up the new plist at next boot, or after stop and start."); err != nil {
+				return err
+			}
+		}
 	} else if err := writeMessage(output, interactive, messageInfo, "VM state unchanged."); err != nil {
 		return err
 	}
-	if err := writeMessage(output, interactive, messageInfo, fmt.Sprintf("Start when ready: qemu-manage start %s", name)); err != nil {
-		return err
+	if !result.Reconciled {
+		if err := writeMessage(output, interactive, messageInfo, fmt.Sprintf("Start when ready: qemu-manage start %s", name)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

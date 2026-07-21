@@ -1,9 +1,11 @@
 package launchd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/bradsjm/qemu-manage/internal/model"
@@ -169,6 +171,149 @@ func TestDisableSuccessfulRemovalWhenStopped(t *testing.T) {
 		}
 		if len(c.args) > 0 && c.args[0] == "bootout" {
 			t.Fatalf("disable should not bootout stopped VM: %#v", c)
+		}
+	}
+}
+
+func TestEnableReconcilesDriftedLoginPlist(t *testing.T) {
+	m, r, cfg := launchdTestManager(t)
+	cfg.Autostart.Scope = model.AutostartLogin
+	lock, err := m.Store.LockName(cfg.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = lock.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	lock.Close()
+	if err = os.MkdirAll(m.LoginDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Install a stale login plist whose ProgramArguments reference a different
+	// executable, simulating drift after a Homebrew upgrade moved the binary.
+	paths := m.Store.Paths(cfg)
+	stale, err := Render(cfg, m.Executable+".stale", paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home, m.Store.DataRoot, m.Store.RuntimeRoot, m.Store.LogRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plistPath := m.plistPath(domainLogin, cfg.ID)
+	if err = os.WriteFile(plistPath, stale, 0600); err != nil {
+		t.Fatal(err)
+	}
+	r.hook = func(c runnerCall) ([]byte, error) { return missingPrint(c, cfg.ID) }
+	result, err := m.Enable(context.Background(), cfg.Name, model.AutostartLogin, func(context.Context, *model.Config) error { return nil })
+	if err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if !result.Reconciled || result.AlreadyEnabled {
+		t.Fatalf("expected reconcile, got %+v", result)
+	}
+	expected, err := m.renderExpected(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, expected) {
+		t.Fatalf("plist not reconciled to current render")
+	}
+}
+
+func TestDisableStoppedBootoutsLoadedJob(t *testing.T) {
+	m, r, cfg := launchdTestManager(t)
+	cfg.Autostart.Scope = model.AutostartLogin
+	lock, err := m.Store.LockName(cfg.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = lock.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	lock.Close()
+	data, err := m.renderForConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(m.LoginDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	plistPath := m.plistPath(domainLogin, cfg.ID)
+	if err = os.WriteFile(plistPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	m.Stopped = func(context.Context, *model.Config) error { return nil }
+	r.hook = func(c runnerCall) ([]byte, error) {
+		if len(c.args) > 0 && c.args[0] == "print" {
+			if len(c.args) > 1 && strings.HasPrefix(c.args[1], "system/") {
+				return missingPrint(c, cfg.ID)
+			}
+			return []byte("loaded"), nil
+		}
+		return nil, nil
+	}
+	if err := m.Disable(context.Background(), cfg.Name); err != nil {
+		t.Fatalf("disable stopped loaded VM: %v", err)
+	}
+	if _, statErr := os.Stat(plistPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("login plist remains: %v", statErr)
+	}
+	var sawBootout bool
+	for _, c := range r.calls {
+		if len(c.args) > 0 && c.args[0] == "bootout" {
+			sawBootout = true
+			if c.privileged {
+				t.Fatalf("login bootout should be unprivileged: %#v", c)
+			}
+		}
+	}
+	if !sawBootout {
+		t.Fatal("disable did not bootout the loaded login job")
+	}
+	got, err := m.Store.Load(cfg.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Autostart.Scope != model.AutostartNone {
+		t.Fatalf("scope=%q want none", got.Autostart.Scope)
+	}
+}
+
+func TestDisableRefusesRunningViaStopped(t *testing.T) {
+	m, r, cfg := launchdTestManager(t)
+	cfg.Autostart.Scope = model.AutostartLogin
+	lock, err := m.Store.LockName(cfg.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = lock.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	lock.Close()
+	data, err := m.renderForConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(m.LoginDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	plistPath := m.plistPath(domainLogin, cfg.ID)
+	if err = os.WriteFile(plistPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	m.Stopped = func(context.Context, *model.Config) error { return errors.New("VM is running") }
+	r.hook = func(c runnerCall) ([]byte, error) { return missingPrint(c, cfg.ID) }
+	err = m.Disable(context.Background(), cfg.Name)
+	if !errors.Is(err, ErrVMRunning) {
+		t.Fatalf("expected ErrVMRunning, got %v", err)
+	}
+	if _, statErr := os.Stat(plistPath); statErr != nil {
+		t.Fatalf("running refusal deleted plist: %v", statErr)
+	}
+	for _, c := range r.calls {
+		if len(c.args) > 0 && (c.args[0] == "bootout" || c.args[0] == "bootstrap") {
+			t.Fatalf("disable mutated loaded state while running: %#v", c)
 		}
 	}
 }

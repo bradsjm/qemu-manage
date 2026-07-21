@@ -1666,3 +1666,36 @@ func TestBackendPathsIncludePrivateMonitorSockets(t *testing.T) {
 		t.Fatalf("backend paths = %#v", got)
 	}
 }
+
+func TestDoctorFlagsStaleAutostartExecutable(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	cfg.Autostart.Scope = model.AutostartLogin
+	saveTestConfig(t, a, cfg)
+	configureAbsentLaunchd(t, a)
+
+	// Install a login plist whose ProgramArguments reference a binary that no
+	// longer exists, simulating drift after a Homebrew upgrade removed it.
+	paths := a.Store.Paths(cfg)
+	const staleExe = "/deleted/cellar/0.3.0/bin/qemu-manage"
+	stale, err := launchd.Render(cfg, staleExe, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, a.Launchd.Username, a.Launchd.Home, a.Store.DataRoot, a.Store.RuntimeRoot, a.Store.LogRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(a.Launchd.LoginDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(a.Launchd.LoginDir, launchd.Filename(cfg.ID)), stale, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runCLI(a, "doctor", "vm")
+	if code != 1 {
+		t.Fatalf("doctor exited %d, want 1: stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	for _, want := range []string{"autostart_plist", "autostart_executable", staleExe, "out of date"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("doctor output missing %q: %s", want, stdout)
+		}
+	}
+}

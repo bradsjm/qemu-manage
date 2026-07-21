@@ -678,6 +678,9 @@ func (a *App) runDoctor(ctx context.Context, args []string, stdout, stderr io.Wr
 	var checks []qemu.Check
 	collect := func() error {
 		checks = qemu.Doctor(ctx, config, paths)
+		if name != "" {
+			checks = append(checks, a.autostartDoctorChecks(ctx, name, &config)...)
+		}
 		return nil
 	}
 	if *jsonOutput {
@@ -712,6 +715,52 @@ func (a *App) runDoctor(ctx context.Context, args []string, stdout, stderr io.Wr
 		return fmt.Errorf("qemu: write doctor output: %w", err)
 	}
 	return qemu.RequiredPassed(checks)
+}
+
+// autostartDoctorChecks builds doctor checks for the installed launchd autostart
+// job when the VM has autostart configured. It returns nil when autostart is
+// not configured, so `doctor NAME` only adds these checks for VMs that opt in
+// and a plain `doctor` run is unaffected.
+func (a *App) autostartDoctorChecks(ctx context.Context, name string, cfg *model.Config) []qemu.Check {
+	if cfg.Autostart.Scope == "" || cfg.Autostart.Scope == model.AutostartNone || a.Launchd == nil {
+		return nil
+	}
+	scope := cfg.Autostart.Scope
+	fix := fmt.Sprintf("qemu-manage autostart enable %s --scope %s", name, scope)
+	domainName := "login"
+	if scope == model.AutostartBoot {
+		domainName = "boot"
+	}
+	var checks []qemu.Check
+	report, statusErr := a.Launchd.Status(ctx, name)
+	domain := report.Login
+	if scope == model.AutostartBoot {
+		domain = report.Boot
+	}
+	switch {
+	case statusErr != nil:
+		checks = append(checks, qemu.Check{Name: "autostart_plist", Status: qemu.CheckFail, Evidence: fmt.Sprintf("launchd status unavailable: %v; run: %s", statusErr, fix)})
+	case !domain.FilePresent:
+		checks = append(checks, qemu.Check{Name: "autostart_plist", Status: qemu.CheckFail, Evidence: fmt.Sprintf("%s-scope plist missing; run: %s", domainName, fix)})
+	case !domain.FileMatch:
+		checks = append(checks, qemu.Check{Name: "autostart_plist", Status: qemu.CheckFail, Evidence: fmt.Sprintf("%s-scope plist out of date; run: %s", domainName, fix)})
+	default:
+		checks = append(checks, qemu.Check{Name: "autostart_plist", Status: qemu.CheckPass, Evidence: fmt.Sprintf("%s-scope plist matches current configuration", domainName)})
+	}
+	execPath, present, execErr := a.Launchd.InstalledExecutable(ctx, name)
+	switch {
+	case !present:
+		checks = append(checks, qemu.Check{Name: "autostart_executable", Status: qemu.CheckWarn, Evidence: "no installed autostart plist to inspect"})
+	case execErr != nil:
+		checks = append(checks, qemu.Check{Name: "autostart_executable", Status: qemu.CheckFail, Evidence: fmt.Sprintf("parse installed plist: %v; run: %s", execErr, fix)})
+	default:
+		if info, statErr := os.Stat(execPath); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+			checks = append(checks, qemu.Check{Name: "autostart_executable", Status: qemu.CheckFail, Evidence: fmt.Sprintf("plist executable %s is missing or not executable; a brew upgrade may have moved it; run: %s", execPath, fix)})
+		} else {
+			checks = append(checks, qemu.Check{Name: "autostart_executable", Status: qemu.CheckPass, Evidence: execPath})
+		}
+	}
+	return checks
 }
 
 func displayCheckStatus(status qemu.CheckStatus, interactive bool) string {

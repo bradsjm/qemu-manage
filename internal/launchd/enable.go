@@ -22,6 +22,11 @@ type EnableResult struct {
 	// AlreadyEnabled is true when the VM already had the requested scope
 	// configured and Enable made no changes.
 	AlreadyEnabled bool
+	// Reconciled is true when the VM already had the requested scope
+	// configured but the installed plist had drifted, so Enable rewrote it
+	// in place (for example after the executable moved in a Homebrew
+	// upgrade). The durable scope is unchanged.
+	Reconciled bool
 	// Loaded is true when a launchd job for the VM was already loaded in
 	// either domain when Enable was called. Enable never loads a job; this
 	// flag lets the caller advise the user that the VM is already managed
@@ -37,8 +42,11 @@ type EnableResult struct {
 // Enable does not require the VM to be stopped, because it never bootstraps the
 // job. A job that is already loaded (for example from a prior version that
 // bootstrapped on enable, or from a prior boot/login activation) is left
-// loaded; only its on-disk plist is reconciled. The VM's current power state is
-// never changed.
+// loaded; only its on-disk plist is reconciled. When the requested scope is
+// already configured but the installed plist has drifted (for example because
+// the executable moved after a Homebrew upgrade), Enable rewrites the plist in
+// place and reports Reconciled without changing the durable scope. The VM's
+// current power state is never changed.
 func (m *Manager) Enable(ctx context.Context, name string, scope model.AutostartScope, doctor func(context.Context, *model.Config) error) (EnableResult, error) {
 	if m == nil || m.Store == nil {
 		return EnableResult{}, errors.New("launchd: manager has no store")
@@ -78,9 +86,46 @@ func (m *Manager) Enable(ctx context.Context, name string, scope model.Autostart
 	}
 	loaded := loginLoaded || systemLoaded
 
-	// Idempotent: enabling the already-configured scope is a successful no-op.
+	// Idempotent: enabling the already-configured scope reconciles the
+	// on-disk plist when it has drifted (for example when the executable
+	// moved after a Homebrew upgrade) without changing the durable scope.
+	// A missing plist is left untouched so a job file can be removed in
+	// place; re-installation is a deliberate enable from scope none.
 	if cfg.Autostart.Scope == scope {
-		return EnableResult{Scope: scope, AlreadyEnabled: true, Loaded: loaded}, nil
+		result := EnableResult{Scope: scope, AlreadyEnabled: true, Loaded: loaded}
+		d := domainLogin
+		if scope == model.AutostartBoot {
+			d = domainSystem
+		}
+		installed, err := m.inspectPath(d, cfg.ID)
+		if err != nil {
+			return result, err
+		}
+		if installed.Present {
+			expected, err := m.renderExpected(cfg)
+			if err != nil {
+				return result, err
+			}
+			if !bytes.Equal(installed.Bytes, expected) {
+				// Reopen with O_NOFOLLOW and require the exact inspected
+				// plist before removing it, then install the current render.
+				// installCandidate creates a fresh file, so the drifted plist
+				// must be removed first. If installation fails the plist is
+				// gone and status reports it missing until enable is rerun.
+				if err := m.verifyInstalled(d, installed.Path, installed.Bytes); err != nil {
+					return result, fmt.Errorf("launchd: drifted plist changed before reconcile: %w", err)
+				}
+				if err := m.removePlist(ctx, d, installed.Path); err != nil {
+					return result, err
+				}
+				if _, err := m.installPlist(ctx, d, cfg.ID, expected); err != nil {
+					return result, err
+				}
+				result.AlreadyEnabled = false
+				result.Reconciled = true
+			}
+		}
+		return result, nil
 	}
 	if cfg.Autostart.Scope != model.AutostartNone {
 		return EnableResult{}, fmt.Errorf("launchd: VM %q already has autostart scope %q; disable it before enabling a different scope", name, cfg.Autostart.Scope)
@@ -89,15 +134,10 @@ func (m *Manager) Enable(ctx context.Context, name string, scope model.Autostart
 	if err := doctor(ctx, cfg); err != nil {
 		return EnableResult{}, fmt.Errorf("launchd: runtime doctor: %w", err)
 	}
-	executable, err := stableExecutable(m.Executable)
-	if err != nil {
-		return EnableResult{}, err
-	}
 
 	configured := *cfg
 	configured.Autostart.Scope = scope
-	paths := m.Store.Paths(cfg)
-	rendered, err := Render(&configured, executable, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home, m.Store.DataRoot, m.Store.RuntimeRoot, m.Store.LogRoot)
+	rendered, err := m.renderExpected(&configured)
 	if err != nil {
 		return EnableResult{}, err
 	}
@@ -126,34 +166,9 @@ func (m *Manager) Enable(ctx context.Context, name string, scope model.Autostart
 	if scope == model.AutostartBoot {
 		d = domainSystem
 	}
-	destination := m.plistPath(d, cfg.ID)
-	candidate, err := writeCandidate(rendered)
+	cleanupInstalled, err := m.installPlist(ctx, d, cfg.ID, rendered)
 	if err != nil {
 		return EnableResult{}, err
-	}
-	defer os.Remove(candidate)
-	if err := m.lint(ctx, candidate); err != nil {
-		return EnableResult{}, err
-	}
-	if err := m.installCandidate(ctx, d, candidate, destination); err != nil {
-		return EnableResult{}, errors.Join(err, m.removeInstalledIfExact(ctx, d, cfg.ID, rendered))
-	}
-	installed := true
-	cleanupInstalled := func() error {
-		if !installed {
-			return nil
-		}
-		installed = false
-		if err := m.verifyInstalled(d, destination, rendered); err != nil {
-			return fmt.Errorf("launchd: refuse to remove changed installed plist: %w", err)
-		}
-		return m.removePlist(ctx, d, destination)
-	}
-	if err := m.verifyInstalled(d, destination, rendered); err != nil {
-		// The just-installed candidate failed the mandatory ownership, mode,
-		// or byte check. It has never been loaded and must be removed.
-		installed = false
-		return EnableResult{}, errors.Join(err, m.removePlist(ctx, d, destination))
 	}
 
 	// Commit the durable scope. Enable never loads the job, so there is no
@@ -162,7 +177,7 @@ func (m *Manager) Enable(ctx context.Context, name string, scope model.Autostart
 	// on-disk job stay consistent.
 	if err := nameLock.Save(&configured); err != nil {
 		// Atomic save can report a directory-sync/close error after rename.
-		return EnableResult{}, errors.Join(err, cleanupInstalled(), nameLock.Save(cfg))
+		return EnableResult{}, errors.Join(err, cleanupInstalled(ctx), nameLock.Save(cfg))
 	}
 
 	return EnableResult{Scope: scope, Loaded: loaded}, nil
@@ -173,18 +188,20 @@ func stableExecutable(path string) (string, error) {
 		return "", errors.New("launchd: executable path must be absolute")
 	}
 	clean := filepath.Clean(path)
-	resolved, err := filepath.EvalSymlinks(clean)
-	if err != nil {
-		return "", fmt.Errorf("launchd: resolve executable: %w", err)
-	}
-	info, err := os.Stat(resolved)
+	// Do not resolve symlinks: launchd plists are written with the pathname
+	// used to run qemu-manage (for example the stable /opt/homebrew/bin
+	// symlink) so that Homebrew upgrades, which repoint that symlink at a new
+	// Cellar version, do not orphan already-installed autostart jobs. os.Stat
+	// follows the symlink, so the target is still validated as a regular
+	// executable file.
+	info, err := os.Stat(clean)
 	if err != nil {
 		return "", fmt.Errorf("launchd: inspect executable: %w", err)
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
 		return "", errors.New("launchd: executable must be an executable regular file")
 	}
-	return resolved, nil
+	return clean, nil
 }
 
 func writeCandidate(data []byte) (string, error) {
@@ -254,4 +271,53 @@ func (m *Manager) verifyInstalled(d domain, path string, expected []byte) error 
 		return fmt.Errorf("launchd: installed plist %s does not match rendered bytes", path)
 	}
 	return nil
+}
+
+// renderExpected renders the launchd plist for cfg using the validated
+// executable path, producing the exact bytes Enable writes and Status compares
+// installed plists against.
+func (m *Manager) renderExpected(cfg *model.Config) ([]byte, error) {
+	executable, err := stableExecutable(m.Executable)
+	if err != nil {
+		return nil, err
+	}
+	paths := m.Store.Paths(cfg)
+	return Render(cfg, executable, paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home, m.Store.DataRoot, m.Store.RuntimeRoot, m.Store.LogRoot)
+}
+
+// installPlist writes, lints, installs, and verifies a rendered plist for the
+// given domain under the name lock already held by the caller. It removes any
+// partial install it created on failure. The returned cleanup removes the
+// verified install and is safe to call at most once; callers that do not need
+// rollback (for example a drift reconcile, where the durable scope is
+// unchanged) may ignore it. installPlist never loads the job.
+func (m *Manager) installPlist(ctx context.Context, d domain, id string, rendered []byte) (func(context.Context) error, error) {
+	destination := m.plistPath(d, id)
+	candidate, err := writeCandidate(rendered)
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(candidate)
+	if err := m.lint(ctx, candidate); err != nil {
+		return nil, err
+	}
+	if err := m.installCandidate(ctx, d, candidate, destination); err != nil {
+		return nil, errors.Join(err, m.removeInstalledIfExact(ctx, d, id, rendered))
+	}
+	if err := m.verifyInstalled(d, destination, rendered); err != nil {
+		// The just-installed candidate failed the mandatory ownership, mode,
+		// or byte check. It has never been loaded and must be removed.
+		return nil, errors.Join(err, m.removePlist(ctx, d, destination))
+	}
+	installed := true
+	return func(ctx context.Context) error {
+		if !installed {
+			return nil
+		}
+		installed = false
+		if err := m.verifyInstalled(d, destination, rendered); err != nil {
+			return fmt.Errorf("launchd: refuse to remove changed installed plist: %w", err)
+		}
+		return m.removePlist(ctx, d, destination)
+	}, nil
 }
