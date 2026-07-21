@@ -21,7 +21,6 @@ type terminalSizeCarrier interface {
 	terminalOutputSize() (width int, height int, err error)
 }
 
-
 type byteBar struct {
 	output                    io.Writer
 	title                     string
