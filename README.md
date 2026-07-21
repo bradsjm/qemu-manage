@@ -2,6 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Coding Harness](https://img.shields.io/badge/coding_harness-oh--my--pi/gpt--5.6-orange)](https://opencode.ai/)
+[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://bradsjm.github.io/qemu-manage/)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/bradsjm/qemu-manage)
 
 ![qemu-manage logo](./artifacts/banner.png)
@@ -40,6 +41,7 @@
 - [Storage & security](#storage--security)
 - [How it works](#how-it-works)
 - [Development](#development)
+  - [Documentation site](https://bradsjm.github.io/qemu-manage/)
 - [License](#license)
 
 
