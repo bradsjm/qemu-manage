@@ -31,6 +31,7 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 	case "enable":
 		flags := quietFlagSet("autostart enable")
 		scopeValue := flags.String("scope", string(model.AutostartBoot), "")
+		startFlag := flags.Bool("start", false, "")
 		if err := parseNoPositionals(flags, "autostart enable", remaining); err != nil {
 			return err
 		}
@@ -57,7 +58,21 @@ func (a *App) runAutostart(ctx context.Context, args []string, stdout, stderr io
 		if err != nil {
 			return withLaunchdPrefix(err)
 		}
-		return writeAutostartEnableStatus(stdout, stdoutInteractive, name, result)
+		if err := writeAutostartEnableStatus(stdout, stdoutInteractive, name, result); err != nil {
+			return err
+		}
+		if *startFlag {
+			// `enable --start` mirrors `systemctl enable --now`: install the job
+			// and start the VM now, through launchd (so it is launchd-owned).
+			config, err := a.loadQEMUConfig(name)
+			if err != nil {
+				return err
+			}
+			if err := a.startVM(ctx, config, false, false, stderr); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "disable":
 		flags := quietFlagSet("autostart disable")
 		scopeValue := flags.String("scope", "", "")

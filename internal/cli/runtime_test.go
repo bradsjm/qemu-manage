@@ -1699,3 +1699,33 @@ func TestDoctorFlagsStaleAutostartExecutable(t *testing.T) {
 		}
 	}
 }
+
+func TestStartRoutesToLaunchdWhenAutostartConfigured(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	cfg.Autostart.Scope = model.AutostartLogin
+	saveTestConfig(t, a, cfg)
+	a.Supervisor = &supervisor.Service{} // launchd path does not use it; must be non-nil to pass the guard
+	configureAbsentLaunchd(t, a)
+	a.Runtime = &fakeRuntime{}
+	code, _, stderr := runCLI(a, "start", "vm")
+	// Routed through launchd (Start attempts install/lint/bootstrap against the
+	// absent runner) rather than the detached supervisor path.
+	if code == 0 || !strings.Contains(stderr, "launchd:") {
+		t.Fatalf("expected launchd routing, code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestStartDetachedWhenAutostartNone(t *testing.T) {
+	a := testApp(t)
+	saveTestConfig(t, a, testConfig("vm")) // scope none
+	a.Supervisor = &supervisor.Service{}
+	configureAbsentLaunchd(t, a)
+	code, _, stderr := runCLI(a, "start", "vm")
+	if strings.Contains(stderr, "launchd:") {
+		t.Fatalf("autostart-none start routed to launchd: %q", stderr)
+	}
+	if !strings.Contains(stderr, "executable path") {
+		t.Fatalf("expected detached-path executable error, got code=%d stderr=%q", code, stderr)
+	}
+}

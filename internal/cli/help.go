@@ -310,6 +310,13 @@ Examples:
   qemu-manage --debug start home-assistant --foreground
   qemu-manage start linux --boot-menu
   qemu-manage status home-assistant
+
+When the VM has autostart configured (login or boot), start runs it through its
+launchd job, so the running instance is owned by launchd and survives reboots
+exactly like a boot/login autostart. qemu-manage performs the launchctl steps;
+no manual launchd commands are needed. With no autostart scope, start launches a
+detached supervisor for an ad-hoc run. --boot-menu always starts a one-off
+detached instance regardless of autostart.
 `},
 	"stop": {text: `Request a graceful guest shutdown through QGA or QMP.
 
@@ -518,14 +525,18 @@ Run 'qemu-manage autostart SUBCOMMAND --help' for details.
 	"autostart enable": {text: `Check prerequisites, install a launchd job, and leave the VM stopped.
 
 Usage:
-  qemu-manage autostart enable NAME [--scope VALUE]
+  qemu-manage autostart enable NAME [--scope VALUE] [--start]
 
 Options:
   --scope VALUE  Valid values: boot, login (default: boot)
+  --start        Also start the VM now through its launchd job, like
+                 'systemctl enable --now'; loads the job, so boot scope uses
+                 sudo for the system LaunchDaemon
 
 Examples:
   qemu-manage autostart enable home-assistant --scope login
   qemu-manage autostart enable home-assistant --scope boot
+  qemu-manage autostart enable home-assistant --scope boot --start
 
 Boot scope installs a system LaunchDaemon with sudo. QEMU itself continues to
 run as the configured non-root user.

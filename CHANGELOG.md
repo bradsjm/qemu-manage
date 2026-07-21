@@ -7,6 +7,12 @@ All notable changes to qemu-manage are documented in this file.
 
 _Nothing yet._
 
+## [0.6.1] - 2026-07-21
+
+### Added
+- `qemu-manage start NAME` now runs a VM through its launchd job when autostart is configured (login or boot), so the running instance is launchd-owned and survives reboots — no manual `launchctl` is ever required. This mirrors `systemctl start`. With no autostart scope, `start` keeps the existing detached-supervisor behavior.
+- `qemu-manage autostart enable NAME --start` installs the job and starts the VM now through launchd, mirroring `systemctl enable --now`.
+
 ## [0.6.0] - 2026-07-21
 
 ### Added
@@ -94,7 +100,8 @@ _Nothing yet._
 
 - Initial release.
 
-[Unreleased]: https://github.com/bradsjm/qemu-manage/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/bradsjm/qemu-manage/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/bradsjm/qemu-manage/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/bradsjm/qemu-manage/compare/v0.5.0...v0.6.0
 
 [0.5.0]: https://github.com/bradsjm/qemu-manage/compare/v0.4.0...v0.5.0

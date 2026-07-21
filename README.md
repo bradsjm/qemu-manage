@@ -104,10 +104,10 @@ The formula installs QEMU as a dependency. Optional `socket_vmnet` networking re
 
 Download the latest archive from [GitHub Releases](https://github.com/bradsjm/qemu-manage/releases/latest). Archives are unsigned and target Apple Silicon only. macOS may ask you to approve the binary in Privacy & Security.
 
-Replace `0.6.0` with the version you want to install:
+Replace `0.6.1` with the version you want to install:
 
 ```sh
-VERSION=0.6.0
+VERSION=0.6.1
 curl -fLO "https://github.com/bradsjm/qemu-manage/releases/download/v${VERSION}/qemu-manage_${VERSION}_darwin_arm64.tar.gz"
 curl -fLO "https://github.com/bradsjm/qemu-manage/releases/download/v${VERSION}/checksums.txt"
 shasum -a 256 -c checksums.txt
@@ -125,7 +125,7 @@ Make sure `$HOME/.local/bin` is on your `PATH`.
 go install github.com/bradsjm/qemu-manage/cmd/qemu-manage@latest
 
 # Specific version
-go install github.com/bradsjm/qemu-manage/cmd/qemu-manage@v0.6.0
+go install github.com/bradsjm/qemu-manage/cmd/qemu-manage@v0.6.1
 ```
 
 Requires Go 1.25+ and builds locally — no unsigned binary needed.
@@ -636,6 +636,15 @@ QEMU itself still runs as the non-root VM owner, and enabling autostart does
 not start the VM immediately. `disable` refuses while the VM is running; stop it
 first, then it bootouts any loaded job and removes the plist (using `sudo` for
 the boot-scope LaunchDaemon).
+`start` honors autostart: when a VM has autostart configured, `qemu-manage start
+NAME` runs it through its launchd job (so the instance is launchd-owned and
+survives reboots) — no manual `launchctl` is ever needed. With no autostart
+scope, `start` launches a detached supervisor for an ad-hoc run. To install a
+job and start the VM immediately, like `systemctl enable --now`:
+
+```sh
+qemu-manage autostart enable home-assistant --scope boot --start
+```
 
 The launchd plist records the pathname used to run `qemu-manage` (for example
 `/opt/homebrew/bin/qemu-manage`), not a resolved Homebrew Cellar path, so a

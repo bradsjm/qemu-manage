@@ -317,3 +317,169 @@ func TestDisableRefusesRunningViaStopped(t *testing.T) {
 		}
 	}
 }
+
+func sawLaunchctl(r *fakeRunner, sub string) bool {
+	for _, c := range r.calls {
+		if c.path == launchctlPath && len(c.args) > 0 && c.args[0] == sub {
+			return true
+		}
+	}
+	return false
+}
+
+func TestStartRejectsScopeNone(t *testing.T) {
+	m, _, cfg := launchdTestManager(t)
+	if err := m.Start(context.Background(), cfg.Name); err == nil {
+		t.Fatal("expected error for scope none")
+	}
+}
+
+func TestStartRefusesRunningVM(t *testing.T) {
+	m, r, cfg := launchdTestManager(t)
+	cfg.Autostart.Scope = model.AutostartLogin
+	lock, err := m.Store.LockName(cfg.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = lock.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	lock.Close()
+	m.Stopped = func(context.Context, *model.Config) error { return errors.New("VM is running") }
+	if err := m.Start(context.Background(), cfg.Name); err == nil ||
+		!strings.Contains(err.Error(), "already running") {
+		t.Fatalf("expected already-running refusal, got %v", err)
+	}
+	if sawLaunchctl(r, "bootstrap") || sawLaunchctl(r, "bootout") {
+		t.Fatalf("Start mutated launchd while running: %#v", r.calls)
+	}
+}
+
+func TestStartBootstrapsWhenNotLoaded(t *testing.T) {
+	m, r, cfg := launchdTestManager(t)
+	cfg.Autostart.Scope = model.AutostartLogin
+	lock, err := m.Store.LockName(cfg.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = lock.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	lock.Close()
+	data, err := m.renderForConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(m.LoginDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(m.plistPath(domainLogin, cfg.ID), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	r.hook = func(c runnerCall) ([]byte, error) { return missingPrint(c, cfg.ID) }
+	if err := m.Start(context.Background(), cfg.Name); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !sawLaunchctl(r, "bootstrap") {
+		t.Fatalf("Start did not bootstrap: %#v", r.calls)
+	}
+	if sawLaunchctl(r, "bootout") {
+		t.Fatalf("Start bootout-ed a non-loaded job: %#v", r.calls)
+	}
+}
+
+func TestStartReloadsLoadedJob(t *testing.T) {
+	m, r, cfg := launchdTestManager(t)
+	cfg.Autostart.Scope = model.AutostartLogin
+	lock, err := m.Store.LockName(cfg.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = lock.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	lock.Close()
+	data, err := m.renderForConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(m.LoginDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(m.plistPath(domainLogin, cfg.ID), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	r.hook = func(c runnerCall) ([]byte, error) {
+		if len(c.args) > 0 && c.args[0] == "print" {
+			return []byte("loaded"), nil
+		}
+		return nil, nil
+	}
+	if err := m.Start(context.Background(), cfg.Name); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !sawLaunchctl(r, "bootout") {
+		t.Fatalf("Start did not bootout loaded job: %#v", r.calls)
+	}
+	if !sawLaunchctl(r, "bootstrap") {
+		t.Fatalf("Start did not bootstrap after bootout: %#v", r.calls)
+	}
+	// bootout must precede bootstrap.
+	var bootoutIdx, bootstrapIdx = -1, -1
+	for i, c := range r.calls {
+		if c.path == launchctlPath && len(c.args) > 0 {
+			switch c.args[0] {
+			case "bootout":
+				bootoutIdx = i
+			case "bootstrap":
+				bootstrapIdx = i
+			}
+		}
+	}
+	if bootoutIdx < 0 || bootstrapIdx < 0 || bootoutIdx > bootstrapIdx {
+		t.Fatalf("expected bootout before bootstrap: %#v", r.calls)
+	}
+}
+
+func TestStartReconcilesDriftedPlist(t *testing.T) {
+	m, r, cfg := launchdTestManager(t)
+	cfg.Autostart.Scope = model.AutostartLogin
+	lock, err := m.Store.LockName(cfg.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = lock.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	lock.Close()
+	if err = os.MkdirAll(m.LoginDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	paths := m.Store.Paths(cfg)
+	stale, err := Render(cfg, m.Executable+".stale", paths.VMDir, paths.SupervisorStdout, paths.SupervisorStderr, m.Username, m.Home, m.Store.DataRoot, m.Store.RuntimeRoot, m.Store.LogRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plistPath := m.plistPath(domainLogin, cfg.ID)
+	if err = os.WriteFile(plistPath, stale, 0600); err != nil {
+		t.Fatal(err)
+	}
+	r.hook = func(c runnerCall) ([]byte, error) { return missingPrint(c, cfg.ID) }
+	if err := m.Start(context.Background(), cfg.Name); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	expected, err := m.renderExpected(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(plistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, expected) {
+		t.Fatal("Start did not reconcile the drifted plist before loading")
+	}
+	if !sawLaunchctl(r, "bootstrap") {
+		t.Fatalf("Start did not bootstrap: %#v", r.calls)
+	}
+}

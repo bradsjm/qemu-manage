@@ -227,6 +227,12 @@ func (a *App) startVM(ctx context.Context, config *model.Config, foreground, boo
 	if a.Supervisor == nil {
 		return errors.New("runtime: supervisor service is unavailable")
 	}
+	if !foreground && !bootMenu && config.Autostart.Scope != "" && config.Autostart.Scope != model.AutostartNone {
+		if a.Launchd == nil {
+			return errors.New("launchd: manager is unavailable")
+		}
+		return a.startViaLaunchd(ctx, config, stderr)
+	}
 	executable, err := filepath.Abs(a.ExecutablePath)
 	if err != nil || a.ExecutablePath == "" {
 		if err == nil {
@@ -283,6 +289,62 @@ func (a *App) startVM(ctx context.Context, config *model.Config, foreground, boo
 		return fmt.Errorf("runtime: start %q: %w", config.Name, err)
 	}
 	return nil
+}
+
+// startViaLaunchd runs a VM through its configured autostart job instead of a
+// detached supervisor, so the running instance is owned by launchd and follows
+// the same path as a boot/login autostart. qemu-manage hides the launchctl
+// bootstrap; the user just runs `start`.
+func (a *App) startViaLaunchd(ctx context.Context, config *model.Config, stderr io.Writer) error {
+	status := startLiveStatus(
+		stderr,
+		true,
+		a.liveProgressInteractive(stderr),
+		fmt.Sprintf("Starting %s VM — loading launchd job and waiting for readiness", config.Name),
+	)
+	fail := func(err error) error {
+		status.Fail(fmt.Sprintf("Starting %s VM failed: %v", config.Name, err))
+		return fmt.Errorf("runtime: start %q: %w", config.Name, err)
+	}
+	if err := a.Launchd.Start(ctx, config.Name); err != nil {
+		return fail(err)
+	}
+	if err := a.waitForRunning(ctx, config, supervisorReadyTimeout); err != nil {
+		return fail(err)
+	}
+	status.Success(config.Name + " VM is ready")
+	return nil
+}
+
+// waitForRunning polls the authenticated runtime state until the VM is running,
+// failing fast on a failed state. It is the launchd-path readiness signal,
+// since launchd (not qemu-manage) spawns the supervisor and there is no ready
+// pipe to await.
+func (a *App) waitForRunning(ctx context.Context, config *model.Config, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if row, err := a.Runtime.Status(ctx, config); err == nil {
+			switch row.State {
+			case model.RunStateRunning:
+				return nil
+			case model.RunStateFailed:
+				return fmt.Errorf("VM entered failed state")
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return errors.New("timeout waiting for VM to become running")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func awaitVMStart(vmName string, status *liveStatus, ready <-chan struct{}, startDone <-chan error) error {
