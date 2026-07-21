@@ -125,6 +125,7 @@ func TestCommandAndNestedHelp(t *testing.T) {
 		{name: "config show", args: []string{"config", "show", "--help"}, want: []string{"config show NAME", "Examples:"}},
 		{name: "autostart", args: []string{"autostart", "--help"}, want: []string{"autostart", "enable", "disable", "status", "Examples:"}},
 		{name: "autostart enable", args: []string{"autostart", "enable", "--help"}, want: []string{"autostart enable NAME", "--scope", "--start", "boot", "login", "Examples:"}},
+		{name: "info", args: []string{"info", "--help"}, want: []string{"info NAME", "--json", "stopped", "not running", "monitoring", "authenticated", "set NAME --metrics-port PORT", "Examples:"}},
 		{name: "vnc", args: []string{"vnc", "--help"}, want: []string{"vnc NAME", "Screen Sharing", "clipboard", "Examples:"}},
 	}
 	for _, tc := range cases {

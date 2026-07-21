@@ -61,6 +61,10 @@ func (r *runtimeAdapter) Status(ctx context.Context, config *model.Config) (Stat
 		pid := result.PID
 		row.PID = &pid
 	}
+	if !result.StartedAt.IsZero() {
+		startedAt := result.StartedAt
+		row.StartedAt = &startedAt
+	}
 	row.RestartRequired = row.RunningConfigSHA256 != "" && row.RunningConfigSHA256 != row.CurrentConfigSHA256
 	return row, nil
 }

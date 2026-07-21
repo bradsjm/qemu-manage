@@ -199,9 +199,19 @@ func TestStatusAndListJSONContracts(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &row); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"name", "state", "restart_required", "vnc"} {
+	for _, key := range []string{"name", "state", "restart_required", "vnc", "cpus", "memory_mib", "network", "autostart"} {
 		if _, ok := row[key]; !ok {
 			t.Errorf("status omitted required field %q: %s", key, out)
+		}
+	}
+	for key, want := range map[string]string{
+		"cpus":       "2",
+		"memory_mib": "2048",
+		"network":    `"user"`,
+		"autostart":  `"none"`,
+	} {
+		if got := string(row[key]); got != want {
+			t.Errorf("status %s = %s, want %s", key, got, want)
 		}
 	}
 	if string(row["restart_required"]) != "true" {
@@ -230,11 +240,87 @@ func TestStatusAndListJSONContracts(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &rows); err != nil {
 		t.Fatal(err)
 	}
+	var rawRows []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &rawRows); err != nil {
+		t.Fatal(err)
+	}
 	if len(rows) != 3 || rows[0].Name != "alpha" || rows[1].Name != "broken" || rows[1].State != model.RunStateFailed || rows[1].Error == "" || rows[2].Name != "zeta" {
 		t.Fatalf("unexpected rows: %+v", rows)
 	}
+	if len(rawRows) != 3 {
+		t.Fatalf("unexpected raw rows: %+v", rawRows)
+	}
+	for key, want := range map[string]string{
+		"cpus":       "2",
+		"memory_mib": "2048",
+		"network":    `"user"`,
+		"autostart":  `"none"`,
+	} {
+		for _, index := range []int{0, 2} {
+			if got := string(rawRows[index][key]); got != want {
+				t.Errorf("row %d %s = %s, want %s", index, key, got, want)
+			}
+		}
+		if _, ok := rawRows[1][key]; ok {
+			t.Errorf("broken row unexpectedly contains %s: %s", key, out)
+		}
+	}
 	if rows[0].VNC == nil || *rows[0].VNC != wantVNC || rows[1].VNC != nil || rows[2].VNC == nil || *rows[2].VNC != wantVNC {
 		t.Fatalf("unexpected vnc rows: %+v", rows)
+	}
+}
+
+func TestListHumanOutputIncludesRichConfigAndLiveFields(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	cfg.CPUs = 4
+	cfg.MemoryMiB = 4096
+	cfg.Network.Mode = model.NetworkSocketVMNet
+	cfg.Network.SocketVMNet = &model.SocketVMNetConfig{
+		ClientPath: "/usr/bin/false",
+		SocketPath: "/tmp/socket_vmnet",
+		Interface:  "shared",
+	}
+	cfg.Autostart.Scope = model.AutostartLogin
+	saveTestConfig(t, a, cfg)
+	a.Runtime = &fakeRuntime{row: StatusRow{
+		State: model.RunStateRunning,
+		VNC:   &backend.VNCEndpoint{Host: "127.0.0.1", Port: 5909},
+	}}
+
+	code, out, _ := runCLI(a, "list")
+	if code != 0 {
+		t.Fatalf("list failed: code=%d", code)
+	}
+	for _, want := range []string{
+		"NAME", "STATE", "CPUS", "MEMORY", "NETWORK", "AUTOSTART", "VNC", "RESTART", "ERROR",
+		"vm", "running", "4", "4GiB", "socket_vmnet", "login", "127.0.0.1:5909", "false",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("list output missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestStatusHumanOutputRemainsFourColumns(t *testing.T) {
+	a := testApp(t)
+	cfg := testConfig("vm")
+	saveTestConfig(t, a, cfg)
+	a.Runtime = &fakeRuntime{row: StatusRow{State: model.RunStateRunning}}
+
+	code, out, _ := runCLI(a, "status", "vm")
+	if code != 0 {
+		t.Fatalf("status failed: code=%d", code)
+	}
+	for _, want := range []string{"NAME", "STATE", "RESTART REQUIRED", "ERROR", "vm", "running", "false"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status output missing %q: %s", want, out)
+		}
+	}
+	for _, unexpected := range []string{"CPUS", "MEMORY", "NETWORK", "AUTOSTART", "VNC"} {
+		if strings.Contains(out, unexpected) {
+			t.Fatalf("status output unexpectedly contains list column %q: %s", unexpected, out)
+		}
 	}
 }
 

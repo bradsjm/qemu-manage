@@ -31,8 +31,9 @@ title: CLI Reference
 | `monitor` | `qemu-manage monitor NAME` or `qemu-manage monitor NAME "COMMAND"` | Attach interactively to QEMU's human monitor, or issue one HMP command through QMP. |
 | `guest-agent` | `qemu-manage guest-agent NAME REQUEST` | Send one strict JSON request object containing `execute` and optional `arguments` to QGA. |
 | `vnc` | `qemu-manage vnc NAME` | Copy the configured VNC password to the clipboard and open the authenticated live endpoint in macOS Screen Sharing. |
-| `status` | `qemu-manage status [NAME] [--json]` | Show runtime state and whether changed configuration requires a restart. |
-| `list` | `qemu-manage list [--json]` | List all managed VMs and their runtime states. |
+| `status` | `qemu-manage status [NAME] [--json]` | Show compact runtime state and whether changed configuration requires a restart. |
+| `list` | `qemu-manage list [--json]` | Show all managed VMs with state, CPUs, memory, network, autostart, live VNC, restart requirement, and errors. |
+| `info` | `qemu-manage info NAME [--json]` | Show rich authenticated configuration and runtime information, supplemented by validated loopback monitoring data when available. |
 | `doctor` | `qemu-manage doctor [NAME] [--json]` | Check host or named-VM prerequisites without changing anything. |
 | `autostart` | `qemu-manage autostart SUBCOMMAND NAME [OPTIONS]` | Manage VM startup through launchd. |
 | `autostart enable` | `qemu-manage autostart enable NAME [--scope VALUE] [--start]` | Install a `boot` or `login` launchd job; optionally start through it immediately. Default scope is `boot`. |

@@ -37,6 +37,14 @@ Every response has `Cache-Control: no-store`. JSON uses
 `text/plain; version=0.0.4; charset=utf-8`. Timestamps are UTC RFC 3339 with
 nanosecond precision. The server writes no access log.
 
+The `qemu-manage info NAME` consumer reads `/info` and `/status` for running
+or paused VMs. Before rendering their data, it validates each endpoint's VM
+identity and checks `/status` run identity against the authenticated supervisor
+run. The CLI limits each response body to 128 MiB; if monitoring is disabled,
+unavailable, mismatched, invalid, or exceeds that limit, `info` falls back to
+authenticated supervisor/config state. These consumer checks do not change the
+endpoint schemas, freshness, security, or status codes described below.
+
 The collector status enum is `ok`, `pending`, `unsupported`, `failed`, or
 `stale`. Collector error codes are limited to `qmp_unavailable`,
 `qmp_timeout`, `qmp_protocol_error`, `process_stats_unavailable`,

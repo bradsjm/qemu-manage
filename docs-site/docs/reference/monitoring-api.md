@@ -31,6 +31,14 @@ qemu-manage set home-assistant --metrics-port 9101
 - Timestamps are UTC RFC 3339 with nanosecond precision.
 - The server writes no access log.
 
+## CLI consumer
+
+`qemu-manage info NAME` reads `/info` followed by `/status` for running or paused VMs. Both requests share one two-second deadline. The CLI accepts monitoring data only when both responses identify the requested VM and `/status` matches the backend PID and start time returned by the authenticated supervisor.
+
+Each response is limited to 128 MiB by the CLI consumer. A redirect, transport failure, non-JSON or non-`200` response, invalid or incomplete payload, response above that limit, or VM/run identity mismatch discards both responses. The command then falls back to authenticated supervisor and durable configuration data instead of showing partial or potentially stale monitoring information.
+
+This client-side validation and size limit do not change the HTTP endpoint schemas, freshness rules, security model, or status codes described below.
+
 ## Collector status
 
 The collector status enum is:

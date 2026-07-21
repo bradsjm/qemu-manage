@@ -17,6 +17,7 @@ import (
 	"os/user"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bradsjm/qemu-manage/internal/backend"
 	"github.com/bradsjm/qemu-manage/internal/launchd"
@@ -47,6 +48,11 @@ type StatusRow struct {
 	RunningConfigSHA256 string               `json:"running_config_sha256,omitempty"`
 	VNC                 *backend.VNCEndpoint `json:"vnc,omitempty"`
 	Error               string               `json:"error,omitempty"`
+	StartedAt           *time.Time           `json:"started_at,omitempty"`
+	CPUs                int                  `json:"cpus,omitempty"`
+	MemoryMiB           int                  `json:"memory_mib,omitempty"`
+	Network             model.NetworkMode    `json:"network,omitempty"`
+	Autostart           model.AutostartScope `json:"autostart,omitempty"`
 }
 
 // RuntimeService reads live VM state without mutating it.
@@ -274,7 +280,7 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		}
 	case "config":
 		err = a.dispatchConfig(ctx, args[1:], stdin, stdout, stderr)
-	case "showcmd", "log", "status", "list", "delete":
+	case "showcmd", "log", "status", "list", "info", "delete":
 		err = a.runInfoCommand(ctx, args[0], args[1:], stdin, stdout, stderr)
 	case "start", "stop", "restart", "console", "monitor", "guest-agent", "vnc", "doctor", "supervise":
 		err = a.runRuntimeCommand(ctx, args[0], args[1:], stdin, stdout, stderr)

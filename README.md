@@ -47,17 +47,17 @@
 
 ## Features
 
-- **VM lifecycle** — Create, start, stop, and inspect VMs with straightforward commands.
+- **VM lifecycle** — Create, start, stop, and inspect VMs with straightforward commands, including a Docker-`ps`-style overview and rich per-VM information.
 - **Disk import** — Pull images from HTTP(S) URLs (auto-decompresses `.xz`/`.gz`), copy local qcow2/raw images, or boot installer ISOs.
 - **Cloud-init support** — Automatically creates ISO images with cloud-init configuration and injects them into VM boot parameters.
 - **Serial logs & console** — Print the active bounded serial log verbatim or connect to any guest serial console interactively.
 - **Monitor & guest agent support** — Use the interactive QEMU human monitor, run one-shot HMP commands, and send strict JSON guest-agent requests with pipe-safe stdout.
-- **Prometheus metrics and REST API** — Exposes VM metrics via a dedicated HTTP endpoint for monitoring with Prometheus, and a REST API with ping, health and configutation information (see [API documentation](API.md)).
+- **Prometheus metrics and monitoring API** — Exposes per-VM metrics, health, status, guest probes, and service information on an optional loopback-only HTTP endpoint (see [API documentation](API.md)).
 - **VNC passthrough** — Optional VNC with password auth; `qemu-manage vnc NAME` opens it in Screen Sharing with the password on your clipboard.
 - **Networking** — User-mode NAT out of the box; optional `socket_vmnet` for shared or bridged mode without running QEMU as root, plus optional user-network SMB host-folder share.
 - **Autostart** — Per-VM launchd jobs at login or boot scope; QEMU stays unprivileged.
-- **Secure by design** — Atomic writes, owner-only file modes, peer-authenticated Unix sockets, immutable-ID lifetime locks, localhost only binding and no central service to attack.
-- **Accelerated hardware** — All AArch64 guests use QEMU's HVF (Hypervisor.framework) native hardware virtualization accelerator for MacOS.
+- **Secure by design** — Atomic writes, owner-only file modes, peer-authenticated Unix sockets, immutable-ID lifetime locks, loopback-only monitoring, and no central service to attack.
+- **Accelerated hardware** — All AArch64 guests use QEMU's HVF (Hypervisor.framework) native hardware virtualization accelerator for macOS.
 
 ## Requirements
 
@@ -169,6 +169,8 @@ qemu-manage doctor my-vm
 qemu-manage showcmd my-vm
 qemu-manage --debug start my-vm
 qemu-manage status my-vm
+qemu-manage list
+qemu-manage info my-vm
 qemu-manage log my-vm
 
 # Ctrl-] to disconnect
@@ -449,6 +451,35 @@ qemu-manage showcmd home-assistant
 
 One-shot start overrides such as `--boot-menu` are intentionally absent from
 `showcmd` because they are not persisted.
+
+Use `list` for a high-level view of every managed VM, or `info` for one VM's
+authenticated runtime and monitoring details:
+
+```sh
+qemu-manage list
+qemu-manage list --json
+qemu-manage info home-assistant
+qemu-manage info home-assistant --json
+```
+
+The human `list` view includes `NAME`, `STATE`, `CPUS`, `MEMORY`, `NETWORK`,
+`AUTOSTART`, `VNC`, `RESTART`, and `ERROR` columns. Its JSON form preserves the
+status fields and adds the durable resource and lifecycle settings. Human
+`status` output remains the compact four-column state view.
+
+For a stopped VM, `info` reports that it is not running without querying
+monitoring. Failed and transitional states report that live information is
+unavailable without making an unverified offline claim. For a running or paused
+VM, rich information reads the supervisor-owned, loopback-only `/info` and
+`/status` endpoints. It accepts the responses only after validating the VM
+identity, authenticated backend PID, and run start time. If monitoring is
+disabled, unavailable, invalid, or belongs to another run, `info` falls back to
+authenticated supervisor/config state instead of displaying partial or stale
+monitoring data. Enable monitoring with:
+
+```sh
+qemu-manage set home-assistant --metrics-port 9101
+```
 
 Start-time diagnostics are enabled only by a leading global flag:
 

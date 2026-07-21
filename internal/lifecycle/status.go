@@ -45,6 +45,7 @@ type StatusResult struct {
 	RunningConfigSHA256 string
 	VNC                 *backend.VNCEndpoint
 	Error               string
+	StartedAt           time.Time
 }
 
 // Status returns the supervisor's authenticated view when it is reachable and
@@ -86,6 +87,7 @@ func (s *Service) status(ctx context.Context, cfg *model.Config) (StatusResult, 
 		result.Backend = response.Status.Backend
 		result.RunningConfigSHA256 = response.Status.RunningConfigSHA256
 		result.VNC = response.Status.VNC
+		result.StartedAt = response.Status.StartedAt
 		return result, true, nil
 	}
 	var protocolErr *supervisor.ResponseError

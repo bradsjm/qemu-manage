@@ -82,7 +82,7 @@ func serveLifecycleStatus(t *testing.T, socketPath string, status supervisor.Sta
 	return errCh
 }
 
-func TestStatusPropagatesSupervisorVNCEndpoint(t *testing.T) {
+func TestStatusPropagatesSupervisorLiveDetails(t *testing.T) {
 	service, cfg, paths := lifecycleFixture(t)
 	status := supervisor.Status{
 		State:               model.RunStateRunning,
@@ -101,12 +101,15 @@ func TestStatusPropagatesSupervisorVNCEndpoint(t *testing.T) {
 	if result.State != model.RunStateRunning || result.PID != status.BackendPID || result.VNC == nil || *result.VNC != *status.VNC {
 		t.Fatalf("result = %+v", result)
 	}
+	if !result.StartedAt.Equal(status.StartedAt) {
+		t.Fatalf("started_at = %s, want %s", result.StartedAt.Format(time.RFC3339Nano), status.StartedAt.Format(time.RFC3339Nano))
+	}
 	if err := <-errCh; err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestStatusOmitsVNCEndpointWhenNotReady(t *testing.T) {
+func TestStatusDerivedStatesHaveNoLiveDetails(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	tests := []struct {
 		name      string
@@ -176,6 +179,9 @@ func TestStatusOmitsVNCEndpointWhenNotReady(t *testing.T) {
 			}
 			if result.VNC != nil {
 				t.Fatalf("unexpected vnc = %+v", *result.VNC)
+			}
+			if !result.StartedAt.IsZero() {
+				t.Fatalf("unexpected started_at = %s", result.StartedAt.Format(time.RFC3339Nano))
 			}
 		})
 	}

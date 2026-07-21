@@ -448,6 +448,28 @@ Examples:
   qemu-manage status home-assistant
   qemu-manage status home-assistant --json
 `},
+	"info": {text: `Inspect one VM's authenticated runtime state and live monitoring details.
+
+Usage:
+  qemu-manage info NAME [--json]
+
+Options:
+  --json  Emit stable machine-readable JSON
+
+Behavior:
+  - A stopped VM prints that it is not running and does not query monitoring.
+  - A running or paused VM reads the loopback /info and /status endpoints when
+    monitoring is enabled.
+  - If monitoring is disabled or unavailable, info falls back to authenticated
+    supervisor/config state instead of claiming that the VM is offline.
+  - Enable monitoring with:
+
+      qemu-manage set NAME --metrics-port PORT
+
+Examples:
+  qemu-manage info home-assistant
+  qemu-manage info home-assistant --json
+`},
 	"list": {text: `List all managed VMs and their current runtime states.
 
 Usage:
@@ -699,6 +721,7 @@ Commands:
   guest-agent  Send one JSON request to the guest agent and print its return
   vnc          Copy the VNC password and open Screen Sharing (macOS)
   status       Show one VM or all VM runtime states
+  info         Inspect one VM's runtime and monitoring details
   list         List all managed VMs
   doctor       Check QEMU, firmware, VM files, and networking prerequisites
   autostart    Manage login or system-boot startup with launchd

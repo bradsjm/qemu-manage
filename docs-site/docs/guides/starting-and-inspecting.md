@@ -47,22 +47,41 @@ If the VM is already stopped, the start still proceeds. A stop failure aborts be
 
 ## Inspect runtime state
 
-Show all VM states, or inspect one VM:
+Use `list` for a Docker-`ps`-style overview of every managed VM:
+
+```sh
+qemu-manage list
+qemu-manage list --json
+```
+
+The human table includes `NAME`, `STATE`, `CPUS`, `MEMORY`, `NETWORK`, `AUTOSTART`, `VNC`, `RESTART`, and `ERROR`. Invalid configurations retain their name, failed state, and error while unavailable configuration or live values appear as `-`. The JSON form preserves the existing status fields and adds the durable resource and lifecycle settings.
+
+`status` retains its compact four-column human output and can inspect all VMs or one named VM:
 
 ```sh
 qemu-manage status
 qemu-manage status NAME
-qemu-manage list
+qemu-manage status NAME --json
 ```
 
-`status` reports runtime state and whether a configuration change requires restart. `list` shows every managed VM and its current state. Both support stable machine-readable JSON:
+For a VNC-enabled running VM, status JSON includes the authenticated live VNC endpoint.
+
+## Inspect rich VM information
 
 ```sh
-qemu-manage status NAME --json
-qemu-manage list --json
+qemu-manage info NAME
+qemu-manage info NAME --json
 ```
 
-For a VNC-enabled running VM, status JSON includes the live VNC endpoint.
+A stopped VM reports only that it is not running. For a running or paused VM, `info` combines authenticated supervisor state and durable configuration with the VM's loopback `/info` and `/status` monitoring responses. It validates the VM identity, backend PID, and run start time before displaying monitoring data, so a restart racing the request cannot expose information from the wrong run.
+
+If monitoring is disabled or unavailable, the command still succeeds with authenticated supervisor/configuration information and explains the fallback. Enable monitoring with:
+
+```sh
+qemu-manage set NAME --metrics-port PORT
+```
+
+Restart the VM after changing its metrics configuration.
 
 ## Inspect the QEMU command
 

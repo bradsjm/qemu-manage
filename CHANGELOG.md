@@ -5,8 +5,15 @@ All notable changes to qemu-manage are documented in this file.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- New `info` command that inspects one VM's authenticated runtime state and validated loopback monitoring data, falling back to supervisor state on any mismatch or error
+- New monitoring fetch pipeline with VM identity (ID + name) and run-binding (PID + started_at) validation against authenticated supervisor metadata
+- `StartedAt` field propagated from supervisor through lifecycle status and CLI runtime layers, exposed in status/list JSON output
+- `list` output enriched with Docker-ps-style columns: CPUS, MEMORY, NETWORK, AUTOSTART, and VNC
+- Comprehensive test coverage for the `info` command, monitoring validation, identity binding, and list/status output contracts
 
+### Changed
+- `list` output now displays a richer table with resource and network columns alongside state and error information
 ## [0.6.1] - 2026-07-21
 
 ### Added
