@@ -17,6 +17,14 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Examples',
+      items: [
+        'examples/home-assistant',
+        'examples/prometheus',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Operations',
       items: [
         'operations/autostart',
